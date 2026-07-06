@@ -1,0 +1,51 @@
+name: 'publish'
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers the workflow on push of tags matching v*, e.g., v0.1.0
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write # Required to create and write to the GitHub Release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'windows-latest' # Builds the Windows .exe / .msi installer
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'npm'
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: install frontend dependencies
+        run: npm ci
+
+      # Build and compile your Tauri app, generating the production installer
+      - name: build and package Tauri app
+        uses: tauri-apps/tauri-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__ # Automatically resolved from src-tauri/tauri.conf.json
+          releaseName: 'SenseTree v__VERSION__'
+          releaseBody: 'Review and download the latest installer below.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

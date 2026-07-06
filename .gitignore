@@ -58,3 +58,5 @@ Empeche de pousser par erreur tes bases de donnees de test ou de production sur 
 .sensetree_data/
 local_storage/
 data/vectors/
+
+.github/copilot-instructions.md
