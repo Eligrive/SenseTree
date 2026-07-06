@@ -1,24 +1,60 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
+==========================================
+
+📦 SENSE TREE - CONFIGURATION GITIGNORE
+
+==========================================
+
+--- Dependances & Build (Node / Frontend) ---
+
+node_modules/
+dist/
+build/
+.yarn/
+.pnp*
+
+--- Dependances & Build (Rust / Backend) ---
+
+src-tauri/target/
+
+Ne pas ignorer Cargo.lock pour une application (recommandé en Rust)
+
+Mais on ignore les fichiers temporaires de compilation
+
+/.rs.bk
+src-tauri/.pdb
+
+--- Securite, Environnement & Caches ---
+
+.env
+.env.local
+.env..local
+.log
+npm-debug.log
+yarn-debug.log
 yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+--- IDEs & Systemes ---
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
 .DS_Store
+Thumbs.db
+*.local
+.vscode/
+.idea/
 *.suo
-*.ntvs*
+.ntvs
 *.njsproj
 *.sln
 *.sw?
+
+--- Base de Donnees Locales & Index Sémantique (Crucial pour SenseTree) ---
+
+Empeche de pousser par erreur tes bases de donnees de test ou de production sur GitHub
+
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.lancedb/
+.sensetree_data/
+local_storage/
+data/vectors/
