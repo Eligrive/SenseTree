@@ -1,0 +1,84 @@
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+
+#[derive(Debug, PartialEq)]
+pub enum FileType {
+    Text,               // Code source, Markdown, TXT -> Extraction directe
+    Document,           // PDF, Word -> Extracteur de doc
+    Image,              // PNG, JPG -> Module de Vision
+    RequiresAIRouting,  // 🤖 C'est ici que ton LLM interviendra !
+    Ignored,            // Poubelle (node_modules, etc.)
+}
+
+pub struct Parser;
+
+impl Parser {
+    pub fn determine_file_type(path: &Path) -> FileType {
+
+        if let Ok(metadata) = std::fs::metadata(path) {
+            if metadata.len() == 0 {
+                return FileType::Ignored;
+            }
+        }
+        // 1. Le Bouclier CPU : On bloque le bruit de masse instantanément
+        let path_str = path.to_string_lossy().to_lowercase();
+        if path_str.contains("node_modules") 
+            || path_str.contains(".venv") 
+            || path_str.contains("\\target\\") 
+            || path_str.contains(".git") {
+            return FileType::Ignored;
+        }
+
+        // 2. Détection rapide via Magic Bytes avec la crate "infer"
+        let kind = infer::get_from_path(path);
+        
+        match kind {
+            Ok(Some(k)) => {
+                let mime = k.mime_type();
+                
+                // Si c'est une image ou un document connu
+                if mime.starts_with("image/") {
+                    return FileType::Image;
+                }
+                if mime == "application/pdf" || mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+                    return FileType::Document;
+                }
+                
+                // 🤖 Format complexe (Archive, Binaire, etc.), on demande à l'IA
+                if mime.starts_with("application/") && mime != "application/json" {
+                    return FileType::RequiresAIRouting;
+                }
+            },
+            Ok(None) | Err(_) => {
+                // Si le système ne reconnaît pas le format
+                if Self::is_valid_utf8(path) {
+                    return FileType::Text; // C'est un script ou un fichier texte custom
+                } else {
+                    return FileType::RequiresAIRouting; // 🤖 Binaire inconnu, on laisse l'IA juger
+                }
+            }
+        }
+
+        // Par sécurité
+        FileType::RequiresAIRouting
+    }
+
+    // Fonction rapide pour vérifier si un fichier inconnu est du texte lisible
+    fn is_valid_utf8(path: &Path) -> bool {
+        let mut file = match File::open(path) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+
+        // On lit seulement les 512 premiers octets (très rapide)
+        let mut buffer = [0; 512];
+        let bytes_read = file.read(&mut buffer).unwrap_or(0);
+        
+        if bytes_read == 0 {
+            return false;
+        }
+
+        std::str::from_utf8(&buffer[..bytes_read]).is_ok()
+    }
+}
