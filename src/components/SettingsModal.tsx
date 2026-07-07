@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Download, Loader2, Plug, RefreshCw, RotateCcw, Save, X } from "lucide-react";
 import type { AppConfig, ChatConfig } from "../lib/types";
 import {
@@ -51,9 +52,27 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   const [testMsg, setTestMsg] = useState<Record<string, string>>({});
   const [pulling, setPulling] = useState<Record<string, boolean>>({});
   const [installed, setInstalled] = useState<Record<string, string[]>>({});
+  const [pullProgress, setPullProgress] = useState<
+    Record<string, { percent: number; status: string }>
+  >({});
 
   useEffect(() => {
     if (open) getConfig().then(setCfg).catch(() => setCfg(null));
+  }, [open]);
+
+  // Progression du téléchargement de modèle (événements émis par le backend).
+  useEffect(() => {
+    if (!open) return;
+    const un = listen<{ model: string; percent: number; status: string }>(
+      "model-pull-progress",
+      (e) => {
+        const p = e.payload;
+        setPullProgress((m) => ({ ...m, [p.model]: { percent: p.percent, status: p.status } }));
+      }
+    );
+    return () => {
+      un.then((f) => f());
+    };
   }, [open]);
 
   // Charge les modèles installés pour chaque endpoint dès qu'on a la config.
@@ -184,6 +203,20 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
             >
               {isInstalled ? "● installé" : "○ non installé"}
             </span>
+            {pulling[key] && (
+              <div className="mt-1.5">
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className="h-full rounded-full bg-blue-500 transition-all"
+                    style={{ width: `${pullProgress[cfg[key].model]?.percent ?? 0}%` }}
+                  />
+                </div>
+                <span className="mt-0.5 block text-[10px] text-zinc-500">
+                  {pullProgress[cfg[key].model]?.status ?? "démarrage…"}{" "}
+                  {pullProgress[cfg[key].model]?.percent ?? 0}%
+                </span>
+              </div>
+            )}
           </Field>
         </div>
         <Field label="Clé API (optionnelle)">

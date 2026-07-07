@@ -2,11 +2,13 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import {
   Boxes,
   ChevronRight,
+  Clock,
   File as FileIcon,
   FileText,
   FileType2,
   Folder,
   FolderTree,
+  HelpCircle,
   Image as ImageIcon,
   Loader2,
   Search,
@@ -40,7 +42,41 @@ function FolderModeBadge({
   entry: DirEntryInfo;
   onSetFolderMode: (path: string, mode: "recursive" | "block") => void;
 }) {
-  const isBlock = entry.folder_mode === "block";
+  const mode = entry.folder_mode;
+
+  // Pas encore classé (le crawler n'a pas encore atteint ce dossier).
+  if (mode == null) {
+    return (
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onSetFolderMode(entry.path, "block");
+        }}
+        title="Pas encore classé — cliquer pour le forcer en bloc sémantique"
+        className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-zinc-700 transition hover:bg-zinc-800 hover:text-zinc-400"
+      >
+        <HelpCircle size={11} /> non classé
+      </button>
+    );
+  }
+
+  // Classification reportée (IA indisponible).
+  if (mode === "pending") {
+    return (
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onSetFolderMode(entry.path, "recursive"); // forcer l'exploration maintenant
+        }}
+        title="Classification reportée (IA indisponible) — cliquer pour forcer l'exploration récursive"
+        className="flex shrink-0 items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300 transition hover:bg-amber-500/25"
+      >
+        <Clock size={11} /> attente
+      </button>
+    );
+  }
+
+  const isBlock = mode === "block";
   return (
     <button
       onClick={(e) => {
@@ -55,7 +91,7 @@ function FolderModeBadge({
       className={`flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition ${
         isBlock
           ? "bg-purple-500/15 text-purple-300 hover:bg-purple-500/25"
-          : "text-zinc-600 opacity-0 hover:bg-zinc-800 hover:text-zinc-300 group-hover:opacity-100"
+          : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
       }`}
     >
       {isBlock ? <Boxes size={11} /> : <FolderTree size={11} />}

@@ -105,4 +105,5 @@ export interface IndexingStats {
   pending: number;
   completed: number;
   failed: number;
+  pending_folders: number;
 }

@@ -113,9 +113,12 @@ export default function App() {
   };
 
   const changeFolderMode = (path: string, mode: "recursive" | "block") => {
-    setFolderMode(path, mode)
-      .then(() => currentPath && navigate(currentPath))
-      .catch((e) => console.error("set_folder_mode:", e));
+    // Mise à jour optimiste : le badge change instantanément (plus de « re-clic »).
+    setEntries((prev) => prev.map((e) => (e.path === path ? { ...e, folder_mode: mode } : e)));
+    setFolderMode(path, mode).catch((e) => {
+      console.error("set_folder_mode:", e);
+      if (currentPath) navigate(currentPath); // on annule l'optimisme en cas d'échec
+    });
   };
 
   const analyze = () => {

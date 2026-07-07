@@ -64,6 +64,14 @@ function IndexingProgress({ stats }: { stats: IndexingStats | null }) {
       {stats.failed > 0 && (
         <div className="text-[11px] text-rose-400">{stats.failed} en échec</div>
       )}
+      {stats.pending_folders > 0 && (
+        <div
+          className="text-[11px] text-purple-300"
+          title="Classification reportée faute d'IA disponible — reprise automatique quand le modèle de reasoning répond"
+        >
+          {stats.pending_folders} dossier(s) en attente d'IA
+        </div>
+      )}
     </div>
   );
 }
