@@ -1,51 +1,170 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useState } from "react";
+import { openPath } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+import Sidebar from "./components/Sidebar";
+import Explorer from "./components/Explorer";
+import ChatPanel from "./components/ChatPanel";
+import SettingsModal from "./components/SettingsModal";
+import GardenerModal from "./components/GardenerModal";
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+import type {
+  DirEntryInfo,
+  DirectoryReport,
+  HealthReport,
+  IndexingStats,
+  SearchResult,
+} from "./lib/types";
+import {
+  aiHealth,
+  analyzeDirectory,
+  getRoots,
+  indexingStats,
+  listDirectory,
+  semanticSearch,
+} from "./lib/ipc";
+
+export default function App() {
+  const [roots, setRoots] = useState<string[]>([]);
+  const [currentRoot, setCurrentRoot] = useState<string | null>(null);
+  const [currentPath, setCurrentPath] = useState<string | null>(null);
+  const [entries, setEntries] = useState<DirEntryInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const [searchMode, setSearchMode] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  // Recherche globale par défaut ; on peut la restreindre au dossier courant.
+  const [scopeToCurrent, setScopeToCurrent] = useState(false);
+
+  const [health, setHealth] = useState<HealthReport | null>(null);
+  const [stats, setStats] = useState<IndexingStats | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const [report, setReport] = useState<DirectoryReport | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
+
+  const refreshHealth = useCallback(() => {
+    aiHealth().then(setHealth).catch(() => setHealth(null));
+  }, []);
+
+  const navigate = useCallback((path: string) => {
+    setSearchMode(false);
+    setCurrentPath(path);
+    setLoading(true);
+    listDirectory(path)
+      .then(setEntries)
+      .catch(() => setEntries([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  // Chargement initial : racines + santé IA.
+  useEffect(() => {
+    getRoots().then((r) => {
+      setRoots(r);
+      if (r.length > 0) {
+        setCurrentRoot(r[0]);
+        navigate(r[0]);
+      }
+    });
+    refreshHealth();
+    const t = setInterval(refreshHealth, 20000);
+    return () => clearInterval(t);
+  }, [navigate, refreshHealth]);
+
+  // Avancement de l'indexation (rafraîchi souvent tant qu'il reste des fichiers en file).
+  useEffect(() => {
+    const poll = () => indexingStats().then(setStats).catch(() => {});
+    poll();
+    const t = setInterval(poll, 2000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Ré-actualise la liste courante périodiquement pour refléter l'indexation en fond.
+  useEffect(() => {
+    if (!currentPath || searchMode) return;
+    const t = setInterval(() => {
+      listDirectory(currentPath).then(setEntries).catch(() => {});
+    }, 5000);
+    return () => clearInterval(t);
+  }, [currentPath, searchMode]);
+
+  const selectRoot = (root: string) => {
+    setCurrentRoot(root);
+    navigate(root);
+  };
+
+  const search = (query: string) => {
+    setSearchMode(true);
+    setSearching(true);
+    const scope = scopeToCurrent ? currentPath ?? undefined : undefined;
+    semanticSearch(query, scope, 30)
+      .then(setSearchResults)
+      .catch((e) => {
+        console.error("semantic_search:", e);
+        setSearchResults([]);
+      })
+      .finally(() => setSearching(false));
+  };
+
+  const openFile = (path: string) => {
+    openPath(path).catch((e) => console.error("openPath:", e));
+  };
+
+  const analyze = () => {
+    if (!currentPath) return;
+    setReport(null);
+    setReportOpen(true);
+    analyzeDirectory(currentPath)
+      .then(setReport)
+      .catch(() => setReportOpen(false));
+  };
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <div className="flex h-screen w-full overflow-hidden bg-zinc-950 font-sans text-zinc-100">
+      <Sidebar
+        roots={roots}
+        currentRoot={currentRoot}
+        onSelectRoot={selectRoot}
+        health={health}
+        stats={stats}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onAnalyze={analyze}
+      />
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
+      <main className="flex-1 overflow-hidden">
+        <Explorer
+          currentPath={currentPath}
+          entries={entries}
+          loading={loading}
+          onNavigate={navigate}
+          onOpenFile={openFile}
+          onSearch={search}
+          searchMode={searchMode}
+          searchResults={searchResults}
+          searching={searching}
+          onExitSearch={() => setSearchMode(false)}
+          scopeToCurrent={scopeToCurrent}
+          onToggleScope={setScopeToCurrent}
         />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+      </main>
+
+      <ChatPanel currentPath={currentPath} reasoningOk={!!health?.reasoning_ok} />
+
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onSaved={() => {
+          refreshHealth();
+          getRoots().then(setRoots);
+        }}
+      />
+
+      <GardenerModal
+        report={reportOpen ? report : null}
+        loading={reportOpen && !report}
+        onClose={() => setReportOpen(false)}
+      />
+    </div>
   );
 }
-
-export default App;
