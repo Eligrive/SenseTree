@@ -18,8 +18,33 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
+anyhow = "1"
+crossbeam-channel = "0.5"
+lancedb = "0.31"
+notify = "8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+notify-debouncer-mini = "0.7.0"
+infer = "0.19.0"
+walkdir = "2.5.0"
+pdf-extract = "0.12.0"
+zip = "8.6.0"
+arrow-array = "59.0.0"
+arrow-schema = "59.0.0"
+futures-util = "0.3.32"
+fastembed = "4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

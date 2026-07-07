@@ -16,6 +16,11 @@ build/
 
 src-tauri/target/
 
+Cache des modeles d'embedding telecharges (fastembed / ONNX) - lourd, regenerable
+
+.fastembed_cache/
+src-tauri/.fastembed_cache/
+
 Ne pas ignorer Cargo.lock pour une application (recommandé en Rust)
 
 Mais on ignore les fichiers temporaires de compilation
