@@ -33,6 +33,9 @@ pub async fn list_directory(
 ) -> Result<Vec<DirEntryInfo>, String> {
     let state = state.inner().clone();
 
+    // Robustesse : on réduit les séparateurs redondants (ex. "C:\\Users" venant
+    // d'un fil d'ariane), sinon les chemins ne matcheraient pas les profils stockés.
+    let path = collapse_separators(&path);
     let normalized = normalize(&path);
     // Statuts d'indexation des chemins sous ce dossier, en une requête.
     let statuses: HashMap<String, String> = state
@@ -107,4 +110,20 @@ pub fn get_roots(state: State<'_, Arc<AppState>>) -> Result<Vec<String>, String>
 fn normalize(path: &str) -> String {
     let trimmed = path.trim_end_matches(['/', '\\']);
     format!("{trimmed}{}", std::path::MAIN_SEPARATOR)
+}
+
+/// Réduit les séquences de séparateurs à un seul, en préservant un éventuel
+/// préfixe UNC (`\\serveur`). Évite les mismatches type "C:\\Users".
+fn collapse_separators(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut prev_sep = false;
+    for (i, ch) in path.chars().enumerate() {
+        let is_sep = ch == '/' || ch == '\\';
+        if is_sep && prev_sep && i > 1 {
+            continue; // séparateur redondant (on garde un éventuel préfixe UNC)
+        }
+        out.push(ch);
+        prev_sep = is_sep;
+    }
+    out
 }

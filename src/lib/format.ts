@@ -33,7 +33,13 @@ export function breadcrumbs(path: string): { label: string; path: string }[] {
   const crumbs: { label: string; path: string }[] = [];
   let acc = "";
   parts.forEach((part, i) => {
-    acc = i === 0 ? (/^[A-Za-z]:$/.test(part) ? part + sep : sep + part) : acc + sep + part;
+    if (i === 0) {
+      // "C:" → "C:\" (lecteur Windows) ; sinon racine Unix "/xxx".
+      acc = /^[A-Za-z]:$/.test(part) ? part + sep : sep + part;
+    } else {
+      // On n'ajoute un séparateur que si acc n'en a pas déjà un (évite "C:\\Users").
+      acc = acc.endsWith(sep) ? acc + part : acc + sep + part;
+    }
     crumbs.push({ label: part, path: acc });
   });
   return crumbs;
