@@ -18,6 +18,15 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
+/// Recalibre une similarité cosine e5 (bande utile ~[0.70, 0.90]) en un score de
+/// pertinence discriminant dans [0, 1]. Sans ça, des documents sans rapport
+/// affichent 75 %+ car e5 comprime ses similarités dans le haut de l'échelle.
+fn relevance(cosine: f32) -> f32 {
+    const LOW: f32 = 0.70;
+    const HIGH: f32 = 0.90;
+    ((cosine - LOW) / (HIGH - LOW)).clamp(0.0, 1.0)
+}
+
 #[tauri::command]
 pub async fn semantic_search(
     state: State<'_, Arc<AppState>>,
@@ -55,17 +64,18 @@ pub async fn semantic_search(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| hit.path.clone());
 
+        let score = relevance(hit.score);
         best.entry(hit.path.clone())
             .and_modify(|existing| {
-                if hit.score > existing.score {
-                    existing.score = hit.score;
+                if score > existing.score {
+                    existing.score = score;
                     existing.snippet = hit.snippet.clone();
                 }
             })
             .or_insert(SearchResult {
                 path: hit.path.clone(),
                 name,
-                score: hit.score,
+                score,
                 snippet: hit.snippet,
             });
     }

@@ -4,6 +4,7 @@ pub mod config;
 pub mod crawler;
 pub mod db;
 pub mod explorer;
+pub mod folders;
 pub mod parser;
 pub mod providers;
 pub mod search;
@@ -41,8 +42,34 @@ async fn set_config(state: State<'_, Arc<AppState>>, config: AppConfig) -> Resul
     st.ai.invalidate_embedder().await;
     // Re-scan des racines pour prendre en compte d'éventuels nouveaux dossiers.
     for root in roots {
-        let dbc = st.db.clone();
-        std::thread::spawn(move || crawler::scan_directory(dbc, &root));
+        let sc = st.clone();
+        std::thread::spawn(move || crawler::scan_directory(sc, &root));
+    }
+    Ok(())
+}
+
+/// Force manuellement le mode d'un dossier (récursif vs bloc sémantique).
+#[tauri::command]
+async fn set_folder_mode(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+    mode: String,
+) -> Result<(), String> {
+    let st = state.inner().clone();
+    st.db.set_folder_profile_manual(&path, &mode).map_err(|e| e.to_string())?;
+
+    if mode == "block" {
+        // On retire l'indexation fichier-par-fichier et on indexe le dossier en bloc.
+        st.db.purge_children(&path).map_err(|e| e.to_string())?;
+        st.vector.delete_under(&path).await.map_err(|e| e.to_string())?;
+        st.db.enqueue_path(&path, Some("pending_extraction"), 9).map_err(|e| e.to_string())?;
+    } else {
+        // Retour en récursif : on supprime le vecteur-bloc et on re-scanne le dossier.
+        st.vector.delete_by_path(&path).await.map_err(|e| e.to_string())?;
+        let _ = st.db.remove_from_queue(&path);
+        let sc = st.clone();
+        let p = path.clone();
+        std::thread::spawn(move || crawler::scan_directory(sc, &p));
     }
     Ok(())
 }
@@ -53,24 +80,105 @@ async fn ai_health(state: State<'_, Arc<AppState>>) -> Result<HealthReport, Stri
     Ok(st.ai.health().await)
 }
 
-/// Teste un endpoint compatible OpenAI sans le sauvegarder (bouton « Tester »).
-#[tauri::command]
-async fn test_chat_endpoint(base_url: String, api_key: String) -> Result<String, String> {
+/// Récupère la liste des modèles disponibles sur un endpoint compatible OpenAI.
+async fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(6))
         .build()
         .map_err(|e| e.to_string())?;
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     let mut req = client.get(&url);
     if !api_key.is_empty() {
-        req = req.bearer_auth(&api_key);
+        req = req.bearer_auth(api_key);
     }
     let resp = req.send().await.map_err(|e| format!("serveur injoignable: {e}"))?;
-    if resp.status().is_success() {
-        Ok("Connexion réussie".to_string())
-    } else {
-        Err(format!("le serveur a répondu {}", resp.status()))
+    if !resp.status().is_success() {
+        return Err(format!("le serveur a répondu {}", resp.status()));
     }
+    let value: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let models = value
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(models)
+}
+
+/// Liste les modèles installés sur le serveur (pour l'autocomplétion des Paramètres).
+#[tauri::command]
+async fn list_installed_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
+    fetch_models(&base_url, &api_key).await
+}
+
+/// Teste un endpoint ET vérifie que le modèle configuré est réellement présent.
+/// (Avant, on ne testait que l'accessibilité du serveur — d'où un « OK » trompeur
+/// quand le modèle n'était pas installé.)
+#[tauri::command]
+async fn test_chat_endpoint(
+    base_url: String,
+    api_key: String,
+    model: String,
+) -> Result<String, String> {
+    let models = fetch_models(&base_url, &api_key).await?;
+    if model.is_empty() {
+        return Ok(format!("Serveur joignable ({} modèle(s) disponible(s))", models.len()));
+    }
+    // Match tolérant (Ollama expose parfois 'llama3.1:8b' vs 'llama3.1').
+    let present = models
+        .iter()
+        .any(|m| m == &model || m.split(':').next() == Some(model.split(':').next().unwrap_or(&model)));
+    if present {
+        Ok(format!("Connecté — modèle « {model} » disponible"))
+    } else {
+        Err(format!(
+            "Serveur joignable mais modèle « {model} » introuvable. Modèles installés : {}",
+            if models.is_empty() { "aucun".into() } else { models.join(", ") }
+        ))
+    }
+}
+
+/// Télécharge un modèle via l'API Ollama (POST /api/pull). Spécifique à Ollama :
+/// pour un serveur non-Ollama, renvoie une erreur explicite.
+#[tauri::command]
+async fn pull_model(base_url: String, model: String) -> Result<String, String> {
+    // base_url ~ http://host:11434/v1 → racine Ollama = http://host:11434
+    let root = base_url
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .to_string();
+    let url = format!("{root}/api/pull");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(1800)) // gros modèles = plusieurs minutes
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({ "name": model, "stream": false }))
+        .send()
+        .await
+        .map_err(|e| format!("téléchargement impossible (serveur Ollama ?) : {e}"))?;
+    if resp.status().is_success() {
+        Ok(format!("Modèle « {model} » téléchargé"))
+    } else {
+        Err(format!("échec du téléchargement : {}", resp.status()))
+    }
+}
+
+/// Réinitialise complètement l'index et relance un scan des racines.
+#[tauri::command]
+async fn reindex_all(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let st = state.inner().clone();
+    st.db.reset_index().map_err(|e| e.to_string())?;
+    st.vector.clear().await.map_err(|e| e.to_string())?;
+    for root in st.config.snapshot().indexing.roots {
+        let sc = st.clone();
+        std::thread::spawn(move || crawler::scan_directory(sc, &root));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -92,8 +200,10 @@ pub fn run() {
     // Logs structurés (remplace les println!). N'échoue pas si déjà initialisé.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "sensetree_lib=info,warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                // On coupe le bruit des extracteurs PDF (glyphes manquants, etc.).
+                "sensetree_lib=info,pdf_extract=error,lopdf=error,warn".into()
+            }),
         )
         .try_init();
 
@@ -154,10 +264,10 @@ pub fn run() {
             // --- Threads de fond ---
             let roots = config.snapshot().indexing.roots;
             for root in roots.clone() {
-                let dbc = database.clone();
-                std::thread::spawn(move || crawler::scan_directory(dbc, &root));
+                let sc = app_state.clone();
+                std::thread::spawn(move || crawler::scan_directory(sc, &root));
             }
-            watchdog::start_watching(database.clone(), roots);
+            watchdog::start_watching(app_state.clone(), roots);
             worker::start_worker(app_state.clone());
 
             tracing::info!("✅ SenseTree prêt. DB={:?}", db_path);
@@ -170,8 +280,12 @@ pub fn run() {
             set_config,
             ai_health,
             test_chat_endpoint,
+            list_installed_models,
+            pull_model,
+            reindex_all,
             explorer::list_directory,
             explorer::get_roots,
+            set_folder_mode,
             search::semantic_search,
             actions::plan_reorganization,
             actions::apply_action_plan,
