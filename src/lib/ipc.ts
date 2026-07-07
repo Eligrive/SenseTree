@@ -21,14 +21,21 @@ import type {
 export const getConfig = () => invoke<AppConfig>("get_config");
 export const setConfig = (config: AppConfig) => invoke<void>("set_config", { config });
 export const aiHealth = () => invoke<HealthReport>("ai_health");
-export const testChatEndpoint = (baseUrl: string, apiKey: string) =>
-  invoke<string>("test_chat_endpoint", { baseUrl, apiKey });
+export const testChatEndpoint = (baseUrl: string, apiKey: string, model: string) =>
+  invoke<string>("test_chat_endpoint", { baseUrl, apiKey, model });
+export const listInstalledModels = (baseUrl: string, apiKey: string) =>
+  invoke<string[]>("list_installed_models", { baseUrl, apiKey });
+export const pullModel = (baseUrl: string, model: string) =>
+  invoke<string>("pull_model", { baseUrl, model });
+export const reindexAll = () => invoke<void>("reindex_all");
 
 // --- Explorateur ---
 export const listDirectory = (path: string) =>
   invoke<DirEntryInfo[]>("list_directory", { path });
 export const getRoots = () => invoke<string[]>("get_roots");
 export const indexingStats = () => invoke<IndexingStats>("indexing_stats");
+export const setFolderMode = (path: string, mode: "recursive" | "block") =>
+  invoke<void>("set_folder_mode", { path, mode });
 
 // --- Recherche sémantique ---
 export const semanticSearch = (query: string, scope?: string, limit?: number) =>

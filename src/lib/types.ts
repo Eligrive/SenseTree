@@ -50,6 +50,7 @@ export interface DirEntryInfo {
   modified: number | null;
   extension: string | null;
   index_status: string | null;
+  folder_mode: string | null; // 'recursive' | 'block' | null
 }
 
 export interface SearchResult {

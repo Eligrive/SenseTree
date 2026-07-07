@@ -1,10 +1,12 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import {
+  Boxes,
   ChevronRight,
   File as FileIcon,
   FileText,
   FileType2,
   Folder,
+  FolderTree,
   Image as ImageIcon,
   Loader2,
   Search,
@@ -27,18 +29,51 @@ interface Props {
   onExitSearch: () => void;
   scopeToCurrent: boolean;
   onToggleScope: (value: boolean) => void;
+  onSetFolderMode: (path: string, mode: "recursive" | "block") => void;
+}
+
+/// Badge cliquable indiquant/commutant le mode de traitement d'un dossier.
+function FolderModeBadge({
+  entry,
+  onSetFolderMode,
+}: {
+  entry: DirEntryInfo;
+  onSetFolderMode: (path: string, mode: "recursive" | "block") => void;
+}) {
+  const isBlock = entry.folder_mode === "block";
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onSetFolderMode(entry.path, isBlock ? "recursive" : "block");
+      }}
+      title={
+        isBlock
+          ? "Dossier traité comme un bloc sémantique — cliquer pour l'explorer récursivement"
+          : "Dossier exploré récursivement — cliquer pour le traiter comme un bloc"
+      }
+      className={`flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition ${
+        isBlock
+          ? "bg-purple-500/15 text-purple-300 hover:bg-purple-500/25"
+          : "text-zinc-600 opacity-0 hover:bg-zinc-800 hover:text-zinc-300 group-hover:opacity-100"
+      }`}
+    >
+      {isBlock ? <Boxes size={11} /> : <FolderTree size={11} />}
+      {isBlock ? "bloc" : "récursif"}
+    </button>
+  );
 }
 
 function ExtIcon({ entry }: { entry: DirEntryInfo }) {
-  if (entry.is_directory) return <Folder size={17} className="text-blue-400" />;
+  if (entry.is_directory) return <Folder size={15} className="text-blue-400" />;
   const ext = entry.extension ?? "";
   if (["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext))
-    return <ImageIcon size={17} className="text-fuchsia-400" />;
+    return <ImageIcon size={15} className="text-fuchsia-400" />;
   if (["pdf", "docx", "doc"].includes(ext))
-    return <FileType2 size={17} className="text-rose-400" />;
+    return <FileType2 size={15} className="text-rose-400" />;
   if (["txt", "md", "rs", "ts", "tsx", "js", "json", "py"].includes(ext))
-    return <FileText size={17} className="text-emerald-400" />;
-  return <FileIcon size={17} className="text-zinc-400" />;
+    return <FileText size={15} className="text-emerald-400" />;
+  return <FileIcon size={15} className="text-zinc-400" />;
 }
 
 export default function Explorer({
@@ -54,6 +89,7 @@ export default function Explorer({
   onExitSearch,
   scopeToCurrent,
   onToggleScope,
+  onSetFolderMode,
 }: Props) {
   const [query, setQuery] = useState("");
   const crumbs = currentPath ? breadcrumbs(currentPath) : [];
@@ -136,12 +172,12 @@ export default function Explorer({
           </Centered>
         ) : (
           <div className="overflow-hidden rounded-lg border border-zinc-800">
-            <table className="w-full text-sm">
+            <table className="w-full text-[13px]">
               <thead>
-                <tr className="border-b border-zinc-800 bg-zinc-900/50 text-left text-[11px] uppercase tracking-wider text-zinc-500">
-                  <th className="px-4 py-2 font-medium">Nom</th>
-                  <th className="w-28 px-4 py-2 font-medium">Taille</th>
-                  <th className="w-32 px-4 py-2 font-medium">Modifié</th>
+                <tr className="border-b border-zinc-800 bg-zinc-900/50 text-left text-[10px] uppercase tracking-wider text-zinc-500">
+                  <th className="px-3 py-1.5 font-medium">Nom</th>
+                  <th className="w-24 px-3 py-1.5 font-medium">Taille</th>
+                  <th className="w-28 px-3 py-1.5 font-medium">Modifié</th>
                 </tr>
               </thead>
               <tbody>
@@ -151,12 +187,17 @@ export default function Explorer({
                     onDoubleClick={() =>
                       entry.is_directory ? onNavigate(entry.path) : onOpenFile(entry.path)
                     }
-                    className="cursor-default border-b border-zinc-800/50 last:border-0 hover:bg-zinc-900/60"
+                    className="group cursor-default border-b border-zinc-800/40 last:border-0 hover:bg-zinc-900/60"
                   >
-                    <td className="px-4 py-2">
-                      <div className="flex items-center gap-2.5">
-                        <ExtIcon entry={entry} />
+                    <td className="px-3 py-1">
+                      <div className="flex items-center gap-2">
+                        <span className="shrink-0">
+                          <ExtIcon entry={entry} />
+                        </span>
                         <span className="truncate text-zinc-200">{entry.name}</span>
+                        {entry.is_directory && (
+                          <FolderModeBadge entry={entry} onSetFolderMode={onSetFolderMode} />
+                        )}
                         {!entry.is_directory && entry.index_status && (
                           <span
                             title={entry.index_status}
@@ -167,10 +208,10 @@ export default function Explorer({
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-2 text-zinc-500">
+                    <td className="px-3 py-1 text-zinc-500">
                       {entry.is_directory ? "" : formatBytes(entry.size_bytes)}
                     </td>
-                    <td className="px-4 py-2 text-zinc-500">{formatDate(entry.modified)}</td>
+                    <td className="px-3 py-1 text-zinc-500">{formatDate(entry.modified)}</td>
                   </tr>
                 ))}
               </tbody>

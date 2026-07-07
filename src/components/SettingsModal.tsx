@@ -1,7 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Loader2, Plug, Save, X } from "lucide-react";
+import { Download, Loader2, Plug, RefreshCw, RotateCcw, Save, X } from "lucide-react";
 import type { AppConfig, ChatConfig } from "../lib/types";
-import { getConfig, setConfig, testChatEndpoint } from "../lib/ipc";
+import {
+  getConfig,
+  listInstalledModels,
+  pullModel,
+  reindexAll,
+  setConfig,
+  testChatEndpoint,
+} from "../lib/ipc";
 
 interface Props {
   open: boolean;
@@ -16,6 +23,12 @@ const LOCAL_MODELS: { id: string; dims: number }[] = [
   { id: "bge-base-en-v1.5", dims: 768 },
   { id: "all-minilm-l6-v2", dims: 384 },
 ];
+
+// Suggestions de modèles cohérents par rôle (téléchargeables via Ollama).
+const SUGGESTED: Record<"reasoning" | "vision", string[]> = {
+  reasoning: ["llama3.1:8b", "llama3.2:3b", "qwen2.5:7b", "phi3:mini"],
+  vision: ["moondream", "llava", "llama3.2-vision"],
+};
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -34,13 +47,30 @@ const inputCls =
 export default function SettingsModal({ open, onClose, onSaved }: Props) {
   const [cfg, setCfg] = useState<AppConfig | null>(null);
   const [saving, setSaving] = useState(false);
+  const [reindexing, setReindexing] = useState(false);
   const [testMsg, setTestMsg] = useState<Record<string, string>>({});
+  const [pulling, setPulling] = useState<Record<string, boolean>>({});
+  const [installed, setInstalled] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     if (open) getConfig().then(setCfg).catch(() => setCfg(null));
   }, [open]);
 
+  // Charge les modèles installés pour chaque endpoint dès qu'on a la config.
+  useEffect(() => {
+    if (!cfg) return;
+    for (const key of ["reasoning", "vision"] as const) {
+      refreshModels(cfg[key].base_url, cfg[key].api_key);
+    }
+  }, [cfg?.reasoning.base_url, cfg?.vision.base_url]);
+
   if (!open || !cfg) return null;
+
+  const refreshModels = (baseUrl: string, apiKey: string) => {
+    listInstalledModels(baseUrl, apiKey)
+      .then((models) => setInstalled((m) => ({ ...m, [baseUrl]: models })))
+      .catch(() => setInstalled((m) => ({ ...m, [baseUrl]: [] })));
+  };
 
   const patchChat = (key: "reasoning" | "vision", patch: Partial<ChatConfig>) =>
     setCfg({ ...cfg, [key]: { ...cfg[key], ...patch } });
@@ -48,10 +78,24 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   const test = async (key: "reasoning" | "vision") => {
     setTestMsg((m) => ({ ...m, [key]: "…" }));
     try {
-      const res = await testChatEndpoint(cfg[key].base_url, cfg[key].api_key);
+      const res = await testChatEndpoint(cfg[key].base_url, cfg[key].api_key, cfg[key].model);
       setTestMsg((m) => ({ ...m, [key]: `✅ ${res}` }));
     } catch (e) {
       setTestMsg((m) => ({ ...m, [key]: `⚠️ ${String(e)}` }));
+    }
+  };
+
+  const download = async (key: "reasoning" | "vision") => {
+    setPulling((p) => ({ ...p, [key]: true }));
+    setTestMsg((m) => ({ ...m, [key]: `⏳ téléchargement de « ${cfg[key].model} »…` }));
+    try {
+      const res = await pullModel(cfg[key].base_url, cfg[key].model);
+      setTestMsg((m) => ({ ...m, [key]: `✅ ${res}` }));
+      refreshModels(cfg[key].base_url, cfg[key].api_key);
+    } catch (e) {
+      setTestMsg((m) => ({ ...m, [key]: `⚠️ ${String(e)}` }));
+    } finally {
+      setPulling((p) => ({ ...p, [key]: false }));
     }
   };
 
@@ -68,56 +112,108 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
     }
   };
 
-  const chatSection = (key: "reasoning" | "vision", title: string) => (
-    <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-zinc-200">{title}</h3>
-        <label className="flex items-center gap-1.5 text-xs text-zinc-400">
-          <input
-            type="checkbox"
-            checked={cfg[key].enabled}
-            onChange={(e) => patchChat(key, { enabled: e.target.checked })}
-          />
-          Activé
-        </label>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="URL du serveur (base)">
+  const reindex = async () => {
+    setReindexing(true);
+    try {
+      await reindexAll();
+      setTestMsg((m) => ({ ...m, save: "🔄 Réindexation lancée" }));
+    } catch (e) {
+      setTestMsg((m) => ({ ...m, save: `⚠️ ${String(e)}` }));
+    } finally {
+      setReindexing(false);
+    }
+  };
+
+  const chatSection = (key: "reasoning" | "vision", title: string) => {
+    const options = Array.from(
+      new Set([...(installed[cfg[key].base_url] ?? []), ...SUGGESTED[key]])
+    );
+    const isInstalled = (installed[cfg[key].base_url] ?? []).some(
+      (m) => m === cfg[key].model || m.split(":")[0] === cfg[key].model.split(":")[0]
+    );
+    return (
+      <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-zinc-200">{title}</h3>
+          <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <input
+              type="checkbox"
+              checked={cfg[key].enabled}
+              onChange={(e) => patchChat(key, { enabled: e.target.checked })}
+            />
+            Activé
+          </label>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="URL du serveur (base)">
+            <input
+              className={inputCls}
+              value={cfg[key].base_url}
+              onChange={(e) => patchChat(key, { base_url: e.target.value })}
+              placeholder="http://localhost:11434/v1"
+            />
+          </Field>
+          <Field label="Modèle">
+            <div className="flex gap-1.5">
+              <input
+                className={inputCls}
+                list={`models-${key}`}
+                value={cfg[key].model}
+                onChange={(e) => patchChat(key, { model: e.target.value })}
+              />
+              <datalist id={`models-${key}`}>
+                {options.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+              <button
+                onClick={() => download(key)}
+                disabled={pulling[key]}
+                title="Télécharger ce modèle (Ollama)"
+                className="flex shrink-0 items-center rounded-lg bg-zinc-800 px-2.5 text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+              >
+                {pulling[key] ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Download size={14} />
+                )}
+              </button>
+            </div>
+            <span
+              className={`mt-1 block text-[11px] ${isInstalled ? "text-emerald-400" : "text-amber-400"}`}
+            >
+              {isInstalled ? "● installé" : "○ non installé"}
+            </span>
+          </Field>
+        </div>
+        <Field label="Clé API (optionnelle)">
           <input
             className={inputCls}
-            value={cfg[key].base_url}
-            onChange={(e) => patchChat(key, { base_url: e.target.value })}
-            placeholder="http://localhost:11434/v1"
+            type="password"
+            value={cfg[key].api_key}
+            onChange={(e) => patchChat(key, { api_key: e.target.value })}
+            placeholder="vide pour un serveur local"
           />
         </Field>
-        <Field label="Modèle">
-          <input
-            className={inputCls}
-            value={cfg[key].model}
-            onChange={(e) => patchChat(key, { model: e.target.value })}
-          />
-        </Field>
-      </div>
-      <Field label="Clé API (optionnelle)">
-        <input
-          className={inputCls}
-          type="password"
-          value={cfg[key].api_key}
-          onChange={(e) => patchChat(key, { api_key: e.target.value })}
-          placeholder="vide pour un serveur local"
-        />
-      </Field>
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => test(key)}
-          className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700"
-        >
-          <Plug size={13} /> Tester la connexion
-        </button>
-        {testMsg[key] && <span className="text-xs text-zinc-400">{testMsg[key]}</span>}
-      </div>
-    </section>
-  );
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => test(key)}
+            className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700"
+          >
+            <Plug size={13} /> Tester
+          </button>
+          <button
+            onClick={() => refreshModels(cfg[key].base_url, cfg[key].api_key)}
+            title="Rafraîchir la liste des modèles installés"
+            className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700"
+          >
+            <RefreshCw size={13} />
+          </button>
+          {testMsg[key] && <span className="text-xs text-zinc-400">{testMsg[key]}</span>}
+        </div>
+      </section>
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
@@ -226,7 +322,7 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
               </label>
             )}
             <p className="rounded-md bg-amber-500/10 px-2 py-1 text-[11px] text-amber-400/90">
-              Changer de modèle/dimensions nécessite une ré-indexation complète.
+              Changer de modèle/dimensions nécessite une réindexation complète.
             </p>
           </section>
 
@@ -234,8 +330,22 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
           {chatSection("vision", "Vision (multimodal)")}
         </div>
 
-        <div className="flex items-center justify-between border-t border-zinc-800 px-5 py-3">
-          <span className="text-xs text-zinc-500">{testMsg.save}</span>
+        <div className="flex items-center justify-between gap-3 border-t border-zinc-800 px-5 py-3">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={reindex}
+              disabled={reindexing}
+              className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
+            >
+              {reindexing ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <RotateCcw size={14} />
+              )}
+              Réindexer tout
+            </button>
+            {testMsg.save && <span className="text-xs text-zinc-500">{testMsg.save}</span>}
+          </div>
           <button
             onClick={save}
             disabled={saving}

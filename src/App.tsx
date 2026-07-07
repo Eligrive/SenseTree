@@ -22,6 +22,7 @@ import {
   indexingStats,
   listDirectory,
   semanticSearch,
+  setFolderMode,
 } from "./lib/ipc";
 
 export default function App() {
@@ -111,6 +112,12 @@ export default function App() {
     openPath(path).catch((e) => console.error("openPath:", e));
   };
 
+  const changeFolderMode = (path: string, mode: "recursive" | "block") => {
+    setFolderMode(path, mode)
+      .then(() => currentPath && navigate(currentPath))
+      .catch((e) => console.error("set_folder_mode:", e));
+  };
+
   const analyze = () => {
     if (!currentPath) return;
     setReport(null);
@@ -146,6 +153,7 @@ export default function App() {
           onExitSearch={() => setSearchMode(false)}
           scopeToCurrent={scopeToCurrent}
           onToggleScope={setScopeToCurrent}
+          onSetFolderMode={changeFolderMode}
         />
       </main>
 
