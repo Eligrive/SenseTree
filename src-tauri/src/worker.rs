@@ -100,6 +100,18 @@ async fn process_task(
         return index_folder_block(state, embedder, path, mtime).await;
     }
 
+    // Garde-fou : un fichier dont le dossier parent est un bloc ne doit JAMAIS être
+    // indexé individuellement (utile pour les tâches restées en file après une
+    // bascule manuelle du dossier en mode bloc).
+    if let Some(parent) = p.parent() {
+        if let Ok(Some((mode, _))) = state.db.get_folder_mode(&parent.to_string_lossy()) {
+            if mode == "block" {
+                let _ = state.db.remove_from_queue(path);
+                return Ok(());
+            }
+        }
+    }
+
     let file_type = Parser::determine_file_type(p);
 
     match file_type {

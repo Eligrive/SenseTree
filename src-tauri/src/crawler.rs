@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 use crate::db::FileMeta;
-use crate::folders::{self, FolderMode};
+use crate::folders::{self, Decision};
 use crate::parser::{FileType, Parser};
 use crate::state::AppState;
 
@@ -24,7 +24,8 @@ pub fn scan_directory(state: Arc<AppState>, start_path: &str) {
     tracing::info!("🕷️ Crawler démarré sur : {start_path}");
 
     let mut catalog_batch: Vec<FileMeta> = Vec::with_capacity(CATALOG_FLUSH);
-    let (mut scanned, mut queued, mut skipped, mut blocks) = (0u64, 0u64, 0u64, 0u64);
+    let (mut scanned, mut queued, mut skipped, mut blocks, mut deferred) =
+        (0u64, 0u64, 0u64, 0u64, 0u64);
 
     let mut it = WalkDir::new(start_path).into_iter();
     loop {
@@ -76,12 +77,18 @@ pub fn scan_directory(state: Arc<AppState>, start_path: &str) {
             }
             // Décision récursif vs bloc (conservative : bloc seulement si sûr / IA).
             match folders::resolve_mode(&state, path) {
-                FolderMode::Block => {
+                Decision::Block => {
                     let _ = db.enqueue_path(&path_str, Some("pending_extraction"), 6);
                     blocks += 1;
                     it.skip_current_dir(); // on n'explore pas un bloc
                 }
-                FolderMode::Recursive => { /* on descend normalement */ }
+                Decision::Defer => {
+                    // Décision reportée (IA indisponible) : on n'explore pas encore.
+                    // Le classifieur reprendra ce dossier dès que l'IA sera dispo.
+                    deferred += 1;
+                    it.skip_current_dir();
+                }
+                Decision::Recursive => { /* on descend normalement */ }
             }
             continue;
         }
@@ -112,7 +119,7 @@ pub fn scan_directory(state: Arc<AppState>, start_path: &str) {
     }
 
     tracing::info!(
-        "✅ Scan de {start_path} terminé en {:.2?}. Fichiers: {scanned}, à jour: {skipped}, en file: {queued}, blocs: {blocks}, orphelins: {}.",
+        "✅ Scan de {start_path} terminé en {:.2?}. Fichiers: {scanned}, à jour: {skipped}, en file: {queued}, blocs: {blocks}, reportés: {deferred}, orphelins: {}.",
         start_time.elapsed(),
         orphans.len()
     );

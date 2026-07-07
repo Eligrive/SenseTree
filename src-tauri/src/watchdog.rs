@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crate::folders::{self, FolderMode};
+use crate::folders::{self, Decision};
 use crate::parser::{FileType, Parser};
 use crate::state::AppState;
 
@@ -64,9 +64,11 @@ fn handle_batch(state: &AppState, events: Vec<notify_debouncer_mini::DebouncedEv
             if folders::hard_ignore(&path_buf.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) {
                 continue;
             }
-            if folders::resolve_mode(state, &path_buf) == FolderMode::Block {
+            if folders::resolve_mode(state, &path_buf) == Decision::Block {
                 let _ = db.enqueue_path(&path_str, Some("pending_extraction"), 6);
             }
+            // (Recursive → ses fichiers arriveront via leurs propres événements ;
+            //  Defer → dossier marqué en attente, repris par le classifieur.)
             continue;
         }
 
@@ -80,10 +82,18 @@ fn handle_batch(state: &AppState, events: Vec<notify_debouncer_mini::DebouncedEv
             if folders::hard_ignore(&parent_name) {
                 continue;
             }
-            if folders::resolve_mode(state, parent) == FolderMode::Block {
-                // Fichier interne à un bloc : on rafraîchit le bloc, pas le fichier.
-                let _ = db.enqueue_path(&parent.to_string_lossy(), Some("pending_extraction"), 6);
-                continue;
+            match folders::resolve_mode(state, parent) {
+                Decision::Block => {
+                    // Fichier interne à un bloc : on rafraîchit le bloc, pas le fichier.
+                    let _ = db.enqueue_path(&parent.to_string_lossy(), Some("pending_extraction"), 6);
+                    continue;
+                }
+                Decision::Defer => {
+                    // Dossier parent en attente de classification IA : on ne fait
+                    // rien pour l'instant (le classifieur tranchera plus tard).
+                    continue;
+                }
+                Decision::Recursive => { /* dossier récursif : on indexe le fichier */ }
             }
         }
 

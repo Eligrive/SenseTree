@@ -88,6 +88,8 @@ pub struct IndexingStats {
     pub pending: i64,
     pub completed: i64,
     pub failed: i64,
+    /// Dossiers dont la classification est reportée faute d'IA disponible.
+    pub pending_folders: i64,
 }
 
 impl Database {
@@ -216,7 +218,7 @@ impl Database {
         // worker ne lit pas…). On purge alors les tables DÉRIVÉES (toutes
         // régénérables : tracking, file d'attente, résumés) pour forcer une
         // ré-indexation propre. Les fichiers de l'utilisateur ne sont jamais touchés.
-        const SCHEMA_VERSION: i64 = 4;
+        const SCHEMA_VERSION: i64 = 5;
         let current: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap_or(0);
@@ -238,6 +240,15 @@ impl Database {
                  DELETE FROM indexed_files \
                    WHERE path IN (SELECT path FROM file_catalog WHERE content_hash LIKE 'ctx:%');",
             );
+        }
+
+        // v5 : la logique de classification des dossiers a changé (LLM-centrée,
+        // moins agressive). On repart de zéro sur les profils pour tout reclasser ;
+        // les dossiers auparavant bloqués à tort verront leurs fichiers ré-indexés
+        // au prochain scan (ils n'étaient pas dans indexed_files).
+        if current < 5 {
+            tracing::info!("reclassification des dossiers (v{current}→v5) : profils réinitialisés");
+            let _ = conn.execute_batch("DELETE FROM folder_profiles;");
         }
 
         if current < SCHEMA_VERSION {
@@ -775,7 +786,7 @@ impl Database {
     /// Compte l'avancement de l'indexation par statut.
     pub fn get_indexing_stats(&self) -> Result<IndexingStats> {
         let conn = self.conn()?;
-        conn.query_row(
+        let mut stats = conn.query_row(
             r#"
             SELECT
                 COUNT(*),
@@ -791,10 +802,32 @@ impl Database {
                     pending: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
                     completed: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
                     failed: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    pending_folders: 0,
                 })
             },
-        )
-        .map_err(Into::into)
+        )?;
+        stats.pending_folders = conn
+            .query_row(
+                "SELECT COUNT(*) FROM folder_profiles WHERE mode = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(stats)
+    }
+
+    /// Renvoie un lot de dossiers en attente de classification (mode 'pending').
+    pub fn get_pending_folders(&self, limit: i64) -> Result<Vec<String>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT path FROM folder_profiles WHERE mode = 'pending' ORDER BY updated_at ASC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     pub fn get_recent_files(&self, limit: i64) -> Result<Vec<FileRecord>> {

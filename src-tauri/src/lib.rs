@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod chunker;
+pub mod classifier;
 pub mod config;
 pub mod crawler;
 pub mod db;
@@ -141,10 +142,17 @@ async fn test_chat_endpoint(
     }
 }
 
-/// Télécharge un modèle via l'API Ollama (POST /api/pull). Spécifique à Ollama :
-/// pour un serveur non-Ollama, renvoie une erreur explicite.
+/// Télécharge un modèle via l'API Ollama (POST /api/pull) en STREAMING, et émet
+/// des événements `model-pull-progress` pour la barre de progression de l'UI.
 #[tauri::command]
-async fn pull_model(base_url: String, model: String) -> Result<String, String> {
+async fn pull_model(
+    app: tauri::AppHandle,
+    base_url: String,
+    model: String,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+
     // base_url ~ http://host:11434/v1 → racine Ollama = http://host:11434
     let root = base_url
         .trim_end_matches('/')
@@ -152,20 +160,62 @@ async fn pull_model(base_url: String, model: String) -> Result<String, String> {
         .to_string();
     let url = format!("{root}/api/pull");
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(1800)) // gros modèles = plusieurs minutes
+        .timeout(Duration::from_secs(3600))
         .build()
         .map_err(|e| e.to_string())?;
     let resp = client
         .post(&url)
-        .json(&serde_json::json!({ "name": model, "stream": false }))
+        .json(&serde_json::json!({ "name": model, "stream": true }))
         .send()
         .await
         .map_err(|e| format!("téléchargement impossible (serveur Ollama ?) : {e}"))?;
-    if resp.status().is_success() {
-        Ok(format!("Modèle « {model} » téléchargé"))
-    } else {
-        Err(format!("échec du téléchargement : {}", resp.status()))
+    if !resp.status().is_success() {
+        return Err(format!("échec du téléchargement : {}", resp.status()));
     }
+
+    let emit = |status: &str, completed: u64, total: u64| {
+        let percent = if total > 0 {
+            (completed as f64 / total as f64 * 100.0).round() as u32
+        } else {
+            0
+        };
+        let _ = app.emit(
+            "model-pull-progress",
+            serde_json::json!({
+                "model": model,
+                "status": status,
+                "completed": completed,
+                "total": total,
+                "percent": percent,
+            }),
+        );
+    };
+
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        // Ollama renvoie du NDJSON : une ligne JSON par mise à jour.
+        while let Some(pos) = buf.find('\n') {
+            let line: String = buf.drain(..=pos).collect();
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                    return Err(err.to_string());
+                }
+                let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                let total = v.get("total").and_then(|t| t.as_u64()).unwrap_or(0);
+                let completed = v.get("completed").and_then(|c| c.as_u64()).unwrap_or(0);
+                emit(status, completed, total);
+            }
+        }
+    }
+    emit("success", 1, 1);
+    Ok(format!("Modèle « {model} » téléchargé"))
 }
 
 /// Réinitialise complètement l'index et relance un scan des racines.
@@ -269,6 +319,7 @@ pub fn run() {
             }
             watchdog::start_watching(app_state.clone(), roots);
             worker::start_worker(app_state.clone());
+            classifier::start_classifier(app_state.clone());
 
             tracing::info!("✅ SenseTree prêt. DB={:?}", db_path);
             Ok(())
