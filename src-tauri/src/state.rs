@@ -1,0 +1,18 @@
+//! État applicatif partagé entre les threads de fond et les commandes IPC.
+
+use std::sync::Arc;
+
+use crate::config::ConfigStore;
+use crate::db::Database;
+use crate::providers::AiEngine;
+use crate::vectordb::VectorDb;
+
+/// Regroupe les composants long-vivants (DB relationnelle, config, moteur IA,
+/// base vectorielle). Partagé via `Arc` au crawler, au watchdog, au worker et
+/// aux commandes Tauri.
+pub struct AppState {
+    pub db: Arc<Database>,
+    pub config: Arc<ConfigStore>,
+    pub ai: Arc<AiEngine>,
+    pub vector: Arc<VectorDb>,
+}
