@@ -178,8 +178,14 @@ impl VectorDb {
             .limit(limit);
 
         if let Some(prefix) = scope_prefix {
-            let escaped = prefix.replace('\'', "''");
-            query = query.only_if(format!("path LIKE '{escaped}%'"));
+            // On restreint aux descendants du dossier. Attention : dans DataFusion
+            // (moteur de filtre de LanceDB) l'antislash est le caractère d'échappement
+            // par défaut de LIKE — il faut donc échapper `\`, `%` et `_` des chemins
+            // Windows, sinon `C:\...` ne matche jamais.
+            let trimmed = prefix.trim_end_matches(['/', '\\']);
+            let with_sep = format!("{trimmed}{}", std::path::MAIN_SEPARATOR);
+            let pattern = like_escape_datafusion(&with_sep).replace('\'', "''");
+            query = query.only_if(format!("path LIKE '{pattern}%'"));
         }
 
         let batches: Vec<RecordBatch> = query
@@ -215,9 +221,27 @@ impl VectorDb {
         Ok(hits)
     }
 
+    /// Vide entièrement la base vectorielle (réindexation complète).
+    pub async fn clear(&self) -> Result<()> {
+        // drop_table échoue si la table n'existe pas encore : on ignore ce cas.
+        self.conn.drop_table(TABLE, &[]).await.ok();
+        Ok(())
+    }
+
     pub async fn delete_by_path(&self, path: &str) -> Result<()> {
         if let Ok(table) = self.conn.open_table(TABLE).execute().await {
             table.delete(&path_filter(path)).await.ok();
+        }
+        Ok(())
+    }
+
+    /// Supprime tous les vecteurs des fichiers situés SOUS un dossier (bascule en bloc).
+    pub async fn delete_under(&self, folder: &str) -> Result<()> {
+        if let Ok(table) = self.conn.open_table(TABLE).execute().await {
+            let trimmed = folder.trim_end_matches(['/', '\\']);
+            let with_sep = format!("{trimmed}{}", std::path::MAIN_SEPARATOR);
+            let pattern = like_escape_datafusion(&with_sep).replace('\'', "''");
+            table.delete(&format!("path LIKE '{pattern}%'")).await.ok();
         }
         Ok(())
     }
@@ -243,6 +267,19 @@ impl VectorDb {
 fn path_filter(path: &str) -> String {
     let escaped = path.replace('\'', "''");
     format!("path = '{escaped}'")
+}
+
+/// Échappe les métacaractères LIKE de DataFusion (`\`, `%`, `_`) en les préfixant
+/// de l'antislash (caractère d'échappement par défaut de DataFusion).
+fn like_escape_datafusion(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 8);
+    for ch in input.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn column_as_string<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray> {

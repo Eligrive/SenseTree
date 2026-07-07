@@ -192,6 +192,15 @@ impl Database {
                 doc_type TEXT,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            -- Mode de traitement d'un dossier : 'recursive' (indexation fichier par
+            -- fichier) ou 'block' (indexé comme une unité sémantique unique).
+            CREATE TABLE IF NOT EXISTS folder_profiles (
+                path TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                source TEXT NOT NULL,        -- 'heuristic' | 'llm' | 'manual'
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             "#,
         )?;
 
@@ -207,20 +216,45 @@ impl Database {
         // worker ne lit pas…). On purge alors les tables DÉRIVÉES (toutes
         // régénérables : tracking, file d'attente, résumés) pour forcer une
         // ré-indexation propre. Les fichiers de l'utilisateur ne sont jamais touchés.
-        const SCHEMA_VERSION: i64 = 3;
+        const SCHEMA_VERSION: i64 = 4;
         let current: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap_or(0);
-        if current < SCHEMA_VERSION {
-            tracing::info!(
-                "réconciliation de l'index (schéma v{current} → v{SCHEMA_VERSION}) : ré-indexation forcée"
-            );
+
+        // v3 : réconciliation complète (état de synchro hérité incohérent).
+        if current < 3 {
+            tracing::info!("réconciliation de l'index (v{current}→v3) : ré-indexation forcée");
             let _ = conn.execute_batch(
                 "DELETE FROM indexed_files; DELETE FROM indexing_queue; DELETE FROM file_semantics;",
             );
+        }
+        // v4 : ré-extraire seulement les fichiers indexés « par contexte » (hash 'ctx:%'),
+        // pour récupérer notamment les PDF désormais déchiffrables — sans tout re-wiper.
+        if current < 4 {
+            tracing::info!("ré-extraction ciblée des fichiers indexés par contexte (v{current}→v4)");
+            let _ = conn.execute_batch(
+                "UPDATE indexing_queue SET status='pending_extraction', retry_count=0, last_error=NULL \
+                   WHERE path IN (SELECT path FROM file_catalog WHERE content_hash LIKE 'ctx:%'); \
+                 DELETE FROM indexed_files \
+                   WHERE path IN (SELECT path FROM file_catalog WHERE content_hash LIKE 'ctx:%');",
+            );
+        }
+
+        if current < SCHEMA_VERSION {
             let _ = conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"));
         }
 
+        Ok(())
+    }
+
+    /// Réinitialise entièrement l'index (tables dérivées régénérables). Le crawler
+    /// et le worker reconstruiront tout. Les fichiers de l'utilisateur sont intacts.
+    pub fn reset_index(&self) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute_batch(
+            "DELETE FROM indexed_files; DELETE FROM indexing_queue; \
+             DELETE FROM file_semantics; UPDATE file_catalog SET content_hash = NULL;",
+        )?;
         Ok(())
     }
 
@@ -535,6 +569,83 @@ impl Database {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    // =====================================================================
+    // PROFILS DE DOSSIERS (récursif vs bloc sémantique)
+    // =====================================================================
+
+    /// Renvoie le mode connu d'un dossier : (mode, source).
+    pub fn get_folder_mode(&self, path: &str) -> Result<Option<(String, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT mode, source FROM folder_profiles WHERE path = ?1")?;
+        let mut rows = stmt.query(params![path])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((row.get(0)?, row.get(1)?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Enregistre une classification automatique (heuristique/LLM) — sans jamais
+    /// écraser un choix manuel de l'utilisateur.
+    pub fn set_folder_profile(&self, path: &str, mode: &str, source: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            r#"
+            INSERT INTO folder_profiles (path, mode, source, updated_at)
+            VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP)
+            ON CONFLICT(path) DO UPDATE SET
+                mode = excluded.mode,
+                source = excluded.source,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE folder_profiles.source != 'manual'
+            "#,
+            params![path, mode, source],
+        )?;
+        Ok(())
+    }
+
+    /// Force un choix manuel (prioritaire sur toute classification automatique).
+    pub fn set_folder_profile_manual(&self, path: &str, mode: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            r#"
+            INSERT INTO folder_profiles (path, mode, source, updated_at)
+            VALUES (?1, ?2, 'manual', CURRENT_TIMESTAMP)
+            ON CONFLICT(path) DO UPDATE SET
+                mode = excluded.mode, source = 'manual', updated_at = CURRENT_TIMESTAMP
+            "#,
+            params![path, mode],
+        )?;
+        Ok(())
+    }
+
+    /// Modes des dossiers situés directement sous `parent` (pour les badges de l'explorateur).
+    pub fn folder_modes_under(&self, parent: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT path, mode FROM folder_profiles WHERE path LIKE ?1 ESCAPE '\\'")?;
+        let rows = stmt.query_map(params![like_prefix(parent)], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Purge toutes les données d'index des ENFANTS d'un dossier (utilisé quand un
+    /// dossier passe en mode bloc : on retire l'indexation fichier par fichier).
+    pub fn purge_children(&self, folder: &str) -> Result<()> {
+        let conn = self.conn()?;
+        let pattern = like_prefix(&format!("{}{}", folder.trim_end_matches(['/', '\\']), std::path::MAIN_SEPARATOR));
+        for table in ["indexed_files", "file_semantics", "indexing_queue", "file_catalog"] {
+            let sql = format!("DELETE FROM {table} WHERE path LIKE ?1 ESCAPE '\\'");
+            conn.execute(&sql, params![pattern])?;
+        }
+        Ok(())
     }
 
     // =====================================================================

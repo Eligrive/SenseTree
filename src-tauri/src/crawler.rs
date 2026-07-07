@@ -1,34 +1,42 @@
 //! Crawler d'indexation initiale (le « passé »).
 //!
-//! Parcourt récursivement une racine, alimente le catalogue de fichiers, met en
-//! file les fichiers nouveaux/modifiés et purge les orphelins (via la file, pour
-//! que le worker asynchrone supprime aussi leurs vecteurs).
+//! Parcourt récursivement une racine. À chaque dossier rencontré, il décide via
+//! `folders::resolve_mode` s'il faut l'explorer (récursif) ou le traiter comme un
+//! bloc sémantique unique (dans ce cas on ne descend pas dedans). Alimente le
+//! catalogue, met en file les fichiers/blocs, et purge les orphelins.
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
 
-use crate::db::{Database, FileMeta};
+use crate::db::FileMeta;
+use crate::folders::{self, FolderMode};
 use crate::parser::{FileType, Parser};
+use crate::state::AppState;
 
 const CATALOG_FLUSH: usize = 256;
 
-pub fn scan_directory(db: Arc<Database>, start_path: &str) {
+pub fn scan_directory(state: Arc<AppState>, start_path: &str) {
     let start_time = Instant::now();
     let scan_time = now_epoch();
+    let db = &state.db;
 
     tracing::info!("🕷️ Crawler démarré sur : {start_path}");
 
-    let walker = WalkDir::new(start_path)
-        .into_iter()
-        .filter_entry(|e| !is_system_or_ignored_dir(e));
-
     let mut catalog_batch: Vec<FileMeta> = Vec::with_capacity(CATALOG_FLUSH);
-    let (mut scanned, mut queued, mut skipped) = (0u64, 0u64, 0u64);
+    let (mut scanned, mut queued, mut skipped, mut blocks) = (0u64, 0u64, 0u64, 0u64);
 
-    for entry in walker.filter_map(|e| e.ok()) {
+    let mut it = WalkDir::new(start_path).into_iter();
+    loop {
+        let entry = match it.next() {
+            None => break,
+            Some(Err(_)) => continue,
+            Some(Ok(e)) => e,
+        };
+
         let path = entry.path();
-        let is_dir = path.is_dir();
+        let depth = entry.depth();
+        let is_dir = entry.file_type().is_dir();
         let path_str = path.to_string_lossy().to_string();
 
         let (size, mtime) = match std::fs::metadata(path) {
@@ -43,7 +51,6 @@ pub fn scan_directory(db: Arc<Database>, start_path: &str) {
             Err(_) => (None, 0),
         };
 
-        // Alimente le catalogue (dossiers ET fichiers) pour l'explorateur et le gardener.
         catalog_batch.push(FileMeta {
             path: path_str.clone(),
             parent_path: path.parent().map(|p| p.to_string_lossy().to_string()),
@@ -58,20 +65,36 @@ pub fn scan_directory(db: Arc<Database>, start_path: &str) {
         }
 
         if is_dir {
+            // La racine est toujours explorée.
+            if depth == 0 {
+                continue;
+            }
+            // Dossiers systèmes/techniques : jamais indexés, on ne descend pas.
+            if folders::hard_ignore(&entry.file_name().to_string_lossy()) {
+                it.skip_current_dir();
+                continue;
+            }
+            // Décision récursif vs bloc (conservative : bloc seulement si sûr / IA).
+            match folders::resolve_mode(&state, path) {
+                FolderMode::Block => {
+                    let _ = db.enqueue_path(&path_str, Some("pending_extraction"), 6);
+                    blocks += 1;
+                    it.skip_current_dir(); // on n'explore pas un bloc
+                }
+                FolderMode::Recursive => { /* on descend normalement */ }
+            }
             continue;
         }
 
+        // --- Fichier (dans un dossier récursif) ---
         scanned += 1;
-        // On marque « vu » (pour la détection d'orphelins) sans prétendre l'avoir indexé.
         let _ = db.touch_seen(&path_str, scan_time);
 
-        // Fichier déjà indexé et inchangé : on n'ouvre même pas le parser.
         if !db.needs_indexing(&path_str, mtime).unwrap_or(true) {
             skipped += 1;
             continue;
         }
 
-        // File unifiée : le worker re-déterminera le type et choisira la voie d'extraction.
         if Parser::determine_file_type(path) != FileType::Ignored {
             let _ = db.enqueue_path(&path_str, Some("pending_extraction"), 5);
             queued += 1;
@@ -82,14 +105,14 @@ pub fn scan_directory(db: Arc<Database>, start_path: &str) {
         let _ = db.bulk_upsert_file_records(&catalog_batch);
     }
 
-    // Orphelins : on les remet en file pour que le worker purge leurs vecteurs.
+    // Orphelins : remis en file pour que le worker purge leurs vecteurs.
     let orphans = db.take_orphans(scan_time, start_path).unwrap_or_default();
     for orphan in &orphans {
         let _ = db.enqueue_path(orphan, Some("pending_extraction"), 8);
     }
 
     tracing::info!(
-        "✅ Scan de {start_path} terminé en {:.2?}. Vus: {scanned}, à jour: {skipped}, en file: {queued}, orphelins: {}.",
+        "✅ Scan de {start_path} terminé en {:.2?}. Fichiers: {scanned}, à jour: {skipped}, en file: {queued}, blocs: {blocks}, orphelins: {}.",
         start_time.elapsed(),
         orphans.len()
     );
@@ -100,18 +123,4 @@ fn now_epoch() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
-}
-
-/// Bouclier CPU : exclut les dossiers systèmes/techniques du parcours.
-fn is_system_or_ignored_dir(entry: &DirEntry) -> bool {
-    let name = entry.file_name().to_string_lossy();
-    if entry.file_type().is_dir() {
-        return name.starts_with('.')
-            || name == "node_modules"
-            || name == "target"
-            || name == "AppData"
-            || name == "Windows"
-            || name == "$RECYCLE.BIN";
-    }
-    name.starts_with('.')
 }

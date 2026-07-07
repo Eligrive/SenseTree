@@ -21,6 +21,8 @@ pub struct DirEntryInfo {
     pub extension: Option<String>,
     /// Statut d'indexation issu de la file (`completed`, `pending_extraction`, `failed_permanent`…).
     pub index_status: Option<String>,
+    /// Mode de traitement si c'est un dossier : `recursive` | `block` (ou None si non profilé).
+    pub folder_mode: Option<String>,
 }
 
 /// Liste le contenu direct d'un dossier, trié (dossiers d'abord, puis alphabétique).
@@ -36,6 +38,13 @@ pub async fn list_directory(
     let statuses: HashMap<String, String> = state
         .db
         .queue_statuses_for_parent(&normalized)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
+    // Modes de traitement des sous-dossiers (badges bloc/récursif).
+    let folder_modes: HashMap<String, String> = state
+        .db
+        .folder_modes_under(&normalized)
         .map_err(|e| e.to_string())?
         .into_iter()
         .collect();
@@ -70,6 +79,7 @@ pub async fn list_directory(
 
         entries.push(DirEntryInfo {
             index_status: statuses.get(&path_str).cloned(),
+            folder_mode: if is_dir { folder_modes.get(&path_str).cloned() } else { None },
             path: path_str,
             name,
             is_directory: is_dir,

@@ -9,6 +9,7 @@
 //!   * Visuelle   : images → modèle de vision (légende) si activé.
 //!   * Contextuelle : fichiers illisibles (VM, binaires) → nom + dossier + type.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
@@ -93,6 +94,12 @@ async fn process_task(
     }
 
     let mtime = modified_epoch(p);
+
+    // Un dossier dans la file = dossier traité comme « bloc sémantique » unique.
+    if p.is_dir() {
+        return index_folder_block(state, embedder, path, mtime).await;
+    }
+
     let file_type = Parser::determine_file_type(p);
 
     match file_type {
@@ -189,6 +196,18 @@ async fn index_image(
         return index_context_only(state, embedder, path, mtime, "image").await;
     }
 
+    // Les modèles de vision ne gèrent que les formats raster courants ; on évite
+    // d'envoyer .ico/.cur/.svg (400 « invalid image input ») et on les indexe par contexte.
+    const VISION_FORMATS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp"];
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !VISION_FORMATS.contains(&ext.as_str()) {
+        return index_context_only(state, embedder, path, mtime, "image").await;
+    }
+
     // Lecture + encodage base64 hors runtime async.
     let path_owned = path.to_string();
     let encoded = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
@@ -259,6 +278,52 @@ async fn index_context_only(
     let _ = state.db.mark_indexed(path, mtime);
 
     tracing::info!("🧩 indexé par contexte ({kind}) : {path}");
+    Ok(())
+}
+
+/// Indexe un dossier comme une seule unité sémantique (nom + contenu résumé),
+/// sans descendre dedans. Rend le dossier trouvable en recherche (« mes
+/// instruments Ableton ») sans polluer l'index avec chacun de ses fichiers.
+async fn index_folder_block(
+    state: &AppState,
+    embedder: &dyn EmbeddingProvider,
+    path: &str,
+    mtime: i64,
+) -> anyhow::Result<()> {
+    let p = Path::new(path);
+    let entries = crate::folders::read_dir_sample(p, 100);
+    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let parent = p.parent().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let count = entries.len();
+
+    let mut ext_counts: HashMap<String, usize> = HashMap::new();
+    for e in &entries {
+        if let Some(ext) = &e.ext {
+            *ext_counts.entry(ext.clone()).or_insert(0) += 1;
+        }
+    }
+    let mut exts: Vec<(String, usize)> = ext_counts.into_iter().collect();
+    exts.sort_by(|a, b| b.1.cmp(&a.1));
+    let top_exts = exts.iter().take(5).map(|(e, _)| e.clone()).collect::<Vec<_>>().join(", ");
+    let sample = entries.iter().take(30).map(|e| e.name.clone()).collect::<Vec<_>>().join(", ");
+
+    let text = format!(
+        "Dossier (bloc): {name}. Emplacement: {parent}. {count} éléments. Types: {top_exts}. Exemples: {sample}."
+    );
+    let hash = format!("block:{:x}", Sha256::digest(format!("{path}:{mtime}:{count}").as_bytes()));
+
+    let vector = embedder.embed_documents(vec![text.clone()]).await?;
+    let chunk = ChunkVector {
+        chunk_index: 0,
+        text: text.clone(),
+        vector: vector.into_iter().next().unwrap_or_default(),
+    };
+    state.vector.upsert_chunks(path, &hash, mtime, vec![chunk]).await?;
+    let _ = state.db.update_file_hash(path, &hash);
+    let _ = state.db.upsert_file_summary(path, &text, "folder-block");
+    let _ = state.db.mark_indexed(path, mtime);
+
+    tracing::info!("📦 dossier indexé en bloc : {path}");
     Ok(())
 }
 
@@ -335,14 +400,24 @@ fn extract_text(path: &str) -> anyhow::Result<String> {
 }
 
 fn extract_pdf_text(path: &str) -> anyhow::Result<String> {
-    match pdf_extract::extract_text(path) {
-        Ok(text) => Ok(text.trim().to_string()),
-        // PDF scanné/opaque : on renvoie une chaîne vide → repli contextuel en amont.
-        Err(e) => {
-            tracing::debug!("PDF non extractible ({path}): {e}");
-            Ok(String::new())
+    // 1) Extraction standard.
+    if let Ok(text) = pdf_extract::extract_text(path) {
+        let t = text.trim();
+        if t.len() >= 20 {
+            return Ok(t.to_string());
         }
     }
+    // 2) PDF chiffré avec mot de passe utilisateur vide (restrictions de copie) :
+    //    fréquent sur les documents officiels. On tente le déchiffrement.
+    if let Ok(text) = pdf_extract::extract_text_encrypted(path, "") {
+        let t = text.trim();
+        if !t.is_empty() {
+            tracing::debug!("PDF déchiffré (mot de passe vide) : {path}");
+            return Ok(t.to_string());
+        }
+    }
+    // 3) PDF scanné/opaque (images) : chaîne vide → repli contextuel (OCR à venir).
+    Ok(String::new())
 }
 
 fn extract_docx_text(path: &str) -> anyhow::Result<String> {
