@@ -17,22 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-[features]
-# CUDA est OPT-IN (jamais par défaut). Raison : activer `ort/cuda` force TOUT
-# ONNX Runtime (fastembed inclus) à charger le binaire CUDA d'ORT, qui ÉCHOUE à
-# s'initialiser sur une machine sans runtime CUDA (« Failed to initialize ORT
-# API ») — ce n'est pas un repli CPU gracieux. Le build par défaut reste donc CPU
-# (portable partout). Pour le GPU, compiler SUR une machine NVIDIA + CUDA avec :
-#   tauri build -- --features cuda        (ou `cargo build --features cuda`)
-# La case « Utiliser le GPU » n'a d'effet que sur un binaire ainsi compilé.
-# Pour offloader l'indexation sur un GPU distant sans build CUDA : utiliser le
-# mode embedding « Serveur HTTP » pointé sur un autre PC (déjà supporté).
-cuda = ["dep:ort", "ort/cuda"]
-
 [dependencies]
-# ort n'est tiré directement que pour la feature `cuda` (fastembed l'embarque
-# déjà en transitif ; on aligne la version pour l'unification de features).
-ort = { version = "=2.0.0-rc.9", default-features = false, optional = true }
 anyhow = "1"
 crossbeam-channel = "0.5"
 lancedb = "0.31"
@@ -54,8 +39,13 @@ zip = "8.6.0"
 arrow-array = "59.0.0"
 arrow-schema = "59.0.0"
 futures-util = "0.3.32"
-fastembed = "4"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# ONNX Runtime chargé DYNAMIQUEMENT (via ORT_DYLIB_PATH) : on fournit nous-mêmes
+# la lib ORT (CPU ou GPU) au runtime → un seul binaire, choix GPU/CPU sans recompiler.
+fastembed = { version = "4", default-features = false, features = ["ort-load-dynamic", "hf-hub-native-tls"] }
+# ort en direct (même version que fastembed, load-dynamic partagé) pour pouvoir
+# demander le provider CUDA au runtime.
+ort = { version = "=2.0.0-rc.9", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "blocking"] }
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"

@@ -62,25 +62,17 @@ impl LocalEmbedder {
     pub fn load(cfg: &EmbeddingConfig, batch_size: usize) -> Result<Self> {
         let (model_kind, dimensions, needs_e5_prefix) = resolve_local_model(&cfg.model);
 
-        #[allow(unused_mut)]
         let mut options = fastembed::InitOptions::new(model_kind).with_show_download_progress(false);
 
         if cfg.use_gpu {
-            // L'accélération GPU n'existe que si le binaire est compilé `--features cuda`
-            // ET que le runtime CUDA est présent. Sinon on reste sur CPU (portable).
-            #[cfg(feature = "cuda")]
-            {
-                options = options.with_execution_providers(vec![
-                    ort::execution_providers::CUDAExecutionProvider::default().build(),
-                ]);
-                tracing::info!("embedding local : exécution CUDA demandée (repli CPU automatique si indisponible)");
-            }
-            #[cfg(not(feature = "cuda"))]
-            {
-                tracing::info!(
-                    "use_gpu=true mais binaire sans support CUDA : exécution CPU (recompiler avec --features cuda)"
-                );
-            }
+            // La lib ORT chargée (CPU ou GPU) est décidée par `ort_setup::ensure_ort`
+            // via ORT_DYLIB_PATH. Ici on demande le provider CUDA : s'il est
+            // indisponible (lib CPU ou pas de GPU), ORT retombe sur CPU.
+            options = options.with_execution_providers(vec![
+                ort::execution_providers::CUDAExecutionProvider::default().build(),
+                ort::execution_providers::CPUExecutionProvider::default().build(),
+            ]);
+            tracing::info!("embedding local : provider CUDA demandé (repli CPU automatique)");
         }
 
         let model = fastembed::TextEmbedding::try_new(options)

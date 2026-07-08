@@ -6,6 +6,7 @@ pub mod crawler;
 pub mod db;
 pub mod explorer;
 pub mod folders;
+pub mod ort_setup;
 pub mod parser;
 pub mod providers;
 pub mod search;
@@ -241,11 +242,11 @@ fn indexing_stats(state: State<'_, Arc<AppState>>) -> Result<db::IndexingStats, 
     state.db.get_indexing_stats().map_err(|e| e.to_string())
 }
 
-/// Indique si le binaire a été compilé avec le support GPU (feature `cuda`).
+/// Indique si un GPU NVIDIA est présent au runtime (détection dynamique).
 /// L'UI s'en sert pour n'activer la case « Utiliser le GPU » que si elle a un effet.
 #[tauri::command]
 fn gpu_available() -> bool {
-    cfg!(feature = "cuda")
+    ort_setup::gpu_present()
 }
 
 // =========================================================================
@@ -317,6 +318,19 @@ pub fn run() {
                 vector: vector.clone(),
             });
             app.manage(app_state.clone());
+
+            // --- ONNX Runtime (chargé dynamiquement, téléchargé au 1er lancement) ---
+            // On le prépare AVANT le worker (qui utilise fastembed). Bloquant au
+            // premier lancement uniquement (lib mise en cache ensuite).
+            {
+                let ort_dir = app_data_dir.clone();
+                let use_gpu = config.snapshot().embedding.use_gpu;
+                match std::thread::spawn(move || ort_setup::ensure_ort(&ort_dir, use_gpu)).join() {
+                    Ok(Ok(gpu)) => tracing::info!("ONNX Runtime prêt (GPU={gpu})"),
+                    Ok(Err(e)) => tracing::error!("préparation d'ONNX Runtime échouée : {e}"),
+                    Err(_) => tracing::error!("thread de préparation ORT a paniqué"),
+                }
+            }
 
             // --- Threads de fond ---
             let roots = config.snapshot().indexing.roots;

@@ -370,12 +370,18 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                   />
                   Utiliser le GPU (CUDA)
                 </label>
-                {!gpuSupported && (
+                {!gpuSupported ? (
                   <p className="text-[11px] text-zinc-500">
-                    Binaire CPU : pour le GPU, recompiler avec{" "}
-                    <code className="text-zinc-400">--features cuda</code> sur une machine NVIDIA,
-                    ou déléguer l'indexation à un serveur distant (mode « Serveur HTTP »).
+                    Aucun GPU NVIDIA détecté : indexation sur CPU. (Ou déléguez l'indexation à un
+                    serveur distant via le mode « Serveur HTTP ».)
                   </p>
+                ) : (
+                  cfg.embedding.use_gpu && (
+                    <p className="text-[11px] text-zinc-500">
+                      Le runtime GPU (~340 Mo) est téléchargé au prochain démarrage ; nécessite
+                      CUDA 12 + cuDNN 9 installés.
+                    </p>
+                  )
                 )}
               </div>
             )}
