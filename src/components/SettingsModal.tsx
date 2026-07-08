@@ -402,9 +402,32 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                       <option key={m} value={m} />
                     ))}
                   </datalist>
+                  {(() => {
+                    const list = installed[cfg.embedding.base_url] ?? [];
+                    const avail = list.some(
+                      (m) =>
+                        m === cfg.embedding.model ||
+                        m.split(":")[0] === cfg.embedding.model.split(":")[0]
+                    );
+                    return (
+                      <span
+                        className={`mt-1 block text-[11px] ${avail ? "text-emerald-400" : "text-amber-400"}`}
+                      >
+                        {avail
+                          ? "● disponible sur le serveur"
+                          : "○ introuvable — vérifiez le nom ou chargez le modèle"}
+                      </span>
+                    );
+                  })()}
                 </Field>
               )}
             </div>
+
+            <p className="text-[11px] text-zinc-500">
+              {cfg.embedding.mode === "local"
+                ? "Local : modèle ONNX embarqué exécuté sur cette machine (CPU, ou GPU NVIDIA si coché). Aucune donnée ne sort de l'ordinateur."
+                : "Serveur HTTP : délègue l'embedding à Ollama, LM Studio ou une machine distante. Mode « hybride » utile pour indexer sur un GPU dédié tout en gardant le reste local."}
+            </p>
 
             {cfg.embedding.mode === "openai" && (
               <div className="grid grid-cols-2 gap-3">
@@ -416,6 +439,29 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                       setCfg({ ...cfg, embedding: { ...cfg.embedding, base_url: e.target.value } })
                     }
                   />
+                  <div className="mt-1 flex gap-1.5">
+                    {[
+                      { label: "Ollama", url: "http://localhost:11434/v1" },
+                      { label: "LM Studio", url: "http://localhost:1234/v1" },
+                    ].map((s) => (
+                      <button
+                        key={s.label}
+                        onClick={() =>
+                          setCfg({
+                            ...cfg,
+                            embedding: { ...cfg.embedding, base_url: s.url },
+                          })
+                        }
+                        className={`rounded-md px-2 py-0.5 text-[10px] ${
+                          cfg.embedding.base_url === s.url
+                            ? "bg-blue-500/20 text-blue-300"
+                            : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                        }`}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
                 </Field>
                 <Field label="Dimensions">
                   <input
