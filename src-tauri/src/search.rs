@@ -18,14 +18,15 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
-/// Recalibre une similarité cosine e5 (bande utile ~[0.70, 0.90]) en un score de
-/// pertinence discriminant dans [0, 1]. Sans ça, des documents sans rapport
-/// affichent 75 %+ car e5 comprime ses similarités dans le haut de l'échelle.
+/// Score de pertinence ABSOLU dans [0,1] : non pertinent → 0, très pertinent → 1.
+/// (Pas de normalisation relative : dans un dossier 100 % pertinent, tout doit
+/// rester haut.) La bande utile est calée sur là où tombent les non-pertinents
+/// pour ces modèles (~0.78) et le haut de similarité (~0.90).
 fn relevance(cosine: f32) -> f32 {
-    // La similarité descend rarement sous ~0.78 : on étale cette bande haute sur
-    // [0,1] pour discriminer, en écrêtant les outliers (clamp).
-    const LOW: f32 = 0.78;
-    const HIGH: f32 = 0.92;
+    // Non pertinent (~0.40) → 0 ; on va jusqu'à 1.0 pour laisser les outliers très
+    // similaires atteindre 100 % (clamp pour tout ce qui sort de la bande).
+    const LOW: f32 = 0.40;
+    const HIGH: f32 = 1.0;
     ((cosine - LOW) / (HIGH - LOW)).clamp(0.0, 1.0)
 }
 
@@ -55,7 +56,7 @@ pub async fn semantic_search(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Meilleur score par fichier + vérification que le fichier existe toujours.
+    // Meilleur score (absolu) par fichier existant.
     let mut best: HashMap<String, SearchResult> = HashMap::new();
     for hit in raw {
         if !Path::new(&hit.path).exists() {
@@ -156,7 +157,7 @@ pub async fn semantic_tree(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Meilleur score par fichier existant.
+    // Meilleur score (absolu) par fichier existant.
     let mut best: HashMap<String, f32> = HashMap::new();
     for h in hits {
         if !Path::new(&h.path).exists() {
