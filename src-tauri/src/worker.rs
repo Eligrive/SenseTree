@@ -159,13 +159,21 @@ async fn index_textual(
     }
 
     let cfg = state.config.snapshot();
-    let clean = content.trim();
-    if clean.is_empty() {
+    let mut effective = content.trim().to_string();
+
+    // PDF scanné (aucun texte extractible) + vision activée → OCR des images embarquées.
+    if effective.is_empty() && doc_type_of(path) == "pdf" && cfg.vision.enabled {
+        if let Some(ocr) = ocr_pdf_via_vision(state, path).await {
+            effective = ocr;
+        }
+    }
+
+    if effective.trim().is_empty() {
         // Document vide/opaque : reste trouvable par son contexte.
         return index_context_only(state, embedder, path, mtime, "vide").await;
     }
 
-    let chunks = Chunker::slice_text(clean, cfg.indexing.chunk_size, cfg.indexing.overlap);
+    let chunks = Chunker::slice_text(&effective, cfg.indexing.chunk_size, cfg.indexing.overlap);
     if chunks.is_empty() {
         return index_context_only(state, embedder, path, mtime, "vide").await;
     }
@@ -191,10 +199,10 @@ async fn index_textual(
     let _ = state.db.update_file_hash(path, &hash);
     let _ = state
         .db
-        .upsert_file_summary(path, &summary_of(clean), &doc_type_of(path));
+        .upsert_file_summary(path, &summary_of(&effective), &doc_type_of(path));
     let _ = state.db.mark_indexed(path, mtime);
 
-    tracing::info!("✅ indexé ({} car.) : {path}", clean.len());
+    tracing::info!("✅ indexé ({} car.) : {path}", effective.len());
     Ok(())
 }
 
@@ -410,6 +418,79 @@ fn extract_text(path: &str) -> anyhow::Result<String> {
         "pdf" => extract_pdf_text(path),
         "docx" => extract_docx_text(path),
         _ => Ok(fs::read_to_string(path).unwrap_or_default()),
+    }
+}
+
+/// Extrait les images JPEG embarquées d'un PDF (cas des PDF scannés).
+/// On ne gère que le filtre DCTDecode : le flux brut EST un JPEG valide.
+fn extract_pdf_images(path: &str, max: usize) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let doc = match lopdf::Document::load(path) {
+        Ok(d) => d,
+        Err(_) => return out,
+    };
+    for (_id, obj) in &doc.objects {
+        if out.len() >= max {
+            break;
+        }
+        let lopdf::Object::Stream(stream) = obj else { continue };
+        let dict = &stream.dict;
+        // Objet image ?
+        let is_image = dict
+            .get(b"Subtype")
+            .ok()
+            .and_then(|o| o.as_name().ok())
+            .map(|n| n == b"Image")
+            .unwrap_or(false);
+        if !is_image {
+            continue;
+        }
+        // Filtre JPEG (DCTDecode), éventuellement dans un tableau de filtres ?
+        let is_jpeg = match dict.get(b"Filter").ok() {
+            Some(lopdf::Object::Name(n)) => n == b"DCTDecode",
+            Some(lopdf::Object::Array(a)) => a
+                .iter()
+                .any(|o| o.as_name().map(|n| n == b"DCTDecode").unwrap_or(false)),
+            _ => false,
+        };
+        if is_jpeg && !stream.content.is_empty() {
+            out.push(stream.content.clone());
+        }
+    }
+    out
+}
+
+/// OCR d'un PDF scanné : envoie ses images embarquées au modèle de vision.
+async fn ocr_pdf_via_vision(state: &AppState, path: &str) -> Option<String> {
+    let path_owned = path.to_string();
+    let images = tokio::task::spawn_blocking(move || extract_pdf_images(&path_owned, 8))
+        .await
+        .ok()?;
+    if images.is_empty() {
+        return None;
+    }
+
+    let prompt = "Transcris fidèlement TOUT le texte visible dans cette image (OCR). \
+        Ne renvoie que le texte transcrit, sans commentaire.";
+    let client = state.ai.vision_client();
+    let mut pages = Vec::new();
+    for img in images.iter().take(8) {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(img);
+        match client.describe_image(&b64, "image/jpeg", prompt).await {
+            Ok(t) if !t.trim().is_empty() => pages.push(t),
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("OCR vision échoué ({path}): {e}");
+                break; // vision indisponible : inutile d'insister
+            }
+        }
+    }
+    let joined = pages.join("\n\n");
+    if joined.trim().is_empty() {
+        None
+    } else {
+        tracing::info!("🔎 OCR vision : {} page(s) transcrite(s) pour {path}", pages.len());
+        Some(joined)
     }
 }
 
