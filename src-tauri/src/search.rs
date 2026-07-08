@@ -22,8 +22,10 @@ pub struct SearchResult {
 /// pertinence discriminant dans [0, 1]. Sans ça, des documents sans rapport
 /// affichent 75 %+ car e5 comprime ses similarités dans le haut de l'échelle.
 fn relevance(cosine: f32) -> f32 {
-    const LOW: f32 = 0.70;
-    const HIGH: f32 = 0.90;
+    // La similarité descend rarement sous ~0.78 : on étale cette bande haute sur
+    // [0,1] pour discriminer, en écrêtant les outliers (clamp).
+    const LOW: f32 = 0.78;
+    const HIGH: f32 = 0.92;
     ((cosine - LOW) / (HIGH - LOW)).clamp(0.0, 1.0)
 }
 

@@ -63,9 +63,8 @@ function TreeRow({
   const isCollapsed = collapsed.has(node.path);
   const s = Math.max(0, Math.min(1, node.score));
 
-  // Échelle séquentielle émeraude : teinte de fond + accent gauche + opacité.
+  // Échelle séquentielle émeraude : teinte de fond + opacité selon la pertinence.
   const bg = `rgba(16, 185, 129, ${(s * 0.16).toFixed(3)})`;
-  const accent = `rgba(16, 185, 129, ${(0.2 + s * 0.8).toFixed(3)})`;
 
   return (
     <>
@@ -77,7 +76,6 @@ function TreeRow({
         style={{
           paddingLeft: depth * 16 + 8,
           background: bg,
-          borderLeft: `2px solid ${accent}`,
           opacity: 0.55 + s * 0.45,
         }}
       >
