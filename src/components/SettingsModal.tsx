@@ -30,31 +30,36 @@ interface Props {
   onSaved: () => void;
 }
 
-const LOCAL_MODELS: { id: string; dims: number }[] = [
-  { id: "multilingual-e5-small", dims: 384 },
-  { id: "multilingual-e5-base", dims: 768 },
-  { id: "bge-small-en-v1.5", dims: 384 },
-  // Aussi disponibles sur Ollama (même nom) → local CPU ou distant GPU sans changer de modèle.
-  { id: "all-minilm", dims: 384 },
-  { id: "nomic-embed-text", dims: 768 },
-  { id: "mxbai-embed-large", dims: 1024 },
+// Catalogue des modèles d'embedding avec leurs disponibilités :
+//   local  = exécutable en embarqué (fastembed / ONNX, sur CPU, ou GPU si runtime CUDA).
+//   server = disponible sur un serveur (Ollama / LM Studio) — donc GPU si le serveur en a.
+// Certains modèles (all-minilm, nomic, mxbai) existent des DEUX côtés sous le même
+// nom : on peut passer du local (CPU) au serveur (GPU) sans changer de modèle.
+type EmbedModel = { id: string; dims: number; local: boolean; server: boolean };
+const EMBED_CATALOG: EmbedModel[] = [
+  { id: "multilingual-e5-small", dims: 384, local: true, server: false },
+  { id: "multilingual-e5-base", dims: 768, local: true, server: false },
+  { id: "bge-small-en-v1.5", dims: 384, local: true, server: false },
+  { id: "all-minilm", dims: 384, local: true, server: true },
+  { id: "nomic-embed-text", dims: 768, local: true, server: true },
+  { id: "mxbai-embed-large", dims: 1024, local: true, server: true },
+  { id: "bge-m3", dims: 1024, local: false, server: true },
+  { id: "snowflake-arctic-embed2", dims: 1024, local: false, server: true },
 ];
+const LOCAL_MODELS = EMBED_CATALOG.filter((m) => m.local);
+const EMBED_SUGGESTED = EMBED_CATALOG.filter((m) => m.server);
+
+function capLabel(m: EmbedModel): string {
+  if (m.local && m.server) return "local ou serveur";
+  if (m.local) return "local uniquement";
+  return "serveur uniquement";
+}
 
 // Suggestions de modèles cohérents par rôle (téléchargeables via Ollama).
 const SUGGESTED: Record<"reasoning" | "vision", string[]> = {
   reasoning: ["llama3.1:8b", "llama3.2:3b", "qwen2.5:7b", "phi3:mini"],
   vision: ["moondream", "llava", "llama3.2-vision"],
 };
-
-// Modèles d'embedding Ollama courants (le nom fastembed « multilingual-e5-small »
-// n'existe PAS sur Ollama — d'où les 404).
-const EMBED_SUGGESTED: { id: string; dims: number }[] = [
-  { id: "bge-m3", dims: 1024 },
-  { id: "nomic-embed-text", dims: 768 },
-  { id: "mxbai-embed-large", dims: 1024 },
-  { id: "snowflake-arctic-embed2", dims: 1024 },
-  { id: "all-minilm", dims: 384 },
-];
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -69,6 +74,65 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 const inputCls =
   "w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-200 outline-none focus:border-blue-500";
+
+const CUSTOM = "__custom__";
+
+/// Sélecteur de modèle fiable (les <datalist> sont capricieux dans WebView2) :
+/// un vrai menu déroulant natif + une saisie libre en mode « Personnalisé ».
+function ModelSelect({
+  value,
+  options,
+  onPick,
+  placeholder,
+}: {
+  value: string;
+  options: string[];
+  onPick: (v: string) => void;
+  placeholder?: string;
+}) {
+  const inList = options.includes(value);
+  const [custom, setCustom] = useState(!inList);
+  useEffect(() => {
+    if (!options.includes(value)) setCustom(true);
+  }, [value, options]);
+
+  return (
+    <div className="space-y-1">
+      <select
+        className={inputCls}
+        value={custom ? CUSTOM : value}
+        onChange={(e) => {
+          if (e.target.value === CUSTOM) {
+            setCustom(true);
+          } else {
+            setCustom(false);
+            onPick(e.target.value);
+          }
+        }}
+      >
+        {options.length === 0 && (
+          <option value={CUSTOM} disabled>
+            aucun modèle détecté sur le serveur
+          </option>
+        )}
+        {options.map((m) => (
+          <option key={m} value={m}>
+            {m}
+          </option>
+        ))}
+        <option value={CUSTOM}>Personnalisé…</option>
+      </select>
+      {custom && (
+        <input
+          className={inputCls}
+          value={value}
+          placeholder={placeholder ?? "nom du modèle"}
+          onChange={(e) => onPick(e.target.value)}
+        />
+      )}
+    </div>
+  );
+}
 
 const PROMPT_FIELDS: { key: keyof PromptsConfig; label: string; rows: number }[] = [
   { key: "folder_classify", label: "Classification des dossiers (récursif / bloc)", rows: 7 },
@@ -244,23 +308,19 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
             />
           </Field>
           <Field label="Modèle">
-            <div className="flex gap-1.5">
-              <input
-                className={inputCls}
-                list={`models-${key}`}
-                value={cfg[key].model}
-                onChange={(e) => patchChat(key, { model: e.target.value })}
-              />
-              <datalist id={`models-${key}`}>
-                {options.map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
+            <div className="flex items-start gap-1.5">
+              <div className="flex-1">
+                <ModelSelect
+                  value={cfg[key].model}
+                  options={options}
+                  onPick={(v) => patchChat(key, { model: v })}
+                />
+              </div>
               <button
                 onClick={() => download(key)}
                 disabled={pulling[key]}
                 title="Télécharger ce modèle (Ollama)"
-                className="flex shrink-0 items-center rounded-lg bg-zinc-800 px-2.5 text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+                className="flex h-[34px] shrink-0 items-center rounded-lg bg-zinc-800 px-2.5 text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
               >
                 {pulling[key] ? (
                   <Loader2 size={14} className="animate-spin" />
@@ -272,7 +332,7 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
             <span
               className={`mt-1 block text-[11px] ${isInstalled ? "text-emerald-400" : "text-amber-400"}`}
             >
-              {isInstalled ? "● installé" : "○ non installé"}
+              {isInstalled ? "● installé sur le serveur" : "○ non installé — télécharger ou vérifier le nom"}
             </span>
             {pulling[key] && (
               <div className="mt-1.5">
@@ -368,40 +428,44 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                   >
                     {LOCAL_MODELS.map((m) => (
                       <option key={m.id} value={m.id}>
-                        {m.id} ({m.dims}d)
+                        {m.id} · {m.dims}d · {capLabel(m)}
                       </option>
                     ))}
                   </select>
+                  {(() => {
+                    const m = EMBED_CATALOG.find((x) => x.id === cfg.embedding.model);
+                    return (
+                      <span className="mt-1 block text-[11px] text-zinc-500">
+                        {m?.server
+                          ? "Ce modèle existe aussi sur Ollama/LM Studio : bascule possible en mode « Serveur HTTP » (GPU) sans réindexer."
+                          : "Modèle disponible uniquement en local embarqué."}
+                      </span>
+                    );
+                  })()}
                 </Field>
               ) : (
                 <Field label="Modèle distant">
-                  <input
-                    className={inputCls}
-                    list="embed-models"
+                  <ModelSelect
                     value={cfg.embedding.model}
                     placeholder="ex : bge-m3, nomic-embed-text…"
-                    onChange={(e) => {
-                      const preset = EMBED_SUGGESTED.find((m) => m.id === e.target.value);
+                    options={Array.from(
+                      new Set([
+                        ...(installed[cfg.embedding.base_url] ?? []),
+                        ...EMBED_SUGGESTED.map((m) => m.id),
+                      ])
+                    )}
+                    onPick={(v) => {
+                      const preset = EMBED_SUGGESTED.find((m) => m.id === v);
                       setCfg({
                         ...cfg,
                         embedding: {
                           ...cfg.embedding,
-                          model: e.target.value,
+                          model: v,
                           dimensions: preset?.dims ?? cfg.embedding.dimensions,
                         },
                       });
                     }}
                   />
-                  <datalist id="embed-models">
-                    {Array.from(
-                      new Set([
-                        ...(installed[cfg.embedding.base_url] ?? []),
-                        ...EMBED_SUGGESTED.map((m) => m.id),
-                      ])
-                    ).map((m) => (
-                      <option key={m} value={m} />
-                    ))}
-                  </datalist>
                   {(() => {
                     const list = installed[cfg.embedding.base_url] ?? [];
                     const avail = list.some(
