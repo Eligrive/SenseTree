@@ -41,6 +41,9 @@ fn resolve_local_model(name: &str) -> (fastembed::EmbeddingModel, usize, bool) {
         "bge-small-en-v1.5" | "bge-small" => (M::BGESmallENV15, 384, false),
         "bge-base-en-v1.5" | "bge-base" => (M::BGEBaseENV15, 768, false),
         "all-minilm-l6-v2" | "all-minilm" => (M::AllMiniLML6V2, 384, false),
+        // Également disponibles côté Ollama → même modèle en local (CPU) ou distant (GPU).
+        "nomic-embed-text" | "nomic-embed-text-v1.5" => (M::NomicEmbedTextV15, 768, false),
+        "mxbai-embed-large" | "mxbai-embed-large-v1" => (M::MxbaiEmbedLargeV1, 1024, false),
         other => {
             tracing::warn!("modèle d'embedding local inconnu '{other}', repli sur multilingual-e5-small");
             (M::MultilingualE5Small, 384, true)

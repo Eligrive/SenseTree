@@ -23,8 +23,10 @@ const LOCAL_MODELS: { id: string; dims: number }[] = [
   { id: "multilingual-e5-small", dims: 384 },
   { id: "multilingual-e5-base", dims: 768 },
   { id: "bge-small-en-v1.5", dims: 384 },
-  { id: "bge-base-en-v1.5", dims: 768 },
-  { id: "all-minilm-l6-v2", dims: 384 },
+  // Aussi disponibles sur Ollama (même nom) → local CPU ou distant GPU sans changer de modèle.
+  { id: "all-minilm", dims: 384 },
+  { id: "nomic-embed-text", dims: 768 },
+  { id: "mxbai-embed-large", dims: 1024 },
 ];
 
 // Suggestions de modèles cohérents par rôle (téléchargeables via Ollama).
