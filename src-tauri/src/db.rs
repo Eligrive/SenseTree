@@ -632,6 +632,20 @@ impl Database {
         Ok(())
     }
 
+    /// Chemins effectivement indexés (embeddés) sous `parent` — pour l'indicateur
+    /// « indexé » de l'explorateur (fichiers et dossiers-blocs).
+    pub fn indexed_paths_under(&self, parent: &str) -> Result<Vec<String>> {
+        let conn = self.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT path FROM indexed_files WHERE path LIKE ?1 ESCAPE '\\'")?;
+        let rows = stmt.query_map(params![like_prefix(parent)], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Modes des dossiers situés directement sous `parent` (pour les badges de l'explorateur).
     pub fn folder_modes_under(&self, parent: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn()?;

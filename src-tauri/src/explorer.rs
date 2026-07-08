@@ -23,6 +23,8 @@ pub struct DirEntryInfo {
     pub index_status: Option<String>,
     /// Mode de traitement si c'est un dossier : `recursive` | `block` (ou None si non profilé).
     pub folder_mode: Option<String>,
+    /// Vrai si le chemin a été effectivement indexé (embeddé).
+    pub indexed: bool,
 }
 
 /// Liste le contenu direct d'un dossier, trié (dossiers d'abord, puis alphabétique).
@@ -48,6 +50,13 @@ pub async fn list_directory(
     let folder_modes: HashMap<String, String> = state
         .db
         .folder_modes_under(&normalized)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
+    // Chemins effectivement indexés (pour l'indicateur « indexé »).
+    let indexed: std::collections::HashSet<String> = state
+        .db
+        .indexed_paths_under(&normalized)
         .map_err(|e| e.to_string())?
         .into_iter()
         .collect();
@@ -83,6 +92,7 @@ pub async fn list_directory(
         entries.push(DirEntryInfo {
             index_status: statuses.get(&path_str).cloned(),
             folder_mode: if is_dir { folder_modes.get(&path_str).cloned() } else { None },
+            indexed: indexed.contains(&path_str),
             path: path_str,
             name,
             is_directory: is_dir,

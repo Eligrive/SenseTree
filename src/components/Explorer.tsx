@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import {
   Boxes,
+  Check,
   ChevronRight,
   Clock,
   Columns2,
@@ -19,7 +20,7 @@ import {
   X,
 } from "lucide-react";
 import type { DirEntryInfo, ResultView, SearchResult, TreeNode } from "../lib/types";
-import { breadcrumbs, formatBytes, formatDate, statusColor } from "../lib/format";
+import { breadcrumbs, formatBytes, formatDate } from "../lib/format";
 import TreeView from "./TreeView";
 
 interface Props {
@@ -105,6 +106,29 @@ function FolderModeBadge({
       {isBlock ? "bloc" : "récursif"}
     </button>
   );
+}
+
+/// Indicateur d'indexation unifié (fichier ou dossier-bloc) : vert = indexé,
+/// ambre = en file, rouge = échec.
+function IndexBadge({ entry }: { entry: DirEntryInfo }) {
+  if (entry.indexed) {
+    return <Check size={13} className="shrink-0 text-emerald-500" aria-label="Indexé" />;
+  }
+  const s = entry.index_status;
+  if (s === "pending" || s === "pending_extraction") {
+    return (
+      <span
+        title="En attente d'indexation"
+        className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
+      />
+    );
+  }
+  if (s === "failed" || s === "failed_permanent") {
+    return (
+      <span title="Échec d'indexation" className="h-1.5 w-1.5 shrink-0 rounded-full bg-rose-500" />
+    );
+  }
+  return null;
 }
 
 function ExtIcon({ entry }: { entry: DirEntryInfo }) {
@@ -306,14 +330,7 @@ export default function Explorer({
                         {entry.is_directory && (
                           <FolderModeBadge entry={entry} onSetFolderMode={onSetFolderMode} />
                         )}
-                        {!entry.is_directory && entry.index_status && (
-                          <span
-                            title={entry.index_status}
-                            className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusColor(
-                              entry.index_status
-                            )}`}
-                          />
-                        )}
+                        <IndexBadge entry={entry} />
                       </div>
                     </td>
                     <td className="px-3 py-1 text-zinc-500">
