@@ -281,6 +281,21 @@ fn indexing_stats(state: State<'_, Arc<AppState>>) -> Result<db::IndexingStats, 
     state.db.get_indexing_stats().map_err(|e| e.to_string())
 }
 
+/// Ouvre un fichier/dossier avec l'application par défaut du système.
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    #[cfg(windows)]
+    let result = std::process::Command::new("cmd")
+        .args(["/C", "start", "", &path])
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(&path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = std::process::Command::new("xdg-open").arg(&path).spawn();
+
+    result.map(|_| ()).map_err(|e| format!("ouverture impossible: {e}"))
+}
+
 /// Indique si un GPU NVIDIA est présent au runtime (détection dynamique).
 /// L'UI s'en sert pour n'activer la case « Utiliser le GPU » que si elle a un effet.
 #[tauri::command]
@@ -377,6 +392,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_recent_activity,
             indexing_stats,
+            open_path,
             gpu_available,
             get_config,
             set_config,

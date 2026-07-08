@@ -16,6 +16,16 @@ pub struct Parser;
 impl Parser {
     pub fn determine_file_type(path: &Path) -> FileType {
 
+        // Fichiers-poubelle systèmes (macOS AppleDouble, index Windows…) : ignorés.
+        let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if file_name.starts_with("._")
+            || file_name.eq_ignore_ascii_case(".DS_Store")
+            || file_name.eq_ignore_ascii_case("Thumbs.db")
+            || file_name.eq_ignore_ascii_case("desktop.ini")
+        {
+            return FileType::Ignored;
+        }
+
         if let Ok(metadata) = std::fs::metadata(path) {
             if metadata.len() == 0 {
                 return FileType::Ignored;

@@ -256,12 +256,35 @@ fn rollback(done: &[Done]) -> String {
     }
 }
 
+/// Normalise un chemin pour comparaison : backslashes multiples réduits,
+/// séparateurs unifiés, casse ignorée (Windows), slash final retiré.
+fn normalize_path(p: &str) -> String {
+    let mut out = String::with_capacity(p.len());
+    let mut prev_sep = false;
+    for c in p.chars() {
+        if c == '\\' || c == '/' {
+            if !prev_sep {
+                out.push('\\');
+            }
+            prev_sep = true;
+        } else {
+            out.push(c);
+            prev_sep = false;
+        }
+    }
+    out.trim_end_matches('\\').to_lowercase()
+}
+
 /// Rejette tout plan qui sortirait des racines autorisées (protection anti-évasion).
 fn validate_operations(ops: &[Operation], roots: &[String]) -> Result<(), String> {
     if roots.is_empty() {
         return Ok(());
     }
-    let within = |path: &str| roots.iter().any(|r| path.starts_with(r.as_str()));
+    let norm_roots: Vec<String> = roots.iter().map(|r| normalize_path(r)).collect();
+    let within = |path: &str| {
+        let np = normalize_path(path);
+        norm_roots.iter().any(|r| np.starts_with(r.as_str()))
+    };
     for op in ops {
         if let Some(p) = &op.old_path {
             if !within(p) {

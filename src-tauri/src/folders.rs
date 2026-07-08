@@ -72,7 +72,13 @@ pub fn hard_ignore(name: &str) -> bool {
     name.starts_with('.')
         || matches!(
             name,
-            "node_modules" | "target" | "AppData" | "Windows" | "$RECYCLE.BIN" | "__pycache__"
+            "node_modules"
+                | "target"
+                | "AppData"
+                | "Windows"
+                | "$RECYCLE.BIN"
+                | "__pycache__"
+                | "__MACOSX"
         )
 }
 

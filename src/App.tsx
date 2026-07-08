@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { openPath } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
 import Sidebar from "./components/Sidebar";
@@ -26,6 +25,7 @@ import {
   getRoots,
   indexingStats,
   listDirectory,
+  openPath,
   pathDetails,
   semanticSearch,
   semanticTree,
