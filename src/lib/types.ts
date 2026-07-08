@@ -60,6 +60,17 @@ export interface SearchResult {
   snippet: string;
 }
 
+export interface TreeNode {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  score: number;
+  children: TreeNode[];
+}
+
+/// Mode d'affichage des résultats de recherche.
+export type ResultView = "list" | "tree" | "split";
+
 export type OpKind = "move" | "rename" | "delete" | "mkdir";
 
 export interface Operation {

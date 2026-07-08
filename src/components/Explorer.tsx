@@ -3,6 +3,7 @@ import {
   Boxes,
   ChevronRight,
   Clock,
+  Columns2,
   File as FileIcon,
   FileText,
   FileType2,
@@ -10,13 +11,16 @@ import {
   FolderTree,
   HelpCircle,
   Image as ImageIcon,
+  List,
   Loader2,
+  Network,
   Search,
   Sparkles,
   X,
 } from "lucide-react";
-import type { DirEntryInfo, SearchResult } from "../lib/types";
+import type { DirEntryInfo, ResultView, SearchResult, TreeNode } from "../lib/types";
 import { breadcrumbs, formatBytes, formatDate, statusColor } from "../lib/format";
+import TreeView from "./TreeView";
 
 interface Props {
   currentPath: string | null;
@@ -32,6 +36,9 @@ interface Props {
   scopeToCurrent: boolean;
   onToggleScope: (value: boolean) => void;
   onSetFolderMode: (path: string, mode: "recursive" | "block") => void;
+  treeData: TreeNode | null;
+  resultView: ResultView;
+  onSetResultView: (v: ResultView) => void;
 }
 
 /// Badge cliquable indiquant/commutant le mode de traitement d'un dossier.
@@ -126,6 +133,9 @@ export default function Explorer({
   scopeToCurrent,
   onToggleScope,
   onSetFolderMode,
+  treeData,
+  resultView,
+  onSetResultView,
 }: Props) {
   const [query, setQuery] = useState("");
   const crumbs = currentPath ? breadcrumbs(currentPath) : [];
@@ -171,12 +181,36 @@ export default function Explorer({
       {/* Fil d'ariane / retour recherche */}
       <div className="flex items-center gap-1 border-b border-zinc-800/60 px-6 py-2 text-sm">
         {searchMode ? (
-          <button
-            onClick={onExitSearch}
-            className="flex items-center gap-1.5 text-zinc-400 hover:text-zinc-200"
-          >
-            <X size={14} /> Résultats de recherche — retour à l'explorateur
-          </button>
+          <>
+            <button
+              onClick={onExitSearch}
+              className="flex items-center gap-1.5 text-zinc-400 hover:text-zinc-200"
+            >
+              <X size={14} /> Résultats — retour à l'explorateur
+            </button>
+            <div className="ml-auto flex items-center gap-0.5 rounded-lg border border-zinc-800 bg-zinc-900 p-0.5">
+              {(
+                [
+                  ["list", List, "Liste"],
+                  ["tree", Network, "Arbre"],
+                  ["split", Columns2, "Côte à côte"],
+                ] as const
+              ).map(([mode, Icon, label]) => (
+                <button
+                  key={mode}
+                  onClick={() => onSetResultView(mode)}
+                  title={label}
+                  className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition ${
+                    resultView === mode
+                      ? "bg-zinc-700 text-zinc-100"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  <Icon size={13} />
+                </button>
+              ))}
+            </div>
+          </>
         ) : (
           <div className="flex flex-wrap items-center gap-0.5 text-zinc-400">
             {crumbs.map((c, i) => (
@@ -195,18 +229,56 @@ export default function Explorer({
       </div>
 
       {/* Contenu */}
-      <div className="flex-1 overflow-y-auto p-4">
-        {searchMode ? (
-          <SearchResults results={searchResults} searching={searching} onOpenFile={onOpenFile} />
-        ) : loading ? (
-          <Centered>
-            <Loader2 className="animate-spin text-zinc-500" />
-          </Centered>
-        ) : entries.length === 0 ? (
-          <Centered>
-            <p className="text-sm text-zinc-500">Dossier vide.</p>
-          </Centered>
-        ) : (
+      {searchMode ? (
+        <div className="flex-1 overflow-hidden p-4">
+          {resultView === "tree" ? (
+            <div className="h-full overflow-y-auto">
+              <TreePane
+                treeData={treeData}
+                searching={searching}
+                onOpenFile={onOpenFile}
+                onNavigate={onNavigate}
+              />
+            </div>
+          ) : resultView === "split" ? (
+            <div className="flex h-full gap-3">
+              <div className="w-1/2 overflow-y-auto pr-1">
+                <SearchResults
+                  results={searchResults}
+                  searching={searching}
+                  onOpenFile={onOpenFile}
+                />
+              </div>
+              <div className="w-1/2 overflow-y-auto border-l border-zinc-800 pl-3">
+                <TreePane
+                  treeData={treeData}
+                  searching={searching}
+                  onOpenFile={onOpenFile}
+                  onNavigate={onNavigate}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="h-full overflow-y-auto">
+              <SearchResults
+                results={searchResults}
+                searching={searching}
+                onOpenFile={onOpenFile}
+              />
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-4">
+          {loading ? (
+            <Centered>
+              <Loader2 className="animate-spin text-zinc-500" />
+            </Centered>
+          ) : entries.length === 0 ? (
+            <Centered>
+              <p className="text-sm text-zinc-500">Dossier vide.</p>
+            </Centered>
+          ) : (
           <div className="overflow-hidden rounded-lg border border-zinc-800">
             <table className="w-full text-[13px]">
               <thead>
@@ -253,8 +325,9 @@ export default function Explorer({
               </tbody>
             </table>
           </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -300,6 +373,32 @@ function SearchResults({
       ))}
     </div>
   );
+}
+
+function TreePane({
+  treeData,
+  searching,
+  onOpenFile,
+  onNavigate,
+}: {
+  treeData: TreeNode | null;
+  searching: boolean;
+  onOpenFile: (path: string) => void;
+  onNavigate: (path: string) => void;
+}) {
+  if (searching)
+    return (
+      <Centered>
+        <Loader2 className="animate-spin text-zinc-500" />
+      </Centered>
+    );
+  if (!treeData || treeData.children.length === 0)
+    return (
+      <Centered>
+        <p className="text-sm text-zinc-500">Aucune branche pertinente.</p>
+      </Centered>
+    );
+  return <TreeView root={treeData} onOpenFile={onOpenFile} onNavigate={onNavigate} />;
 }
 
 function Centered({ children }: { children: ReactNode }) {

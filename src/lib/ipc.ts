@@ -15,6 +15,7 @@ import type {
   HealthReport,
   IndexingStats,
   SearchResult,
+  TreeNode,
 } from "./types";
 
 // --- Configuration & santé ---
@@ -40,6 +41,8 @@ export const setFolderMode = (path: string, mode: "recursive" | "block") =>
 // --- Recherche sémantique ---
 export const semanticSearch = (query: string, scope?: string, limit?: number) =>
   invoke<SearchResult[]>("semantic_search", { query, scope, limit });
+export const semanticTree = (query: string, scope?: string, limit?: number) =>
+  invoke<TreeNode | null>("semantic_tree", { query, scope, limit });
 
 // --- Actions Dry-Run + gardener ---
 export const planReorganization = (instruction: string, scope: string) =>

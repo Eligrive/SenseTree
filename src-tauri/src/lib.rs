@@ -338,6 +338,7 @@ pub fn run() {
             explorer::get_roots,
             set_folder_mode,
             search::semantic_search,
+            search::semantic_tree,
             actions::plan_reorganization,
             actions::apply_action_plan,
             actions::discard_action_plan,

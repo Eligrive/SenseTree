@@ -13,7 +13,9 @@ import type {
   DirectoryReport,
   HealthReport,
   IndexingStats,
+  ResultView,
   SearchResult,
+  TreeNode,
 } from "./lib/types";
 import {
   aiHealth,
@@ -22,6 +24,7 @@ import {
   indexingStats,
   listDirectory,
   semanticSearch,
+  semanticTree,
   setFolderMode,
 } from "./lib/ipc";
 
@@ -35,6 +38,8 @@ export default function App() {
   const [searchMode, setSearchMode] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
+  const [treeData, setTreeData] = useState<TreeNode | null>(null);
+  const [resultView, setResultView] = useState<ResultView>("list");
   // Recherche globale par défaut ; on peut la restreindre au dossier courant.
   const [scopeToCurrent, setScopeToCurrent] = useState(false);
 
@@ -106,6 +111,13 @@ export default function App() {
         setSearchResults([]);
       })
       .finally(() => setSearching(false));
+    // Arbre de pertinence (pour les vues « arbre » et « côte à côte »).
+    semanticTree(query, scope, 500)
+      .then(setTreeData)
+      .catch((e) => {
+        console.error("semantic_tree:", e);
+        setTreeData(null);
+      });
   };
 
   const openFile = (path: string) => {
@@ -157,6 +169,9 @@ export default function App() {
           scopeToCurrent={scopeToCurrent}
           onToggleScope={setScopeToCurrent}
           onSetFolderMode={changeFolderMode}
+          treeData={treeData}
+          resultView={resultView}
+          onSetResultView={setResultView}
         />
       </main>
 
