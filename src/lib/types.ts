@@ -100,6 +100,7 @@ export interface PathDetails {
   content_kind: string;
   folder_mode: string | null;
   in_block: boolean;
+  file_count: number | null;
 }
 
 export type OpKind = "move" | "rename" | "delete" | "mkdir";

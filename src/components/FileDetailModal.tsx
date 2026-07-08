@@ -105,6 +105,18 @@ export default function FileDetailModal({ details, loading, onClose, onOpenFile 
                 {!details.is_directory && (
                   <Row label="Taille">{formatBytes(details.size_bytes)}</Row>
                 )}
+                {details.is_directory && (
+                  <Row label="Taille">
+                    {formatBytes(details.size_bytes)}
+                    {details.file_count != null && (
+                      <span className="text-zinc-500">
+                        {" "}
+                        · {details.file_count.toLocaleString()} fichier
+                        {details.file_count > 1 ? "s" : ""}
+                      </span>
+                    )}
+                  </Row>
+                )}
                 {details.modified != null && (
                   <Row label="Modifié">{formatDate(details.modified)}</Row>
                 )}

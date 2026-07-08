@@ -144,6 +144,8 @@ pub struct PathDetails {
     pub folder_mode: Option<String>,
     /// Vrai si le chemin est interne à un dossier-bloc.
     pub in_block: bool,
+    /// Pour un dossier : nombre de fichiers contenus (récursif). None pour un fichier.
+    pub file_count: Option<u64>,
 }
 
 /// Détails d'un fichier/dossier pour le panneau ouvert au simple-clic.
@@ -157,10 +159,18 @@ pub async fn path_details(
 
     let meta = fs::metadata(&path).ok();
     let is_directory = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-    let size_bytes = meta
-        .as_ref()
-        .map(|m| if m.is_dir() { 0 } else { m.len() })
-        .unwrap_or(0);
+
+    // Taille récursive d'un dossier (déclenchée seulement à l'ouverture des détails,
+    // sur un seul dossier — bornée à un thread bloquant pour ne pas figer l'UI).
+    let (size_bytes, file_count) = if is_directory {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || dir_size_and_count(&p))
+            .await
+            .map(|(s, c)| (s, Some(c)))
+            .unwrap_or((0, None))
+    } else {
+        (meta.as_ref().map(|m| m.len()).unwrap_or(0), None)
+    };
     let modified = meta
         .as_ref()
         .and_then(|m| m.modified().ok())
@@ -214,7 +224,24 @@ pub async fn path_details(
         content_kind,
         folder_mode,
         in_block,
+        file_count,
     })
+}
+
+/// Somme récursive des tailles de fichiers d'un dossier et compte des fichiers.
+/// Erreurs d'accès ignorées (dossiers protégés) : on renvoie ce qui est lisible.
+fn dir_size_and_count(path: &str) -> (u64, u64) {
+    let mut size = 0u64;
+    let mut count = 0u64;
+    for entry in walkdir::WalkDir::new(path).into_iter().flatten() {
+        if entry.file_type().is_file() {
+            if let Ok(meta) = entry.metadata() {
+                size += meta.len();
+                count += 1;
+            }
+        }
+    }
+    (size, count)
 }
 
 fn derive_content_kind(
