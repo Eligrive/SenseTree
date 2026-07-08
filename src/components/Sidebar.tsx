@@ -1,4 +1,4 @@
-import { Folder, Settings, Activity, Sprout, Loader2, CheckCircle2 } from "lucide-react";
+import { Folder, Settings, Activity, Sprout, Loader2, CheckCircle2, Cpu } from "lucide-react";
 import type { HealthReport, IndexingStats } from "../lib/types";
 
 interface Props {
@@ -7,6 +7,7 @@ interface Props {
   onSelectRoot: (root: string) => void;
   health: HealthReport | null;
   stats: IndexingStats | null;
+  embedding: { model: string; mode: string } | null;
   onOpenSettings: () => void;
   onAnalyze: () => void;
 }
@@ -82,6 +83,7 @@ export default function Sidebar({
   onSelectRoot,
   health,
   stats,
+  embedding,
   onOpenSettings,
   onAnalyze,
 }: Props) {
@@ -129,6 +131,20 @@ export default function Sidebar({
 
       <div className="mt-auto space-y-3 border-t border-zinc-800 p-3">
         <IndexingProgress stats={stats} />
+
+        {embedding && (
+          <button
+            onClick={onOpenSettings}
+            title="Modèle utilisé pour l'indexation (cliquer pour changer)"
+            className="flex w-full items-center gap-2 rounded-md bg-zinc-900/60 px-2.5 py-1.5 text-left"
+          >
+            <Cpu size={13} className="shrink-0 text-blue-400" />
+            <span className="flex-1 truncate text-xs text-zinc-300">{embedding.model}</span>
+            <span className="shrink-0 text-[10px] text-zinc-500">
+              {embedding.mode === "openai" ? "distant" : "local"}
+            </span>
+          </button>
+        )}
 
         <button
           onClick={onAnalyze}

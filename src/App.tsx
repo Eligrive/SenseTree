@@ -20,6 +20,7 @@ import type {
 import {
   aiHealth,
   analyzeDirectory,
+  getConfig,
   getRoots,
   indexingStats,
   listDirectory,
@@ -45,6 +46,7 @@ export default function App() {
 
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [stats, setStats] = useState<IndexingStats | null>(null);
+  const [embedding, setEmbedding] = useState<{ model: string; mode: string } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const [report, setReport] = useState<DirectoryReport | null>(null);
@@ -52,6 +54,12 @@ export default function App() {
 
   const refreshHealth = useCallback(() => {
     aiHealth().then(setHealth).catch(() => setHealth(null));
+  }, []);
+
+  const refreshConfig = useCallback(() => {
+    getConfig()
+      .then((c) => setEmbedding({ model: c.embedding.model, mode: c.embedding.mode }))
+      .catch(() => setEmbedding(null));
   }, []);
 
   const navigate = useCallback((path: string) => {
@@ -74,9 +82,10 @@ export default function App() {
       }
     });
     refreshHealth();
+    refreshConfig();
     const t = setInterval(refreshHealth, 20000);
     return () => clearInterval(t);
-  }, [navigate, refreshHealth]);
+  }, [navigate, refreshHealth, refreshConfig]);
 
   // Avancement de l'indexation (rafraîchi souvent tant qu'il reste des fichiers en file).
   useEffect(() => {
@@ -150,6 +159,7 @@ export default function App() {
         onSelectRoot={selectRoot}
         health={health}
         stats={stats}
+        embedding={embedding}
         onOpenSettings={() => setSettingsOpen(true)}
         onAnalyze={analyze}
       />
@@ -182,6 +192,7 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         onSaved={() => {
           refreshHealth();
+          refreshConfig();
           getRoots().then(setRoots);
         }}
       />
