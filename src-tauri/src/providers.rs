@@ -392,9 +392,16 @@ impl AiEngine {
         Ok(provider)
     }
 
-    /// Invalide le cache d'embedding (à appeler après un changement de config).
+    /// Invalide le cache d'embedding (à appeler après un changement de config, ou
+    /// pour libérer les ressources — la session ONNX Runtime et ses threads intra-op
+    /// sont détruits dès que plus aucune référence ne subsiste).
     pub async fn invalidate_embedder(&self) {
         *self.embedder.lock().await = None;
+    }
+
+    /// Vrai si un modèle d'embedding est actuellement chargé en mémoire.
+    pub async fn embedder_loaded(&self) -> bool {
+        self.embedder.lock().await.is_some()
     }
 
     pub fn reasoning_client(&self) -> OpenAiChatClient {
@@ -411,10 +418,23 @@ impl AiEngine {
     pub async fn health(&self) -> HealthReport {
         let cfg = self.config.snapshot();
 
-        // Embedding
-        let (embedding_ok, embedding_detail) = match self.embedder().await {
-            Ok(p) => (true, format!("prêt ({} dims)", p.dimensions())),
-            Err(e) => (false, format!("{e}")),
+        // Embedding — on NE construit PAS le modèle local ici (le health check est
+        // périodique : le charger le maintiendrait résident et ses threads ORT
+        // tourneraient en continu). On rapporte l'état sans instancier.
+        let (embedding_ok, embedding_detail) = match cfg.embedding.mode {
+            EmbeddingMode::Local => {
+                let dims = resolve_local_model(&cfg.embedding.model).1;
+                let detail = if self.embedder_loaded().await {
+                    format!("chargé ({dims} dims)")
+                } else {
+                    format!("prêt, chargé à la demande ({dims} dims)")
+                };
+                (true, detail)
+            }
+            EmbeddingMode::Openai => (
+                true,
+                format!("serveur {} ({} dims)", cfg.embedding.base_url, cfg.embedding.dimensions),
+            ),
         };
 
         // Reasoning

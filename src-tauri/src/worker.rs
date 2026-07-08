@@ -28,6 +28,8 @@ use crate::vectordb::ChunkVector;
 
 const MAX_RETRIES: i64 = 3;
 const BATCH: i64 = 8;
+/// Nombre de cycles d'inactivité (3 s chacun) avant de décharger l'embedder.
+const IDLE_UNLOAD_CYCLES: u32 = 5;
 
 pub fn start_worker(state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
@@ -39,9 +41,19 @@ pub fn start_worker(state: Arc<AppState>) {
 async fn worker_loop(state: Arc<AppState>) {
     // (ONNX Runtime est préparé paresseusement lors de la première construction
     //  de l'embedder — voir AiEngine::embedder — pour garantir l'ordre d'init.)
+    //
+    // Déchargement automatique : fastembed/ONNX Runtime maintient un pool de
+    // threads intra-op qui « spinne » (consomme du CPU) tant que la session existe,
+    // même à l'arrêt. On décharge donc le modèle en pause ou après une période
+    // d'inactivité, et il se recharge à la demande (indexation ou recherche).
+    let mut idle_cycles: u32 = 0;
     loop {
-        // Pause utilisateur : on met la boucle en veille sans consommer de CPU/GPU.
+        // Pause utilisateur : on met la boucle en veille et on libère l'embedder.
         if state.paused.load(std::sync::atomic::Ordering::Relaxed) {
+            if state.ai.embedder_loaded().await {
+                state.ai.invalidate_embedder().await;
+                tracing::info!("⏸️ indexation en pause — embedder déchargé (CPU/GPU libérés)");
+            }
             tokio::time::sleep(Duration::from_millis(700)).await;
             continue;
         }
@@ -56,9 +68,16 @@ async fn worker_loop(state: Arc<AppState>) {
         };
 
         if tasks.is_empty() {
+            idle_cycles = idle_cycles.saturating_add(1);
+            // Après ~15 s sans travail, on décharge le modèle pour stopper le spinning ORT.
+            if idle_cycles >= IDLE_UNLOAD_CYCLES && state.ai.embedder_loaded().await {
+                state.ai.invalidate_embedder().await;
+                tracing::info!("💤 indexation à jour — embedder déchargé (CPU/GPU libérés)");
+            }
             tokio::time::sleep(Duration::from_secs(3)).await;
             continue;
         }
+        idle_cycles = 0;
 
         // Le provider d'embedding est résolu une fois par lot (modèle mis en cache).
         let embedder = match state.ai.embedder().await {
