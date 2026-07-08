@@ -37,20 +37,8 @@ pub fn start_worker(state: Arc<AppState>) {
 }
 
 async fn worker_loop(state: Arc<AppState>) {
-    // Approvisionne ONNX Runtime (chargé dynamiquement) avant tout embedding.
-    // Bloquant au premier lancement uniquement (lib ORT mise en cache ensuite).
-    {
-        let data_dir = state.data_dir.clone();
-        let use_gpu = state.config.snapshot().embedding.use_gpu;
-        match tokio::task::spawn_blocking(move || crate::ort_setup::ensure_ort(&data_dir, use_gpu))
-            .await
-        {
-            Ok(Ok(gpu)) => tracing::info!("ONNX Runtime prêt (GPU={gpu})"),
-            Ok(Err(e)) => tracing::error!("ONNX Runtime indisponible : {e}"),
-            Err(_) => tracing::error!("préparation ORT interrompue"),
-        }
-    }
-
+    // (ONNX Runtime est préparé paresseusement lors de la première construction
+    //  de l'embedder — voir AiEngine::embedder — pour garantir l'ordre d'init.)
     loop {
         let tasks = match state.db.get_pending_extraction_tasks(BATCH) {
             Ok(t) => t,

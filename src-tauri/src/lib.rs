@@ -299,7 +299,7 @@ pub fn run() {
             let database = Arc::new(Database::open(&db_path).map_err(|e| e.to_string())?);
 
             // --- Moteur IA (providers embedding / reasoning / vision) ---
-            let ai = Arc::new(AiEngine::new(config.clone()));
+            let ai = Arc::new(AiEngine::new(config.clone(), app_data_dir.clone()));
 
             // --- Base vectorielle (LanceDB) ---
             let lance_uri = app_data_dir.join("lancedb");

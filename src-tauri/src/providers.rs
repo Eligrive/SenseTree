@@ -318,10 +318,15 @@ pub struct AiEngine {
     config: Arc<ConfigStore>,
     http: reqwest::Client,
     embedder: tokio::sync::Mutex<Option<CachedEmbedder>>,
+    /// Dossier de données (pour approvisionner ONNX Runtime).
+    data_dir: std::path::PathBuf,
+    /// Garantit qu'ONNX Runtime (ORT_DYLIB_PATH) est prêt AVANT toute init d'ORT,
+    /// une seule fois, quel que soit le premier appelant (health check ou worker).
+    ort_ready: tokio::sync::OnceCell<()>,
 }
 
 impl AiEngine {
-    pub fn new(config: Arc<ConfigStore>) -> Self {
+    pub fn new(config: Arc<ConfigStore>, data_dir: std::path::PathBuf) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
@@ -330,6 +335,8 @@ impl AiEngine {
             config,
             http,
             embedder: tokio::sync::Mutex::new(None),
+            data_dir,
+            ort_ready: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -351,6 +358,20 @@ impl AiEngine {
 
         let provider: Arc<dyn EmbeddingProvider> = match cfg.embedding.mode {
             EmbeddingMode::Local => {
+                // On s'assure qu'ORT_DYLIB_PATH est posé AVANT d'initialiser ORT
+                // (fastembed). En cas d'échec de téléchargement, la cellule reste
+                // vide → nouvelle tentative au prochain appel.
+                let dir = self.data_dir.clone();
+                let use_gpu = cfg.embedding.use_gpu;
+                self.ort_ready
+                    .get_or_try_init(|| async move {
+                        tokio::task::spawn_blocking(move || crate::ort_setup::ensure_ort(&dir, use_gpu))
+                            .await
+                            .context("tâche de préparation ORT interrompue")?
+                            .map(|_gpu| ())
+                    })
+                    .await?;
+
                 let embed_cfg = cfg.embedding.clone();
                 let batch = cfg.indexing.batch_size;
                 let local = tokio::task::spawn_blocking(move || LocalEmbedder::load(&embed_cfg, batch))
