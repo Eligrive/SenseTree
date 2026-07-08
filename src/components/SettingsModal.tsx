@@ -1,9 +1,20 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Download, Loader2, Plug, RefreshCw, RotateCcw, Save, X } from "lucide-react";
-import type { AppConfig, ChatConfig } from "../lib/types";
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  Loader2,
+  Plug,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  X,
+} from "lucide-react";
+import type { AppConfig, ChatConfig, PromptsConfig } from "../lib/types";
 import {
   getConfig,
+  getDefaultPrompts,
   gpuAvailable,
   listInstalledModels,
   pullModel,
@@ -59,6 +70,16 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 const inputCls =
   "w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-200 outline-none focus:border-blue-500";
 
+const PROMPT_FIELDS: { key: keyof PromptsConfig; label: string; rows: number }[] = [
+  { key: "folder_classify", label: "Classification des dossiers (récursif / bloc)", rows: 7 },
+  { key: "folder_describe", label: "Description d'un dossier-bloc", rows: 3 },
+  { key: "file_extract", label: "Extraction d'un fichier de type inconnu", rows: 4 },
+  { key: "vision_caption", label: "Légende d'image (vision)", rows: 3 },
+  { key: "vision_ocr", label: "OCR d'image (vision)", rows: 2 },
+  { key: "chat_system", label: "Assistant de chat (RAG + actions)", rows: 7 },
+  { key: "reorganize", label: "Planificateur de réorganisation", rows: 4 },
+];
+
 function biasLabel(v: number): string {
   if (v <= 0.2) return "très récursif";
   if (v <= 0.4) return "plutôt récursif";
@@ -79,11 +100,14 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   >({});
 
   const [gpuSupported, setGpuSupported] = useState(false);
+  const [defaultPrompts, setDefaultPrompts] = useState<PromptsConfig | null>(null);
+  const [showPrompts, setShowPrompts] = useState(false);
 
   useEffect(() => {
     if (open) {
       getConfig().then(setCfg).catch(() => setCfg(null));
       gpuAvailable().then(setGpuSupported).catch(() => setGpuSupported(false));
+      getDefaultPrompts().then(setDefaultPrompts).catch(() => setDefaultPrompts(null));
     }
   }, [open]);
 
@@ -123,6 +147,9 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
 
   const patchChat = (key: "reasoning" | "vision", patch: Partial<ChatConfig>) =>
     setCfg({ ...cfg, [key]: { ...cfg[key], ...patch } });
+
+  const patchPrompt = (key: keyof PromptsConfig, value: string) =>
+    setCfg({ ...cfg, prompts: { ...cfg.prompts, [key]: value } });
 
   const test = async (key: "reasoning" | "vision") => {
     setTestMsg((m) => ({ ...m, [key]: "…" }));
@@ -494,6 +521,61 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
               packs d'instruments) au lieu de les indexer fichier par fichier. Prend effet sur les
               dossiers classés ensuite (ou après une réindexation).
             </p>
+          </section>
+
+          {/* Prompts IA — édition avancée (repliable) */}
+          <section className="rounded-xl border border-zinc-800 bg-zinc-900/30">
+            <button
+              onClick={() => setShowPrompts((v) => !v)}
+              className="flex w-full items-center justify-between px-4 py-3 text-sm font-semibold text-zinc-200"
+            >
+              <span>Prompts IA (avancé)</span>
+              {showPrompts ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            </button>
+            {showPrompts && (
+              <div className="space-y-4 border-t border-zinc-800 px-4 py-4">
+                <p className="text-[11px] text-zinc-500">
+                  Personnalise les instructions envoyées au modèle pour chaque tâche. Laisse un
+                  champ vide (ou clique « Défaut ») pour revenir au prompt intégré. Les données
+                  (chemin, contenu, arborescence) sont ajoutées automatiquement.
+                </p>
+                {PROMPT_FIELDS.map(({ key, label, rows }) => {
+                  const override = cfg.prompts?.[key] ?? "";
+                  const isCustom = override.trim() !== "";
+                  const shown = isCustom ? override : defaultPrompts?.[key] ?? "";
+                  return (
+                    <div key={key}>
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+                          {label}
+                        </span>
+                        <span className="flex items-center gap-2">
+                          <span
+                            className={`text-[10px] ${isCustom ? "text-amber-400" : "text-zinc-600"}`}
+                          >
+                            {isCustom ? "● personnalisé" : "○ défaut"}
+                          </span>
+                          {isCustom && (
+                            <button
+                              onClick={() => patchPrompt(key, "")}
+                              className="text-[10px] text-zinc-400 underline hover:text-zinc-200"
+                            >
+                              Défaut
+                            </button>
+                          )}
+                        </span>
+                      </div>
+                      <textarea
+                        rows={rows}
+                        value={shown}
+                        onChange={(e) => patchPrompt(key, e.target.value)}
+                        className="w-full resize-y rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-zinc-200 outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
         </div>
 

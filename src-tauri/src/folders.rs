@@ -283,21 +283,12 @@ fn llm_classify(state: &AppState, dir: &Path, entries: &[EntryInfo], bias: f32) 
         ""
     };
 
-    let system = "Tu décides comment un explorateur de fichiers doit traiter un dossier : \
-        'recursive' (l'explorer et indexer ses fichiers un par un) ou 'block' (le traiter comme \
-        une seule unité opaque, SANS l'explorer).\n\
-        Choisis 'recursive' dès qu'il y a du SENS EXPLOITABLE à l'intérieur — du contenu que \
-        l'utilisateur pourrait vouloir retrouver, lire, comprendre ou manipuler : documents, \
-        cours, projets, notes, code source, photos ou vidéos personnelles, etc.\n\
-        Choisis 'block' UNIQUEMENT si le dossier est un ensemble applicatif/technique sans \
-        intérêt à indexer fichier par fichier, c'est-à-dire un truc dont l'utilisateur ne fera \
-        rien individuellement : environnement virtuel, dépendances (node_modules, vendor), bundle \
-        d'application, pack d'instruments/samples (DAW), cache, artefacts de build, ou dossier ne \
-        contenant que des binaires opaques.\n\
-        EXTRAPOLE le rôle du dossier à partir de son CHEMIN COMPLET (le dossier parent donne un \
-        contexte essentiel), de son nom, et des noms de ses fichiers et sous-dossiers. En cas de \
-        doute, réponds 'recursive'.\n\
-        Réponds STRICTEMENT en JSON, sans aucun texte autour : {\"mode\":\"block\"|\"recursive\"}.";
+    // Prompt système : surcharge utilisateur si définie, sinon défaut intégré.
+    let cfg = state.config.snapshot();
+    let system = crate::config::prompt_or(
+        &cfg.prompts.folder_classify,
+        crate::config::default_prompts::FOLDER_CLASSIFY,
+    );
     let user = format!(
         "Chemin complet: {full_path}\nDossier parent: {parent}\n\
          Contenu: {dirs} sous-dossier(s), {files} fichier(s).\nÉléments: {listing}"

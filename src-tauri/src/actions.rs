@@ -71,13 +71,11 @@ pub async fn plan_reorganization(
     let summaries = state.db.summaries_for_parent(&scope).unwrap_or_default();
     let listing = build_listing(&scope, &summaries);
 
-    let system = "Tu es l'assistant de rangement de SenseTree. À partir d'une instruction \
-        et d'une liste de fichiers, tu proposes un plan de réorganisation. \
-        Réponds UNIQUEMENT en JSON valide, sans texte autour, au format : \
-        {\"summary\": string, \"operations\": [{\"kind\": \"move|rename|delete|mkdir\", \
-        \"old_path\": string|null, \"new_path\": string|null, \"reason\": string}]}. \
-        Utilise des chemins absolus cohérents avec ceux fournis. \
-        N'invente jamais de fichiers inexistants.";
+    let cfg = state.config.snapshot();
+    let system = crate::config::prompt_or(
+        &cfg.prompts.reorganize,
+        crate::config::default_prompts::REORGANIZE,
+    );
 
     let user = format!(
         "Instruction: {instruction}\n\nDossier cible: {scope}\n\nFichiers:\n{listing}"
@@ -554,17 +552,12 @@ pub async fn chat_with_assistant(
     }
 
     // --- Prompt : répondre OU proposer un plan d'action (l'assistant décide) ---
-    let mut system = "Tu es l'assistant de SenseTree, un explorateur de fichiers sémantique local. \
-        RÈGLE DE FORMAT : si l'utilisateur pose une QUESTION ou demande une analyse, réponds \
-        NORMALEMENT en texte, en citant les fichiers pertinents par leur nom. \
-        Si — et SEULEMENT si — il demande une ACTION sur des fichiers (déplacer, renommer, \
-        supprimer, ranger, créer un dossier), réponds UNIQUEMENT par un objet JSON, sans aucun \
-        autre texte, au format : {\"summary\":\"...\",\"operations\":[{\"kind\":\
-        \"move|rename|delete|mkdir\",\"old_path\":\"...\",\"new_path\":\"...\",\"reason\":\"...\"}]}. \
-        Pour une réorganisation, raisonne sur la STRUCTURE du dossier fournie plus bas (arborescence). \
-        Les chemins DOIVENT être EXACTEMENT ceux listés ci-dessous — n'invente aucun chemin. \
-        Rien n'est exécuté sans validation manuelle de l'utilisateur."
-        .to_string();
+    let cfg = state.config.snapshot();
+    let mut system = crate::config::prompt_or(
+        &cfg.prompts.chat_system,
+        crate::config::default_prompts::CHAT_SYSTEM,
+    )
+    .to_string();
 
     // Extraits (pour répondre) + chemins exacts disponibles (pour les actions).
     if !sources.is_empty() {

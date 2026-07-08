@@ -16,6 +16,7 @@ import type {
   HealthReport,
   IndexingStats,
   PathDetails,
+  PromptsConfig,
   SearchResult,
   TreeNode,
 } from "./types";
@@ -23,6 +24,7 @@ import type {
 // --- Configuration & santé ---
 export const getConfig = () => invoke<AppConfig>("get_config");
 export const setConfig = (config: AppConfig) => invoke<void>("set_config", { config });
+export const getDefaultPrompts = () => invoke<PromptsConfig>("get_default_prompts");
 export const aiHealth = () => invoke<HealthReport>("ai_health");
 export const gpuAvailable = () => invoke<boolean>("gpu_available");
 export const testChatEndpoint = (baseUrl: string, apiKey: string, model: string) =>

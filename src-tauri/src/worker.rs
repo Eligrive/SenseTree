@@ -280,11 +280,11 @@ async fn llm_try_extract(state: &AppState, path: &str, sample: &str) -> Option<S
     let parent = p.parent().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let excerpt: String = sample.chars().take(4000).collect();
 
-    let system = "On te donne un extrait d'un fichier de type inconnu. Si l'extrait contient du \
-        texte ou des données PORTEUSES DE SENS (configuration, logs, notes, données, code, \
-        markup…), extrais/résume son contenu utile en quelques phrases, pour l'indexer dans un \
-        moteur de recherche. Si c'est du binaire opaque SANS contenu exploitable, réponds \
-        EXACTEMENT et uniquement : NO_CONTENT.";
+    let cfg = state.config.snapshot();
+    let system = crate::config::prompt_or(
+        &cfg.prompts.file_extract,
+        crate::config::default_prompts::FILE_EXTRACT,
+    );
     let user = format!("Fichier: {name}\nDossier: {parent}\n\nExtrait:\n{excerpt}");
 
     let resp = state
@@ -363,9 +363,11 @@ async fn index_image(
         .map(|k| k.mime_type().to_string())
         .unwrap_or_else(|| "image/png".to_string());
 
-    let prompt = "Décris le contenu de cette image en une à deux phrases, \
-        en identifiant les objets, le texte visible et le thème, \
-        pour faciliter son classement dans une arborescence de fichiers.";
+    let cfg = state.config.snapshot();
+    let prompt = crate::config::prompt_or(
+        &cfg.prompts.vision_caption,
+        crate::config::default_prompts::VISION_CAPTION,
+    );
 
     let caption = match state.ai.vision_client().describe_image(&b64, &mime, prompt).await {
         Ok(c) => c,
@@ -484,9 +486,11 @@ async fn llm_describe_folder(
     top_exts: &str,
     sample: &str,
 ) -> Option<String> {
-    let system = "Décris en UNE phrase concise et concrète ce qu'est ce dossier (son rôle et son \
-        contenu), à partir de son nom, son emplacement et un échantillon de son contenu. \
-        Réponds uniquement par la phrase, sans préambule.";
+    let cfg = state.config.snapshot();
+    let system = crate::config::prompt_or(
+        &cfg.prompts.folder_describe,
+        crate::config::default_prompts::FOLDER_DESCRIBE,
+    );
     let user = format!(
         "Nom: {name}\nEmplacement: {parent}\nTypes de fichiers: {top_exts}\nExemples: {sample}"
     );
@@ -660,8 +664,11 @@ async fn ocr_pdf_via_vision(state: &AppState, path: &str) -> Option<String> {
         return None;
     }
 
-    let prompt = "Transcris fidèlement TOUT le texte visible dans cette image (OCR). \
-        Ne renvoie que le texte transcrit, sans commentaire.";
+    let cfg = state.config.snapshot();
+    let prompt = crate::config::prompt_or(
+        &cfg.prompts.vision_ocr,
+        crate::config::default_prompts::VISION_OCR,
+    );
     let client = state.ai.vision_client();
     let mut pages = Vec::new();
     for img in images.iter().take(8) {

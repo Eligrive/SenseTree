@@ -123,12 +123,122 @@ impl Default for IndexingConfig {
     }
 }
 
+/// Textes de prompts système surchargés par l'utilisateur. Un champ vide signifie
+/// « utiliser le prompt par défaut intégré » (voir [`default_prompts`]). C'est le
+/// point d'entrée pour ajuster finement l'« extraction du sens » sans recompiler.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PromptsConfig {
+    /// Classification d'un dossier : récursif vs bloc.
+    #[serde(default)]
+    pub folder_classify: String,
+    /// Description en une phrase d'un dossier indexé en bloc.
+    #[serde(default)]
+    pub folder_describe: String,
+    /// Extraction de sens d'un fichier de type inconnu (texte/binaire).
+    #[serde(default)]
+    pub file_extract: String,
+    /// Légende d'une image (vision).
+    #[serde(default)]
+    pub vision_caption: String,
+    /// OCR d'une page (vision).
+    #[serde(default)]
+    pub vision_ocr: String,
+    /// Instruction système de l'assistant de chat (RAG + actions).
+    #[serde(default)]
+    pub chat_system: String,
+    /// Instruction système du planificateur de réorganisation.
+    #[serde(default)]
+    pub reorganize: String,
+}
+
+/// Prompts par défaut intégrés (source unique de vérité). Les call-sites les
+/// utilisent quand la surcharge utilisateur correspondante est vide.
+pub mod default_prompts {
+    pub const FOLDER_CLASSIFY: &str = "Tu décides comment un explorateur de fichiers doit traiter un dossier : \
+        'recursive' (l'explorer et indexer ses fichiers un par un) ou 'block' (le traiter comme \
+        une seule unité opaque, SANS l'explorer).\n\
+        Choisis 'recursive' dès qu'il y a du SENS EXPLOITABLE à l'intérieur — du contenu que \
+        l'utilisateur pourrait vouloir retrouver, lire, comprendre ou manipuler : documents, \
+        cours, projets, notes, code source, photos ou vidéos personnelles, etc.\n\
+        Choisis 'block' UNIQUEMENT si le dossier est un ensemble applicatif/technique sans \
+        intérêt à indexer fichier par fichier, c'est-à-dire un truc dont l'utilisateur ne fera \
+        rien individuellement : environnement virtuel, dépendances (node_modules, vendor), bundle \
+        d'application, pack d'instruments/samples (DAW), cache, artefacts de build, ou dossier ne \
+        contenant que des binaires opaques.\n\
+        EXTRAPOLE le rôle du dossier à partir de son CHEMIN COMPLET (le dossier parent donne un \
+        contexte essentiel), de son nom, et des noms de ses fichiers et sous-dossiers. En cas de \
+        doute, réponds 'recursive'.\n\
+        Réponds STRICTEMENT en JSON, sans aucun texte autour : {\"mode\":\"block\"|\"recursive\"}.";
+
+    pub const FOLDER_DESCRIBE: &str = "Décris en UNE phrase concise et concrète ce qu'est ce dossier (son rôle et son \
+        contenu), à partir de son nom, son emplacement et un échantillon de son contenu. \
+        Réponds uniquement par la phrase, sans préambule.";
+
+    pub const FILE_EXTRACT: &str = "On te donne un extrait d'un fichier de type inconnu. Si l'extrait contient du \
+        texte ou des données PORTEUSES DE SENS (configuration, logs, notes, données, code, \
+        markup…), extrais/résume son contenu utile en quelques phrases, pour l'indexer dans un \
+        moteur de recherche. Si c'est du binaire opaque SANS contenu exploitable, réponds \
+        EXACTEMENT et uniquement : NO_CONTENT.";
+
+    pub const VISION_CAPTION: &str = "Décris le contenu de cette image en une à deux phrases, \
+        en identifiant les objets, le texte visible et le thème, \
+        pour faciliter son classement dans une arborescence de fichiers.";
+
+    pub const VISION_OCR: &str = "Transcris fidèlement TOUT le texte visible dans cette image (OCR). \
+        Ne renvoie que le texte transcrit, sans commentaire.";
+
+    pub const CHAT_SYSTEM: &str = "Tu es l'assistant de SenseTree, un explorateur de fichiers sémantique local. \
+        RÈGLE DE FORMAT : si l'utilisateur pose une QUESTION ou demande une analyse, réponds \
+        NORMALEMENT en texte, en citant les fichiers pertinents par leur nom. \
+        Si — et SEULEMENT si — il demande une ACTION sur des fichiers (déplacer, renommer, \
+        supprimer, ranger, créer un dossier), réponds UNIQUEMENT par un objet JSON, sans aucun \
+        autre texte, au format : {\"summary\":\"...\",\"operations\":[{\"kind\":\
+        \"move|rename|delete|mkdir\",\"old_path\":\"...\",\"new_path\":\"...\",\"reason\":\"...\"}]}. \
+        Pour une réorganisation, raisonne sur la STRUCTURE du dossier fournie plus bas (arborescence). \
+        Les chemins DOIVENT être EXACTEMENT ceux listés ci-dessous — n'invente aucun chemin. \
+        Rien n'est exécuté sans validation manuelle de l'utilisateur.";
+
+    pub const REORGANIZE: &str = "Tu es l'assistant de rangement de SenseTree. À partir d'une instruction \
+        et d'une liste de fichiers, tu proposes un plan de réorganisation. \
+        Réponds UNIQUEMENT en JSON valide, sans texte autour, au format : \
+        {\"summary\": string, \"operations\": [{\"kind\": \"move|rename|delete|mkdir\", \
+        \"old_path\": string|null, \"new_path\": string|null, \"reason\": string}]}. \
+        Utilise des chemins absolus cohérents avec ceux fournis. \
+        N'invente jamais de fichiers inexistants.";
+}
+
+impl PromptsConfig {
+    /// Renvoie les prompts par défaut intégrés (pour l'affichage dans les Paramètres).
+    pub fn defaults() -> Self {
+        PromptsConfig {
+            folder_classify: default_prompts::FOLDER_CLASSIFY.to_string(),
+            folder_describe: default_prompts::FOLDER_DESCRIBE.to_string(),
+            file_extract: default_prompts::FILE_EXTRACT.to_string(),
+            vision_caption: default_prompts::VISION_CAPTION.to_string(),
+            vision_ocr: default_prompts::VISION_OCR.to_string(),
+            chat_system: default_prompts::CHAT_SYSTEM.to_string(),
+            reorganize: default_prompts::REORGANIZE.to_string(),
+        }
+    }
+}
+
+/// Renvoie la surcharge `override_` si non vide, sinon le défaut `fallback`.
+pub fn prompt_or<'a>(override_: &'a str, fallback: &'a str) -> &'a str {
+    if override_.trim().is_empty() {
+        fallback
+    } else {
+        override_
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub embedding: EmbeddingConfig,
     pub reasoning: ChatConfig,
     pub vision: ChatConfig,
     pub indexing: IndexingConfig,
+    #[serde(default)]
+    pub prompts: PromptsConfig,
 }
 
 impl Default for AppConfig {
@@ -138,6 +248,7 @@ impl Default for AppConfig {
             reasoning: ChatConfig::default_reasoning(),
             vision: ChatConfig::default_vision(),
             indexing: IndexingConfig::default(),
+            prompts: PromptsConfig::default(),
         }
     }
 }

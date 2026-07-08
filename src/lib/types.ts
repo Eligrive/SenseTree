@@ -27,11 +27,22 @@ export interface IndexingConfig {
   block_bias: number; // 0 = très récursif, 1 = très bloc
 }
 
+export interface PromptsConfig {
+  folder_classify: string;
+  folder_describe: string;
+  file_extract: string;
+  vision_caption: string;
+  vision_ocr: string;
+  chat_system: string;
+  reorganize: string;
+}
+
 export interface AppConfig {
   embedding: EmbeddingConfig;
   reasoning: ChatConfig;
   vision: ChatConfig;
   indexing: IndexingConfig;
+  prompts: PromptsConfig;
 }
 
 export interface HealthReport {

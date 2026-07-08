@@ -35,6 +35,13 @@ fn get_config(state: State<'_, Arc<AppState>>) -> Result<AppConfig, String> {
     Ok(state.config.snapshot())
 }
 
+/// Renvoie les prompts système par défaut (pour l'édition dans les Paramètres :
+/// un champ laissé identique ou vide retombe sur ces valeurs intégrées).
+#[tauri::command]
+fn get_default_prompts() -> config::PromptsConfig {
+    config::PromptsConfig::defaults()
+}
+
 #[tauri::command]
 async fn set_config(state: State<'_, Arc<AppState>>, config: AppConfig) -> Result<(), String> {
     let st = state.inner().clone();
@@ -412,6 +419,7 @@ pub fn run() {
             gpu_available,
             get_config,
             set_config,
+            get_default_prompts,
             ai_health,
             test_chat_endpoint,
             test_embedding_endpoint,
