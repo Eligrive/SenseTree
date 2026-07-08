@@ -62,16 +62,27 @@ impl LocalEmbedder {
     pub fn load(cfg: &EmbeddingConfig, batch_size: usize) -> Result<Self> {
         let (model_kind, dimensions, needs_e5_prefix) = resolve_local_model(&cfg.model);
 
+        #[allow(unused_mut)]
+        let mut options = fastembed::InitOptions::new(model_kind).with_show_download_progress(false);
+
         if cfg.use_gpu {
-            // NB : l'accélération CUDA nécessite un binaire compilé avec la feature `cuda`
-            // d'ort et le runtime CUDA présent. On reste sur CPU (portable) par défaut ;
-            // ce drapeau est honoré une fois l'app compilée avec le support GPU.
-            tracing::info!(
-                "use_gpu=true demandé : exécution CPU pour l'instant (build CUDA requis pour le GPU)"
-            );
+            // L'accélération GPU n'existe que si le binaire est compilé `--features cuda`
+            // ET que le runtime CUDA est présent. Sinon on reste sur CPU (portable).
+            #[cfg(feature = "cuda")]
+            {
+                options = options.with_execution_providers(vec![
+                    ort::execution_providers::CUDAExecutionProvider::default().build(),
+                ]);
+                tracing::info!("embedding local : exécution CUDA demandée (repli CPU automatique si indisponible)");
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                tracing::info!(
+                    "use_gpu=true mais binaire sans support CUDA : exécution CPU (recompiler avec --features cuda)"
+                );
+            }
         }
 
-        let options = fastembed::InitOptions::new(model_kind).with_show_download_progress(false);
         let model = fastembed::TextEmbedding::try_new(options)
             .context("chargement du modèle d'embedding local (fastembed)")?;
 

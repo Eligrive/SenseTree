@@ -17,7 +17,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# Accélération GPU de l'embedding local via ONNX Runtime CUDA.
+# Build par défaut = CPU (portable partout). Pour activer le GPU sur une machine
+# disposant d'une carte NVIDIA + du runtime CUDA :  cargo build --features cuda
+# (ou `tauri build -- --features cuda`).
+cuda = ["dep:ort", "ort/cuda"]
+
 [dependencies]
+# ort n'est tiré directement que pour la feature `cuda` (fastembed l'embarque
+# déjà en transitif ; on aligne la version pour l'unification de features).
+ort = { version = "=2.0.0-rc.9", default-features = false, optional = true }
 anyhow = "1"
 crossbeam-channel = "0.5"
 lancedb = "0.31"
