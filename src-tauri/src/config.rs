@@ -98,6 +98,16 @@ pub struct IndexingConfig {
     pub batch_size: usize,
     /// Taille max d'un fichier à extraire (Mo). Au-delà : indexation par contexte seul.
     pub max_file_mb: u64,
+    /// Tendance de classification des dossiers : 0.0 = très récursif (conservateur,
+    /// on explore au maximum), 1.0 = très bloc (on regroupe agressivement les
+    /// dossiers techniques/opaques). Défaut 0.5. `#[serde(default)]` pour rester
+    /// rétro-compatible avec les settings.json antérieurs.
+    #[serde(default = "default_block_bias")]
+    pub block_bias: f32,
+}
+
+fn default_block_bias() -> f32 {
+    0.5
 }
 
 impl Default for IndexingConfig {
@@ -108,6 +118,7 @@ impl Default for IndexingConfig {
             overlap: 200,
             batch_size: 32,
             max_file_mb: 50,
+            block_bias: default_block_bias(),
         }
     }
 }

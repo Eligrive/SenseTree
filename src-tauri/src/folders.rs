@@ -38,6 +38,23 @@ const STRONG_BLOCK_EXTS: &[&str] = &[
 /// samples DAW → blocs.
 const DAW_SIDECAR_EXTS: &[&str] = &["asd", "ams"];
 
+/// Extensions « opaques » : binaires/artefacts sans sens exploitable à indexer
+/// individuellement (installations d'outils type Ghidra, build outputs, runtimes).
+const OPAQUE_EXTS: &[&str] = &[
+    "dll", "exe", "so", "dylib", "bin", "dat", "o", "a", "lib", "jar", "class", "pyc", "pyo",
+    "node", "wasm", "obj", "pdb", "sys", "msi", "pak", "idx", "pack", "res", "rlib", "rmeta",
+    "jnilib", "dylib", "ko", "elf",
+];
+
+/// Extensions à contenu « riche » (documents, médias, code) : leur présence
+/// signale du sens exploitable et retient de bloquer un dossier.
+const RICH_EXTS: &[&str] = &[
+    "pdf", "doc", "docx", "txt", "md", "rtf", "odt", "ppt", "pptx", "xls", "xlsx", "csv", "epub",
+    "jpg", "jpeg", "png", "gif", "webp", "tiff", "heic", "svg", "mp3", "wav", "flac", "mp4", "mov",
+    "avi", "mkv", "py", "js", "ts", "tsx", "rs", "java", "c", "cpp", "h", "hpp", "go", "html", "css",
+    "json", "xml", "yaml", "yml", "ipynb",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FolderMode {
     Recursive,
@@ -118,6 +135,28 @@ fn heuristic_block(name: &str, entries: &[EntryInfo]) -> bool {
     has_ext_in(entries, STRONG_BLOCK_EXTS) || has_ext_in(entries, DAW_SIDECAR_EXTS)
 }
 
+/// Dossier dominé par des fichiers binaires opaques (installations d'outils comme
+/// Ghidra, dépendances compilées, runtimes) : rien d'exploitable à indexer un par
+/// un. Le seuil s'abaisse avec la « tendance-bloc » (curseur des Paramètres) et une
+/// petite tolérance de contenu riche s'ouvre à mesure que la tendance augmente.
+fn opaque_dominant(entries: &[EntryInfo], bias: f32) -> bool {
+    let files: Vec<&EntryInfo> = entries.iter().filter(|e| !e.is_dir).collect();
+    if files.len() < 4 {
+        return false;
+    }
+    let has_ext = |e: &&EntryInfo, set: &[&str]| {
+        e.ext.as_deref().map(|x| set.contains(&x)).unwrap_or(false)
+    };
+    let opaque = files.iter().filter(|e| has_ext(e, OPAQUE_EXTS)).count();
+    let rich = files.iter().filter(|e| has_ext(e, RICH_EXTS)).count();
+    let bias = bias.clamp(0.0, 1.0);
+    let ratio = opaque as f32 / files.len() as f32;
+    let rich_ratio = rich as f32 / files.len() as f32;
+    // Seuil : 0.90 (conservateur) → 0.55 (agressif).
+    let threshold = 0.90 - bias * 0.35;
+    ratio >= threshold && rich_ratio <= bias * 0.15
+}
+
 /// Décision de traitement d'un dossier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
@@ -191,29 +230,35 @@ fn classify(
     name: &str,
     entries: &[EntryInfo],
 ) -> (Decision, &'static str) {
+    let bias = cfg.indexing.block_bias;
     // 1. Dossier technique CERTAIN (venv, bundle, presets/samples DAW) → bloc,
     //    sans solliciter le LLM.
     if heuristic_block(name, entries) {
         return (Decision::Block, "heuristic");
     }
-    // 2. Cas trivial (très peu d'éléments) → exploration.
+    // 2. Dossier dominé par des binaires opaques (Ghidra, runtimes, build) → bloc.
+    //    Seuil modulé par la tendance-bloc des Paramètres.
+    if opaque_dominant(entries, bias) {
+        return (Decision::Block, "heuristic");
+    }
+    // 3. Cas trivial (très peu d'éléments) → exploration.
     if entries.len() < MIN_ENTRIES_FOR_LLM {
         return (Decision::Recursive, "heuristic");
     }
-    // 3. Reasoning désactivé : on explore (choix sûr, pas de report).
+    // 4. Reasoning désactivé : on explore (choix sûr, pas de report).
     if !cfg.reasoning.enabled {
         return (Decision::Recursive, "heuristic");
     }
-    // 4. Tout le reste : le LLM tranche à partir du chemin + du contenu ; s'il est
+    // 5. Tout le reste : le LLM tranche à partir du chemin + du contenu ; s'il est
     //    indisponible, on REPORTE (le dossier reste « en attente »).
-    match llm_classify(state, dir, entries) {
+    match llm_classify(state, dir, entries, bias) {
         LlmOutcome::Decided(FolderMode::Block) => (Decision::Block, "llm"),
         LlmOutcome::Decided(FolderMode::Recursive) => (Decision::Recursive, "llm"),
         LlmOutcome::Unavailable => (Decision::Defer, "deferred"),
     }
 }
 
-fn llm_classify(state: &AppState, dir: &Path, entries: &[EntryInfo]) -> LlmOutcome {
+fn llm_classify(state: &AppState, dir: &Path, entries: &[EntryInfo], bias: f32) -> LlmOutcome {
     let full_path = dir.to_string_lossy();
     let parent = dir
         .parent()
@@ -227,6 +272,16 @@ fn llm_classify(state: &AppState, dir: &Path, entries: &[EntryInfo]) -> LlmOutco
         .map(|e| format!("{}{}", e.name, if e.is_dir { "/" } else { "" }))
         .collect::<Vec<_>>()
         .join(", ");
+
+    // Indication de tendance issue du curseur des Paramètres (départage les cas limites).
+    let bias = bias.clamp(0.0, 1.0);
+    let tendency = if bias >= 0.66 {
+        "\nEn cas d'hésitation, PRIVILÉGIE 'block' : l'utilisateur préfère regrouper agressivement les dossiers techniques."
+    } else if bias <= 0.34 {
+        "\nEn cas d'hésitation, PRIVILÉGIE 'recursive' : l'utilisateur préfère explorer largement."
+    } else {
+        ""
+    };
 
     let system = "Tu décides comment un explorateur de fichiers doit traiter un dossier : \
         'recursive' (l'explorer et indexer ses fichiers un par un) ou 'block' (le traiter comme \
@@ -250,7 +305,7 @@ fn llm_classify(state: &AppState, dir: &Path, entries: &[EntryInfo]) -> LlmOutco
 
     let client = state.ai.reasoning_client();
     let messages = vec![
-        ChatMessage { role: "system".into(), content: system.into() },
+        ChatMessage { role: "system".into(), content: format!("{system}{tendency}") },
         ChatMessage { role: "user".into(), content: user },
     ];
 
@@ -271,9 +326,18 @@ fn llm_classify(state: &AppState, dir: &Path, entries: &[EntryInfo]) -> LlmOutco
         }
     }
     let low = raw.to_lowercase();
-    LlmOutcome::Decided(if low.contains("block") && !low.contains("recursive") {
+    let says_block = low.contains("block");
+    let says_recursive = low.contains("recursive");
+    LlmOutcome::Decided(if says_block && !says_recursive {
         FolderMode::Block
-    } else {
+    } else if says_recursive && !says_block {
         FolderMode::Recursive
+    } else {
+        // Réponse ambiguë : on tranche selon la tendance (curseur des Paramètres).
+        if bias >= 0.66 {
+            FolderMode::Block
+        } else {
+            FolderMode::Recursive
+        }
     })
 }

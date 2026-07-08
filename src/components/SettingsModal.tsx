@@ -59,6 +59,14 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 const inputCls =
   "w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-200 outline-none focus:border-blue-500";
 
+function biasLabel(v: number): string {
+  if (v <= 0.2) return "très récursif";
+  if (v <= 0.4) return "plutôt récursif";
+  if (v < 0.6) return "équilibré";
+  if (v < 0.8) return "plutôt bloc";
+  return "très bloc";
+}
+
 export default function SettingsModal({ open, onClose, onSaved }: Props) {
   const [cfg, setCfg] = useState<AppConfig | null>(null);
   const [saving, setSaving] = useState(false);
@@ -454,6 +462,39 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
 
           {chatSection("reasoning", "Reasoning / Chat")}
           {chatSection("vision", "Vision (multimodal)")}
+
+          {/* Classification des dossiers : tendance bloc vs récursif */}
+          <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
+            <h3 className="text-sm font-semibold text-zinc-200">Classification des dossiers</h3>
+            <Field
+              label={`Tendance bloc / récursif — ${biasLabel(cfg.indexing.block_bias ?? 0.5)}`}
+            >
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={cfg.indexing.block_bias ?? 0.5}
+                onChange={(e) =>
+                  setCfg({
+                    ...cfg,
+                    indexing: { ...cfg.indexing, block_bias: Number(e.target.value) },
+                  })
+                }
+                className="w-full accent-blue-500"
+              />
+              <div className="flex justify-between text-[10px] text-zinc-500">
+                <span>Explorer au max (récursif)</span>
+                <span>Regrouper au max (bloc)</span>
+              </div>
+            </Field>
+            <p className="text-[11px] text-zinc-500">
+              Plus la tendance penche vers « bloc », plus SenseTree regroupe agressivement les
+              dossiers techniques ou opaques (dépendances, installations d'outils comme Ghidra,
+              packs d'instruments) au lieu de les indexer fichier par fichier. Prend effet sur les
+              dossiers classés ensuite (ou après une réindexation).
+            </p>
+          </section>
         </div>
 
         <div className="flex items-center justify-between gap-3 border-t border-zinc-800 px-5 py-3">
