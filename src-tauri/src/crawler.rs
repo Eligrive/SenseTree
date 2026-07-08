@@ -29,6 +29,12 @@ pub fn scan_directory(state: Arc<AppState>, start_path: &str) {
 
     let mut it = WalkDir::new(start_path).into_iter();
     loop {
+        // Pause utilisateur : on suspend le scan (et ses classifications LLM) sans
+        // abandonner la progression — on reprend là où on s'était arrêté.
+        while state.paused.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
         let entry = match it.next() {
             None => break,
             Some(Err(_)) => continue,
