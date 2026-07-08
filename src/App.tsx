@@ -7,12 +7,14 @@ import Explorer from "./components/Explorer";
 import ChatPanel from "./components/ChatPanel";
 import SettingsModal from "./components/SettingsModal";
 import GardenerModal from "./components/GardenerModal";
+import FileDetailModal from "./components/FileDetailModal";
 
 import type {
   DirEntryInfo,
   DirectoryReport,
   HealthReport,
   IndexingStats,
+  PathDetails,
   ResultView,
   SearchResult,
   TreeNode,
@@ -24,6 +26,7 @@ import {
   getRoots,
   indexingStats,
   listDirectory,
+  pathDetails,
   semanticSearch,
   semanticTree,
   setFolderMode,
@@ -51,6 +54,9 @@ export default function App() {
 
   const [report, setReport] = useState<DirectoryReport | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+
+  const [details, setDetails] = useState<PathDetails | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   const refreshHealth = useCallback(() => {
     aiHealth().then(setHealth).catch(() => setHealth(null));
@@ -133,6 +139,18 @@ export default function App() {
     openPath(path).catch((e) => console.error("openPath:", e));
   };
 
+  // Simple-clic : ouvre le panneau de détail (double-clic = ouvrir le fichier).
+  const openDetail = (path: string) => {
+    setDetails(null);
+    setDetailOpen(true);
+    pathDetails(path)
+      .then(setDetails)
+      .catch((e) => {
+        console.error("path_details:", e);
+        setDetailOpen(false);
+      });
+  };
+
   const changeFolderMode = (path: string, mode: "recursive" | "block") => {
     // Mise à jour optimiste : le badge change instantanément (plus de « re-clic »).
     setEntries((prev) => prev.map((e) => (e.path === path ? { ...e, folder_mode: mode } : e)));
@@ -171,6 +189,7 @@ export default function App() {
           loading={loading}
           onNavigate={navigate}
           onOpenFile={openFile}
+          onSelect={openDetail}
           onSearch={search}
           searchMode={searchMode}
           searchResults={searchResults}
@@ -201,6 +220,13 @@ export default function App() {
         report={reportOpen ? report : null}
         loading={reportOpen && !report}
         onClose={() => setReportOpen(false)}
+      />
+
+      <FileDetailModal
+        details={detailOpen ? details : null}
+        loading={detailOpen && !details}
+        onClose={() => setDetailOpen(false)}
+        onOpenFile={openFile}
       />
     </div>
   );

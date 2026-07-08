@@ -348,6 +348,7 @@ pub fn run() {
             reindex_all,
             explorer::list_directory,
             explorer::get_roots,
+            explorer::path_details,
             set_folder_mode,
             search::semantic_search,
             search::semantic_tree,

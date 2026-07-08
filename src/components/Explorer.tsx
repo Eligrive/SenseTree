@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   Boxes,
   Check,
@@ -29,6 +29,7 @@ interface Props {
   loading: boolean;
   onNavigate: (path: string) => void;
   onOpenFile: (path: string) => void;
+  onSelect: (path: string) => void;
   onSearch: (query: string) => void;
   searchMode: boolean;
   searchResults: SearchResult[];
@@ -149,6 +150,7 @@ export default function Explorer({
   loading,
   onNavigate,
   onOpenFile,
+  onSelect,
   onSearch,
   searchMode,
   searchResults,
@@ -163,6 +165,22 @@ export default function Explorer({
 }: Props) {
   const [query, setQuery] = useState("");
   const crumbs = currentPath ? breadcrumbs(currentPath) : [];
+  // Distinction simple-clic (détail) / double-clic (ouvrir) via un court délai.
+  const clickTimer = useRef<number | null>(null);
+  const handleClick = (path: string) => {
+    if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
+    clickTimer.current = window.setTimeout(() => {
+      clickTimer.current = null;
+      onSelect(path);
+    }, 220);
+  };
+  const handleDouble = (entry: DirEntryInfo) => {
+    if (clickTimer.current !== null) {
+      window.clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+    }
+    entry.is_directory ? onNavigate(entry.path) : onOpenFile(entry.path);
+  };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -316,10 +334,9 @@ export default function Explorer({
                 {entries.map((entry) => (
                   <tr
                     key={entry.path}
-                    onDoubleClick={() =>
-                      entry.is_directory ? onNavigate(entry.path) : onOpenFile(entry.path)
-                    }
-                    className="group cursor-default border-b border-zinc-800/40 last:border-0 hover:bg-zinc-900/60"
+                    onClick={() => handleClick(entry.path)}
+                    onDoubleClick={() => handleDouble(entry)}
+                    className="group cursor-pointer border-b border-zinc-800/40 last:border-0 hover:bg-zinc-900/60"
                   >
                     <td className="px-3 py-1">
                       <div className="flex items-center gap-2">

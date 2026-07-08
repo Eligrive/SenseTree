@@ -117,6 +117,118 @@ pub fn get_roots(state: State<'_, Arc<AppState>>) -> Result<Vec<String>, String>
     Ok(state.config.snapshot().indexing.roots)
 }
 
+#[derive(Debug, Serialize)]
+pub struct PathDetails {
+    pub path: String,
+    pub name: String,
+    pub is_directory: bool,
+    pub size_bytes: u64,
+    pub modified: Option<i64>,
+    pub extension: Option<String>,
+    pub indexed: bool,
+    pub status: Option<String>,
+    pub last_error: Option<String>,
+    pub doc_type: Option<String>,
+    /// Sens extrait / aperçu (ou description vision / OCR / contexte).
+    pub summary: Option<String>,
+    /// Libellé lisible de la méthode d'extraction.
+    pub content_kind: String,
+    pub folder_mode: Option<String>,
+}
+
+/// Détails d'un fichier/dossier pour le panneau ouvert au simple-clic.
+#[tauri::command]
+pub async fn path_details(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+) -> Result<PathDetails, String> {
+    let state = state.inner().clone();
+    let p = std::path::Path::new(&path);
+
+    let meta = fs::metadata(&path).ok();
+    let is_directory = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+    let size_bytes = meta
+        .as_ref()
+        .map(|m| if m.is_dir() { 0 } else { m.len() })
+        .unwrap_or(0);
+    let modified = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
+    let extension = p.extension().map(|e| e.to_string_lossy().to_lowercase());
+
+    let indexed = state.db.is_indexed(&path).map_err(|e| e.to_string())?;
+    let (status, last_error) = match state.db.get_queue_status(&path).map_err(|e| e.to_string())? {
+        Some((s, e)) => (Some(s), e),
+        None => (None, None),
+    };
+    let (summary, doc_type) = match state.db.get_file_semantics(&path).map_err(|e| e.to_string())? {
+        Some((s, d)) => (
+            if s.is_empty() { None } else { Some(s) },
+            if d.is_empty() { None } else { Some(d) },
+        ),
+        None => (None, None),
+    };
+    let hash = state.db.get_stored_hash(&path).map_err(|e| e.to_string())?;
+    let folder_mode = if is_directory {
+        state.db.get_folder_mode(&path).map_err(|e| e.to_string())?.map(|(m, _)| m)
+    } else {
+        None
+    };
+
+    let content_kind = derive_content_kind(&hash, &doc_type, indexed, &status);
+
+    Ok(PathDetails {
+        path,
+        name,
+        is_directory,
+        size_bytes,
+        modified,
+        extension,
+        indexed,
+        status,
+        last_error,
+        doc_type,
+        summary,
+        content_kind,
+        folder_mode,
+    })
+}
+
+fn derive_content_kind(
+    hash: &Option<String>,
+    doc_type: &Option<String>,
+    indexed: bool,
+    status: &Option<String>,
+) -> String {
+    if !indexed {
+        return match status.as_deref() {
+            Some("pending") | Some("pending_extraction") => "En file d'attente".to_string(),
+            Some("failed") | Some("failed_permanent") => "Échec d'indexation".to_string(),
+            _ => "Non indexé".to_string(),
+        };
+    }
+    if let Some(h) = hash {
+        if h.starts_with("block:") {
+            return "Bloc sémantique".to_string();
+        }
+        if h.starts_with("ctx:") {
+            return match doc_type.as_deref() {
+                Some(k) if !k.is_empty() => format!("Contexte ({k})"),
+                _ => "Contexte".to_string(),
+            };
+        }
+    }
+    match doc_type.as_deref() {
+        Some("pdf-ocr") => "OCR (vision)".to_string(),
+        Some("image") => "Image décrite (vision)".to_string(),
+        Some("llm-extrait") => "Contenu extrait par le LLM".to_string(),
+        _ => "Contenu extrait".to_string(),
+    }
+}
+
 fn normalize(path: &str) -> String {
     let trimmed = path.trim_end_matches(['/', '\\']);
     format!("{trimmed}{}", std::path::MAIN_SEPARATOR)

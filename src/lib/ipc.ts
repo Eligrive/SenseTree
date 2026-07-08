@@ -14,6 +14,7 @@ import type {
   DirectoryReport,
   HealthReport,
   IndexingStats,
+  PathDetails,
   SearchResult,
   TreeNode,
 } from "./types";
@@ -35,6 +36,7 @@ export const reindexAll = () => invoke<void>("reindex_all");
 export const listDirectory = (path: string) =>
   invoke<DirEntryInfo[]>("list_directory", { path });
 export const getRoots = () => invoke<string[]>("get_roots");
+export const pathDetails = (path: string) => invoke<PathDetails>("path_details", { path });
 export const indexingStats = () => invoke<IndexingStats>("indexing_stats");
 export const setFolderMode = (path: string, mode: "recursive" | "block") =>
   invoke<void>("set_folder_mode", { path, mode });

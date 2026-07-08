@@ -72,6 +72,22 @@ export interface TreeNode {
 /// Mode d'affichage des résultats de recherche.
 export type ResultView = "list" | "tree" | "split";
 
+export interface PathDetails {
+  path: string;
+  name: string;
+  is_directory: boolean;
+  size_bytes: number;
+  modified: number | null;
+  extension: string | null;
+  indexed: boolean;
+  status: string | null;
+  last_error: string | null;
+  doc_type: string | null;
+  summary: string | null;
+  content_kind: string;
+  folder_mode: string | null;
+}
+
 export type OpKind = "move" | "rename" | "delete" | "mkdir";
 
 export interface Operation {

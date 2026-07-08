@@ -632,6 +632,39 @@ impl Database {
         Ok(())
     }
 
+    /// Détails d'indexation d'un chemin (pour le panneau de détail).
+    pub fn get_file_semantics(&self, path: &str) -> Result<Option<(String, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(summary,''), COALESCE(doc_type,'') FROM file_semantics WHERE path = ?1",
+        )?;
+        let mut rows = stmt.query(params![path])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((row.get(0)?, row.get(1)?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Statut de file + dernière erreur d'un chemin.
+    pub fn get_queue_status(&self, path: &str) -> Result<Option<(String, Option<String>)>> {
+        let conn = self.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT status, last_error FROM indexing_queue WHERE path = ?1")?;
+        let mut rows = stmt.query(params![path])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((row.get(0)?, row.get(1)?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn is_indexed(&self, path: &str) -> Result<bool> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT 1 FROM indexed_files WHERE path = ?1")?;
+        Ok(stmt.exists(params![path])?)
+    }
+
     /// Chemins effectivement indexés (embeddés) sous `parent` — pour l'indicateur
     /// « indexé » de l'explorateur (fichiers et dossiers-blocs).
     pub fn indexed_paths_under(&self, parent: &str) -> Result<Vec<String>> {
