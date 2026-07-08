@@ -22,6 +22,7 @@ import type {
 export const getConfig = () => invoke<AppConfig>("get_config");
 export const setConfig = (config: AppConfig) => invoke<void>("set_config", { config });
 export const aiHealth = () => invoke<HealthReport>("ai_health");
+export const gpuAvailable = () => invoke<boolean>("gpu_available");
 export const testChatEndpoint = (baseUrl: string, apiKey: string, model: string) =>
   invoke<string>("test_chat_endpoint", { baseUrl, apiKey, model });
 export const listInstalledModels = (baseUrl: string, apiKey: string) =>

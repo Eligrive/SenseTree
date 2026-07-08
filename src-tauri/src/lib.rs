@@ -241,6 +241,13 @@ fn indexing_stats(state: State<'_, Arc<AppState>>) -> Result<db::IndexingStats, 
     state.db.get_indexing_stats().map_err(|e| e.to_string())
 }
 
+/// Indique si le binaire a été compilé avec le support GPU (feature `cuda`).
+/// L'UI s'en sert pour n'activer la case « Utiliser le GPU » que si elle a un effet.
+#[tauri::command]
+fn gpu_available() -> bool {
+    cfg!(feature = "cuda")
+}
+
 // =========================================================================
 // AMORÇAGE
 // =========================================================================
@@ -327,6 +334,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_recent_activity,
             indexing_stats,
+            gpu_available,
             get_config,
             set_config,
             ai_health,

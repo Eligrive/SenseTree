@@ -4,6 +4,7 @@ import { Download, Loader2, Plug, RefreshCw, RotateCcw, Save, X } from "lucide-r
 import type { AppConfig, ChatConfig } from "../lib/types";
 import {
   getConfig,
+  gpuAvailable,
   listInstalledModels,
   pullModel,
   reindexAll,
@@ -56,8 +57,13 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
     Record<string, { percent: number; status: string }>
   >({});
 
+  const [gpuSupported, setGpuSupported] = useState(false);
+
   useEffect(() => {
-    if (open) getConfig().then(setCfg).catch(() => setCfg(null));
+    if (open) {
+      getConfig().then(setCfg).catch(() => setCfg(null));
+      gpuAvailable().then(setGpuSupported).catch(() => setGpuSupported(false));
+    }
   }, [open]);
 
   // Progression du téléchargement de modèle (événements émis par le backend).
@@ -343,16 +349,35 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
             )}
 
             {cfg.embedding.mode === "local" && (
-              <label className="flex items-center gap-2 text-xs text-zinc-400">
-                <input
-                  type="checkbox"
-                  checked={cfg.embedding.use_gpu}
-                  onChange={(e) =>
-                    setCfg({ ...cfg, embedding: { ...cfg.embedding, use_gpu: e.target.checked } })
+              <div className="space-y-1">
+                <label
+                  className={`flex items-center gap-2 text-xs ${
+                    gpuSupported ? "text-zinc-400" : "cursor-not-allowed text-zinc-600"
+                  }`}
+                  title={
+                    gpuSupported
+                      ? "Exécute l'embedding sur le GPU (repli CPU si indisponible)"
+                      : "Binaire compilé sans support GPU"
                   }
-                />
-                Utiliser le GPU si disponible (build CUDA requis)
-              </label>
+                >
+                  <input
+                    type="checkbox"
+                    disabled={!gpuSupported}
+                    checked={cfg.embedding.use_gpu && gpuSupported}
+                    onChange={(e) =>
+                      setCfg({ ...cfg, embedding: { ...cfg.embedding, use_gpu: e.target.checked } })
+                    }
+                  />
+                  Utiliser le GPU (CUDA)
+                </label>
+                {!gpuSupported && (
+                  <p className="text-[11px] text-zinc-500">
+                    Binaire CPU : pour le GPU, recompiler avec{" "}
+                    <code className="text-zinc-400">--features cuda</code> sur une machine NVIDIA,
+                    ou déléguer l'indexation à un serveur distant (mode « Serveur HTTP »).
+                  </p>
+                )}
+              </div>
             )}
             <p className="rounded-md bg-amber-500/10 px-2 py-1 text-[11px] text-amber-400/90">
               Changer de modèle/dimensions nécessite une réindexation complète.

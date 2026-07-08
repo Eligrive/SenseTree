@@ -18,10 +18,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [features]
-# Accélération GPU de l'embedding local via ONNX Runtime CUDA.
-# Build par défaut = CPU (portable partout). Pour activer le GPU sur une machine
-# disposant d'une carte NVIDIA + du runtime CUDA :  cargo build --features cuda
-# (ou `tauri build -- --features cuda`).
+# CUDA est OPT-IN (jamais par défaut). Raison : activer `ort/cuda` force TOUT
+# ONNX Runtime (fastembed inclus) à charger le binaire CUDA d'ORT, qui ÉCHOUE à
+# s'initialiser sur une machine sans runtime CUDA (« Failed to initialize ORT
+# API ») — ce n'est pas un repli CPU gracieux. Le build par défaut reste donc CPU
+# (portable partout). Pour le GPU, compiler SUR une machine NVIDIA + CUDA avec :
+#   tauri build -- --features cuda        (ou `cargo build --features cuda`)
+# La case « Utiliser le GPU » n'a d'effet que sur un binaire ainsi compilé.
+# Pour offloader l'indexation sur un GPU distant sans build CUDA : utiliser le
+# mode embedding « Serveur HTTP » pointé sur un autre PC (déjà supporté).
 cuda = ["dep:ort", "ort/cuda"]
 
 [dependencies]
