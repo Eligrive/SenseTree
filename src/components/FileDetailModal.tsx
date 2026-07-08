@@ -26,6 +26,12 @@ function IndexState({ d }: { d: PathDetails }) {
         <Check size={14} /> Indexé
       </span>
     );
+  if (d.in_block)
+    return (
+      <span className="inline-flex items-center gap-1.5 text-purple-300">
+        <Boxes size={14} /> Membre d'un bloc
+      </span>
+    );
   const s = d.status;
   if (s === "pending" || s === "pending_extraction")
     return (

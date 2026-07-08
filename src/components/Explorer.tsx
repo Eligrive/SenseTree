@@ -112,6 +112,15 @@ function FolderModeBadge({
 /// Indicateur d'indexation unifié (fichier ou dossier-bloc) : vert = indexé,
 /// ambre = en file, rouge = échec.
 function IndexBadge({ entry }: { entry: DirEntryInfo }) {
+  if (entry.in_block) {
+    return (
+      <Boxes
+        size={12}
+        className="shrink-0 text-purple-400/70"
+        aria-label="Fait partie d'un dossier-bloc"
+      />
+    );
+  }
   if (entry.indexed) {
     return <Check size={13} className="shrink-0 text-emerald-500" aria-label="Indexé" />;
   }

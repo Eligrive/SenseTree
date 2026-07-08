@@ -665,6 +665,21 @@ impl Database {
         Ok(stmt.exists(params![path])?)
     }
 
+    /// Vrai si `path` (inclus) ou l'un de ses ancêtres est un dossier traité en bloc.
+    pub fn is_under_block(&self, path: &str) -> Result<bool> {
+        let conn = self.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT 1 FROM folder_profiles WHERE path = ?1 AND mode = 'block'")?;
+        let mut cur = Some(std::path::Path::new(path));
+        while let Some(p) = cur {
+            if stmt.exists(params![p.to_string_lossy().as_ref()])? {
+                return Ok(true);
+            }
+            cur = p.parent();
+        }
+        Ok(false)
+    }
+
     /// Chemins effectivement indexés (embeddés) sous `parent` — pour l'indicateur
     /// « indexé » de l'explorateur (fichiers et dossiers-blocs).
     pub fn indexed_paths_under(&self, parent: &str) -> Result<Vec<String>> {

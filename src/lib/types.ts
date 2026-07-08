@@ -52,6 +52,7 @@ export interface DirEntryInfo {
   index_status: string | null;
   folder_mode: string | null; // 'recursive' | 'block' | 'pending' | null
   indexed: boolean;
+  in_block: boolean;
 }
 
 export interface SearchResult {
@@ -86,6 +87,7 @@ export interface PathDetails {
   summary: string | null;
   content_kind: string;
   folder_mode: string | null;
+  in_block: boolean;
 }
 
 export type OpKind = "move" | "rename" | "delete" | "mkdir";

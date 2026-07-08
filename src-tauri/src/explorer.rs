@@ -25,6 +25,8 @@ pub struct DirEntryInfo {
     pub folder_mode: Option<String>,
     /// Vrai si le chemin a été effectivement indexé (embeddé).
     pub indexed: bool,
+    /// Vrai si le chemin est à l'intérieur d'un dossier-bloc (non indexé individuellement).
+    pub in_block: bool,
 }
 
 /// Liste le contenu direct d'un dossier, trié (dossiers d'abord, puis alphabétique).
@@ -60,6 +62,11 @@ pub async fn list_directory(
         .map_err(|e| e.to_string())?
         .into_iter()
         .collect();
+    // Le dossier listé est-il lui-même sous un bloc ? (→ ses enfants ne sont pas indexés).
+    let under_block = state
+        .db
+        .is_under_block(path.trim_end_matches(['/', '\\']))
+        .unwrap_or(false);
 
     let mut entries: Vec<DirEntryInfo> = Vec::new();
     let read = fs::read_dir(&path).map_err(|e| format!("lecture du dossier impossible: {e}"))?;
@@ -93,6 +100,7 @@ pub async fn list_directory(
             index_status: statuses.get(&path_str).cloned(),
             folder_mode: if is_dir { folder_modes.get(&path_str).cloned() } else { None },
             indexed: indexed.contains(&path_str),
+            in_block: under_block,
             path: path_str,
             name,
             is_directory: is_dir,
@@ -134,6 +142,8 @@ pub struct PathDetails {
     /// Libellé lisible de la méthode d'extraction.
     pub content_kind: String,
     pub folder_mode: Option<String>,
+    /// Vrai si le chemin est interne à un dossier-bloc.
+    pub in_block: bool,
 }
 
 /// Détails d'un fichier/dossier pour le panneau ouvert au simple-clic.
@@ -178,7 +188,16 @@ pub async fn path_details(
         None
     };
 
-    let content_kind = derive_content_kind(&hash, &doc_type, indexed, &status);
+    let in_block = p
+        .parent()
+        .map(|par| state.db.is_under_block(&par.to_string_lossy()).unwrap_or(false))
+        .unwrap_or(false);
+
+    let content_kind = if in_block {
+        "Fait partie d'un dossier-bloc (non indexé individuellement)".to_string()
+    } else {
+        derive_content_kind(&hash, &doc_type, indexed, &status)
+    };
 
     Ok(PathDetails {
         path,
@@ -194,6 +213,7 @@ pub async fn path_details(
         summary,
         content_kind,
         folder_mode,
+        in_block,
     })
 }
 
