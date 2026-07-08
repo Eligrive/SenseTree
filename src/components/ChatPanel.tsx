@@ -76,7 +76,7 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
     );
 
   return (
-    <aside className="flex h-full w-96 flex-col border-l border-zinc-800 bg-zinc-950/60">
+    <aside className="flex h-full w-full flex-col bg-zinc-950/60">
       <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-3.5">
         <Bot size={17} className="text-blue-400" />
         <span className="text-sm font-semibold text-zinc-200">Assistant</span>

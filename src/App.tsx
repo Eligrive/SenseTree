@@ -6,7 +6,7 @@ import Explorer from "./components/Explorer";
 import ChatPanel from "./components/ChatPanel";
 import SettingsModal from "./components/SettingsModal";
 import GardenerModal from "./components/GardenerModal";
-import FileDetailModal from "./components/FileDetailModal";
+import DetailDrawer from "./components/DetailDrawer";
 
 import type {
   DirEntryInfo,
@@ -60,6 +60,38 @@ export default function App() {
 
   const [details, setDetails] = useState<PathDetails | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+
+  // Dimensions redimensionnables : largeur de la colonne droite, hauteur du tiroir.
+  const [rightWidth, setRightWidth] = useState(384);
+  const [drawerHeight, setDrawerHeight] = useState(300);
+
+  const startWidthDrag = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = rightWidth;
+    const onMove = (ev: PointerEvent) =>
+      setRightWidth(Math.min(760, Math.max(300, startW + (startX - ev.clientX))));
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [rightWidth]);
+
+  const startHeightDrag = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = drawerHeight;
+    const onMove = (ev: PointerEvent) =>
+      setDrawerHeight(Math.min(window.innerHeight - 180, Math.max(140, startH + (startY - ev.clientY))));
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [drawerHeight]);
 
   const refreshHealth = useCallback(() => {
     aiHealth().then(setHealth).catch(() => setHealth(null));
@@ -200,7 +232,7 @@ export default function App() {
         onAnalyze={analyze}
       />
 
-      <main className="flex-1 overflow-hidden">
+      <main className="min-w-0 flex-1 overflow-hidden">
         <Explorer
           currentPath={currentPath}
           entries={entries}
@@ -222,11 +254,43 @@ export default function App() {
         />
       </main>
 
-      <ChatPanel
-        currentPath={currentPath}
-        reasoningOk={!!health?.reasoning_ok}
-        onOpenSource={openDetail}
+      {/* Poignée de redimensionnement de la colonne droite */}
+      <div
+        onPointerDown={startWidthDrag}
+        className="w-1 shrink-0 cursor-col-resize border-l border-zinc-800 bg-transparent transition-colors hover:bg-blue-500/60"
       />
+
+      {/* Colonne droite : chat (haut) + tiroir de détail intégré (bas) */}
+      <div
+        style={{ width: rightWidth }}
+        className="flex shrink-0 flex-col overflow-hidden"
+      >
+        <div className="min-h-0 flex-1">
+          <ChatPanel
+            currentPath={currentPath}
+            reasoningOk={!!health?.reasoning_ok}
+            onOpenSource={openDetail}
+          />
+        </div>
+
+        {detailOpen && (
+          <div style={{ height: drawerHeight }} className="flex shrink-0 flex-col">
+            {/* Poignée de redimensionnement vertical du tiroir */}
+            <div
+              onPointerDown={startHeightDrag}
+              className="h-1 shrink-0 cursor-row-resize border-t border-zinc-800 bg-transparent transition-colors hover:bg-blue-500/60"
+            />
+            <div className="min-h-0 flex-1 border-t border-zinc-800">
+              <DetailDrawer
+                details={detailOpen ? details : null}
+                loading={detailOpen && !details}
+                onClose={() => setDetailOpen(false)}
+                onOpenFile={openFile}
+              />
+            </div>
+          </div>
+        )}
+      </div>
 
       <SettingsModal
         open={settingsOpen}
@@ -242,13 +306,6 @@ export default function App() {
         report={reportOpen ? report : null}
         loading={reportOpen && !report}
         onClose={() => setReportOpen(false)}
-      />
-
-      <FileDetailModal
-        details={detailOpen ? details : null}
-        loading={detailOpen && !details}
-        onClose={() => setDetailOpen(false)}
-        onOpenFile={openFile}
       />
     </div>
   );
