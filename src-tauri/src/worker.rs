@@ -436,26 +436,72 @@ async fn index_folder_block(
     let mut exts: Vec<(String, usize)> = ext_counts.into_iter().collect();
     exts.sort_by(|a, b| b.1.cmp(&a.1));
     let top_exts = exts.iter().take(5).map(|(e, _)| e.clone()).collect::<Vec<_>>().join(", ");
-    let sample = entries.iter().take(30).map(|e| e.name.clone()).collect::<Vec<_>>().join(", ");
+    let sample = entries.iter().take(40).map(|e| e.name.clone()).collect::<Vec<_>>().join(", ");
 
-    let text = format!(
+    let facts = format!(
         "Dossier (bloc): {name}. Emplacement: {parent}. {count} éléments. Types: {top_exts}. Exemples: {sample}."
     );
+
+    // Description LLM du bloc (si reasoning dispo) — donne un vrai sens au dossier.
+    let description = if state.config.snapshot().reasoning.enabled {
+        llm_describe_folder(state, &name, &parent, &top_exts, &sample).await
+    } else {
+        None
+    };
+    let (text, summary) = match &description {
+        Some(desc) => (format!("{desc}\n{facts}"), desc.clone()),
+        None => (facts.clone(), facts.clone()),
+    };
+
     let hash = format!("block:{:x}", Sha256::digest(format!("{path}:{mtime}:{count}").as_bytes()));
 
     let vector = embedder.embed_documents(vec![text.clone()]).await?;
     let chunk = ChunkVector {
         chunk_index: 0,
-        text: text.clone(),
+        text,
         vector: vector.into_iter().next().unwrap_or_default(),
     };
     state.vector.upsert_chunks(path, &hash, mtime, vec![chunk]).await?;
     let _ = state.db.update_file_hash(path, &hash);
-    let _ = state.db.upsert_file_summary(path, &text, "folder-block");
+    let _ = state.db.upsert_file_summary(path, &summary, "folder-block");
     let _ = state.db.mark_indexed(path, mtime);
 
     tracing::info!("📦 dossier indexé en bloc : {path}");
     Ok(())
+}
+
+/// Demande au LLM une description courte (1 phrase) de ce qu'est un dossier-bloc.
+async fn llm_describe_folder(
+    state: &AppState,
+    name: &str,
+    parent: &str,
+    top_exts: &str,
+    sample: &str,
+) -> Option<String> {
+    let system = "Décris en UNE phrase concise et concrète ce qu'est ce dossier (son rôle et son \
+        contenu), à partir de son nom, son emplacement et un échantillon de son contenu. \
+        Réponds uniquement par la phrase, sans préambule.";
+    let user = format!(
+        "Nom: {name}\nEmplacement: {parent}\nTypes de fichiers: {top_exts}\nExemples: {sample}"
+    );
+    let resp = state
+        .ai
+        .reasoning_client()
+        .chat(
+            vec![
+                ChatMessage { role: "system".into(), content: system.into() },
+                ChatMessage { role: "user".into(), content: user },
+            ],
+            false,
+        )
+        .await
+        .ok()?;
+    let trimmed = resp.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -559,10 +605,14 @@ fn extract_text(path: &str) -> anyhow::Result<String> {
 /// On ne gère que le filtre DCTDecode : le flux brut EST un JPEG valide.
 fn extract_pdf_images(path: &str, max: usize) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
-    let doc = match lopdf::Document::load(path) {
+    let mut doc = match lopdf::Document::load(path) {
         Ok(d) => d,
         Err(_) => return out,
     };
+    // Déchiffre (mot de passe vide) pour que les images embarquées soient lisibles.
+    if doc.is_encrypted() {
+        let _ = doc.decrypt("");
+    }
     for (_id, obj) in &doc.objects {
         if out.len() >= max {
             break;
@@ -637,16 +687,34 @@ fn extract_pdf_text(path: &str) -> anyhow::Result<String> {
         }
     }
     // 2) PDF chiffré avec mot de passe utilisateur vide (restrictions de copie) :
-    //    fréquent sur les documents officiels. On tente le déchiffrement.
+    //    fréquent sur les documents officiels. On tente via pdf_extract.
     if let Ok(text) = pdf_extract::extract_text_encrypted(path, "") {
         let t = text.trim();
         if !t.is_empty() {
-            tracing::debug!("PDF déchiffré (mot de passe vide) : {path}");
             return Ok(t.to_string());
         }
     }
-    // 3) PDF scanné/opaque (images) : chaîne vide → repli contextuel (OCR à venir).
+    // 3) Déchiffrement via lopdf (gère plus de schémas), puis ré-extraction en mémoire.
+    if let Ok(text) = decrypt_and_extract_pdf(path) {
+        let t = text.trim();
+        if !t.is_empty() {
+            tracing::debug!("PDF déchiffré via lopdf : {path}");
+            return Ok(t.to_string());
+        }
+    }
+    // 4) PDF scanné/opaque (images) : chaîne vide → repli OCR/contexte en amont.
     Ok(String::new())
+}
+
+/// Déchiffre un PDF (mot de passe vide) via lopdf puis en ré-extrait le texte.
+fn decrypt_and_extract_pdf(path: &str) -> anyhow::Result<String> {
+    let mut doc = lopdf::Document::load(path)?;
+    if doc.is_encrypted() {
+        doc.decrypt("")?;
+    }
+    let mut buf = Vec::new();
+    doc.save_to(&mut buf)?;
+    Ok(pdf_extract::extract_text_from_mem(&buf).unwrap_or_default())
 }
 
 fn extract_docx_text(path: &str) -> anyhow::Result<String> {
