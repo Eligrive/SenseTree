@@ -22,7 +22,7 @@ use zip::ZipArchive;
 
 use crate::chunker::Chunker;
 use crate::parser::{FileType, Parser};
-use crate::providers::EmbeddingProvider;
+use crate::providers::{ChatMessage, EmbeddingProvider};
 use crate::state::AppState;
 use crate::vectordb::ChunkVector;
 
@@ -119,7 +119,7 @@ async fn process_task(
     match file_type {
         FileType::Ignored => Ok(()),
         FileType::Image => index_image(state, embedder, path, mtime).await,
-        FileType::RequiresAIRouting => index_context_only(state, embedder, path, mtime, "binaire").await,
+        FileType::RequiresAIRouting => index_unknown(state, embedder, path, mtime).await,
         FileType::Text | FileType::Document => index_textual(state, embedder, path, mtime).await,
     }
 }
@@ -160,11 +160,13 @@ async fn index_textual(
 
     let cfg = state.config.snapshot();
     let mut effective = content.trim().to_string();
+    let mut doc_type = doc_type_of(path);
 
     // PDF scanné (aucun texte extractible) + vision activée → OCR des images embarquées.
-    if effective.is_empty() && doc_type_of(path) == "pdf" && cfg.vision.enabled {
+    if effective.is_empty() && doc_type == "pdf" && cfg.vision.enabled {
         if let Some(ocr) = ocr_pdf_via_vision(state, path).await {
             effective = ocr;
+            doc_type = "pdf-ocr".to_string();
         }
     }
 
@@ -173,37 +175,144 @@ async fn index_textual(
         return index_context_only(state, embedder, path, mtime, "vide").await;
     }
 
-    let chunks = Chunker::slice_text(&effective, cfg.indexing.chunk_size, cfg.indexing.overlap);
+    store_text_document(state, embedder, path, mtime, &effective, &hash, &doc_type).await
+}
+
+/// Stocke un document textuel : chunk → embed → LanceDB → métadonnées.
+async fn store_text_document(
+    state: &AppState,
+    embedder: &dyn EmbeddingProvider,
+    path: &str,
+    mtime: i64,
+    text: &str,
+    hash: &str,
+    doc_type: &str,
+) -> anyhow::Result<()> {
+    let cfg = state.config.snapshot();
+    let chunks = Chunker::slice_text(text, cfg.indexing.chunk_size, cfg.indexing.overlap);
     if chunks.is_empty() {
         return index_context_only(state, embedder, path, mtime, "vide").await;
     }
-
     let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
     let vectors = embedder.embed_documents(texts).await?;
-
     let chunk_vectors: Vec<ChunkVector> = chunks
         .into_iter()
         .zip(vectors.into_iter())
-        .map(|(c, v)| ChunkVector {
-            chunk_index: c.chunk_index as i32,
-            text: c.text,
-            vector: v,
-        })
+        .map(|(c, v)| ChunkVector { chunk_index: c.chunk_index as i32, text: c.text, vector: v })
         .collect();
-
-    state
-        .vector
-        .upsert_chunks(path, &hash, mtime, chunk_vectors)
-        .await?;
-
-    let _ = state.db.update_file_hash(path, &hash);
-    let _ = state
-        .db
-        .upsert_file_summary(path, &summary_of(&effective), &doc_type_of(path));
+    state.vector.upsert_chunks(path, hash, mtime, chunk_vectors).await?;
+    let _ = state.db.update_file_hash(path, hash);
+    let _ = state.db.upsert_file_summary(path, &summary_of(text), doc_type);
     let _ = state.db.mark_indexed(path, mtime);
-
-    tracing::info!("✅ indexé ({} car.) : {path}", effective.len());
+    tracing::info!("✅ indexé ({} car., {doc_type}) : {path}", text.len());
     Ok(())
+}
+
+/// Fichier au type inconnu : le LLM décide s'il peut en extraire du contenu,
+/// sinon repli sur le contexte (nom, dossier, fichiers voisins).
+async fn index_unknown(
+    state: &AppState,
+    embedder: &dyn EmbeddingProvider,
+    path: &str,
+    mtime: i64,
+) -> anyhow::Result<()> {
+    let cfg = state.config.snapshot();
+    let max_bytes = cfg.indexing.max_file_mb * 1024 * 1024;
+    let path_owned = path.to_string();
+
+    let (sample, hash, too_big) =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<(Vec<u8>, String, bool)> {
+            let too_big = fs::metadata(&path_owned).map(|m| m.len() > max_bytes).unwrap_or(false);
+            let mut f = File::open(&path_owned)?;
+            let mut buf = vec![0u8; 32 * 1024];
+            let n = f.read(&mut buf)?;
+            buf.truncate(n);
+            let hash = hash_file(&path_owned)?;
+            Ok((buf, hash, too_big))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("lecture interrompue: {e}"))??;
+
+    // Inchangé → on ne refait rien.
+    if let Ok(Some(stored)) = state.db.get_stored_hash(path) {
+        if stored == hash {
+            let _ = state.db.mark_indexed(path, mtime);
+            return Ok(());
+        }
+    }
+
+    let ratio = text_ratio(&sample);
+
+    // 1) Clairement textuel → extraction directe.
+    if !too_big && ratio >= 0.85 {
+        let path_owned = path.to_string();
+        let full = tokio::task::spawn_blocking(move || fs::read_to_string(&path_owned).unwrap_or_default())
+            .await
+            .unwrap_or_default();
+        if !full.trim().is_empty() {
+            return store_text_document(state, embedder, path, mtime, full.trim(), &hash, "texte").await;
+        }
+    }
+
+    // 2) Ambigu → on demande au LLM s'il peut en extraire du sens.
+    if ratio >= 0.30 && cfg.reasoning.enabled {
+        let sample_text = String::from_utf8_lossy(&sample);
+        if let Some(extracted) = llm_try_extract(state, path, &sample_text).await {
+            return store_text_document(state, embedder, path, mtime, &extracted, &hash, "llm-extrait")
+                .await;
+        }
+    }
+
+    // 3) Repli : contexte enrichi (nom, dossier, fichiers voisins).
+    index_context_only(state, embedder, path, mtime, "binaire").await
+}
+
+/// Demande au LLM d'extraire le contenu utile d'un extrait de fichier inconnu.
+async fn llm_try_extract(state: &AppState, path: &str, sample: &str) -> Option<String> {
+    let p = Path::new(path);
+    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let parent = p.parent().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let excerpt: String = sample.chars().take(4000).collect();
+
+    let system = "On te donne un extrait d'un fichier de type inconnu. Si l'extrait contient du \
+        texte ou des données PORTEUSES DE SENS (configuration, logs, notes, données, code, \
+        markup…), extrais/résume son contenu utile en quelques phrases, pour l'indexer dans un \
+        moteur de recherche. Si c'est du binaire opaque SANS contenu exploitable, réponds \
+        EXACTEMENT et uniquement : NO_CONTENT.";
+    let user = format!("Fichier: {name}\nDossier: {parent}\n\nExtrait:\n{excerpt}");
+
+    let resp = state
+        .ai
+        .reasoning_client()
+        .chat(
+            vec![
+                ChatMessage { role: "system".into(), content: system.into() },
+                ChatMessage { role: "user".into(), content: user },
+            ],
+            false,
+        )
+        .await
+        .ok()?;
+
+    let trimmed = resp.trim();
+    if trimmed.is_empty() || trimmed.contains("NO_CONTENT") {
+        None
+    } else {
+        tracing::info!("🧠 contenu extrait par le LLM : {path}");
+        Some(trimmed.to_string())
+    }
+}
+
+/// Fraction d'octets « texte » (ASCII imprimable, blancs, ou UTF-8/latin1).
+fn text_ratio(bytes: &[u8]) -> f32 {
+    if bytes.is_empty() {
+        return 0.0;
+    }
+    let good = bytes
+        .iter()
+        .filter(|&&b| b == b'\t' || b == b'\n' || b == b'\r' || (0x20..=0x7E).contains(&b) || b >= 0x80)
+        .count();
+    good as f32 / bytes.len() as f32
 }
 
 /// Indexation d'une image via un modèle de vision (ou repli contextuel).
@@ -362,9 +471,34 @@ fn context_descriptor(path: &str, kind: &str) -> String {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
-    format!(
-        "Fichier: {name}. Dossier: {parent}. Type: {kind}. Extension: {ext}."
-    )
+
+    // Fichiers voisins (contexte de dossier) : aident à situer le sens.
+    let siblings: Vec<String> = p
+        .parent()
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| {
+                    let n = e.file_name().to_string_lossy().to_string();
+                    if n == name || n.starts_with('.') {
+                        None
+                    } else {
+                        Some(n)
+                    }
+                })
+                .take(15)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if siblings.is_empty() {
+        format!("Fichier: {name}. Dossier: {parent}. Type: {kind}. Extension: {ext}.")
+    } else {
+        format!(
+            "Fichier: {name}. Dossier: {parent}. Type: {kind}. Extension: {ext}. Fichiers voisins: {}.",
+            siblings.join(", ")
+        )
+    }
 }
 
 fn summary_of(content: &str) -> String {
