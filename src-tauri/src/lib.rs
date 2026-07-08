@@ -281,6 +281,19 @@ fn indexing_stats(state: State<'_, Arc<AppState>>) -> Result<db::IndexingStats, 
     state.db.get_indexing_stats().map_err(|e| e.to_string())
 }
 
+/// Met en pause ou reprend l'indexation de fond (worker + classifieur).
+#[tauri::command]
+fn set_indexing_paused(state: State<'_, Arc<AppState>>, paused: bool) {
+    state.paused.store(paused, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!("indexation {}", if paused { "en pause" } else { "reprise" });
+}
+
+/// Indique si l'indexation est actuellement en pause.
+#[tauri::command]
+fn indexing_paused(state: State<'_, Arc<AppState>>) -> bool {
+    state.paused.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Ouvre un fichier/dossier avec l'application par défaut du système.
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
@@ -371,6 +384,7 @@ pub fn run() {
                 ai: ai.clone(),
                 vector: vector.clone(),
                 data_dir: app_data_dir.clone(),
+                paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             app.manage(app_state.clone());
 
@@ -392,6 +406,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_recent_activity,
             indexing_stats,
+            set_indexing_paused,
+            indexing_paused,
             open_path,
             gpu_available,
             get_config,

@@ -40,6 +40,12 @@ async fn worker_loop(state: Arc<AppState>) {
     // (ONNX Runtime est préparé paresseusement lors de la première construction
     //  de l'embedder — voir AiEngine::embedder — pour garantir l'ordre d'init.)
     loop {
+        // Pause utilisateur : on met la boucle en veille sans consommer de CPU/GPU.
+        if state.paused.load(std::sync::atomic::Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            continue;
+        }
+
         let tasks = match state.db.get_pending_extraction_tasks(BATCH) {
             Ok(t) => t,
             Err(e) => {

@@ -24,6 +24,8 @@ import {
   getConfig,
   getRoots,
   indexingStats,
+  indexingPaused,
+  setIndexingPaused,
   listDirectory,
   openPath,
   pathDetails,
@@ -49,6 +51,7 @@ export default function App() {
 
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [stats, setStats] = useState<IndexingStats | null>(null);
+  const [paused, setPaused] = useState(false);
   const [embedding, setEmbedding] = useState<{ model: string; mode: string } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -99,6 +102,19 @@ export default function App() {
     poll();
     const t = setInterval(poll, 2000);
     return () => clearInterval(t);
+  }, []);
+
+  // État de pause (synchronisé au démarrage avec le backend).
+  useEffect(() => {
+    indexingPaused().then(setPaused).catch(() => {});
+  }, []);
+
+  const togglePause = useCallback(() => {
+    setPaused((prev) => {
+      const next = !prev;
+      setIndexingPaused(next).catch(() => {});
+      return next;
+    });
   }, []);
 
   // Ré-actualise la liste courante périodiquement pour refléter l'indexation en fond.
@@ -177,6 +193,8 @@ export default function App() {
         onSelectRoot={selectRoot}
         health={health}
         stats={stats}
+        paused={paused}
+        onTogglePause={togglePause}
         embedding={embedding}
         onOpenSettings={() => setSettingsOpen(true)}
         onAnalyze={analyze}

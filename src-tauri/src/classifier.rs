@@ -20,6 +20,11 @@ pub fn start_classifier(state: Arc<AppState>) {
         loop {
             thread::sleep(Duration::from_secs(20));
 
+            // Pause utilisateur : on ne classe rien tant que l'indexation est en pause.
+            if state.paused.load(std::sync::atomic::Ordering::Relaxed) {
+                continue;
+            }
+
             // Inutile d'essayer si l'utilisateur a désactivé le reasoning.
             if !state.config.snapshot().reasoning.enabled {
                 continue;

@@ -1,4 +1,14 @@
-import { Folder, Settings, Activity, Sprout, Loader2, CheckCircle2, Cpu } from "lucide-react";
+import {
+  Folder,
+  Settings,
+  Activity,
+  Sprout,
+  Loader2,
+  CheckCircle2,
+  Cpu,
+  Pause,
+  Play,
+} from "lucide-react";
 import type { HealthReport, IndexingStats } from "../lib/types";
 
 interface Props {
@@ -7,6 +17,8 @@ interface Props {
   onSelectRoot: (root: string) => void;
   health: HealthReport | null;
   stats: IndexingStats | null;
+  paused: boolean;
+  onTogglePause: () => void;
   embedding: { model: string; mode: string } | null;
   onOpenSettings: () => void;
   onAnalyze: () => void;
@@ -23,36 +35,60 @@ function HealthDot({ ok, label, detail }: { ok: boolean; label: string; detail: 
   );
 }
 
-function IndexingProgress({ stats }: { stats: IndexingStats | null }) {
+function IndexingProgress({
+  stats,
+  paused,
+  onTogglePause,
+}: {
+  stats: IndexingStats | null;
+  paused: boolean;
+  onTogglePause: () => void;
+}) {
   if (!stats || stats.total === 0) return null;
   const done = stats.completed + stats.failed;
   const pct = stats.total > 0 ? Math.round((done / stats.total) * 100) : 100;
-  const finished = stats.pending === 0;
+  const finished = stats.pending === 0 && stats.pending_folders === 0;
+  const showToggle = !finished || paused;
 
   return (
     <div className="space-y-1.5 rounded-md bg-zinc-900/60 p-2.5">
       <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
         <span className="flex items-center gap-1.5">
-          {finished ? (
+          {paused ? (
+            <Pause size={11} className="text-amber-400" />
+          ) : finished ? (
             <CheckCircle2 size={11} className="text-emerald-500" />
           ) : (
             <Loader2 size={11} className="animate-spin text-blue-400" />
           )}
           Indexation
         </span>
-        <span className="text-zinc-400">{pct}%</span>
+        <span className="flex items-center gap-1.5">
+          <span className="text-zinc-400">{pct}%</span>
+          {showToggle && (
+            <button
+              onClick={onTogglePause}
+              title={paused ? "Reprendre l'indexation" : "Mettre l'indexation en pause"}
+              className="text-zinc-400 hover:text-zinc-100"
+            >
+              {paused ? <Play size={12} /> : <Pause size={12} />}
+            </button>
+          )}
+        </span>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
         <div
           className={`h-full rounded-full transition-all ${
-            finished ? "bg-emerald-500" : "bg-blue-500"
+            paused ? "bg-amber-500" : finished ? "bg-emerald-500" : "bg-blue-500"
           }`}
           style={{ width: `${pct}%` }}
         />
       </div>
       <div className="flex items-center justify-between text-[11px] text-zinc-500">
         <span>
-          {finished ? (
+          {paused ? (
+            <span className="text-amber-400">En pause</span>
+          ) : finished ? (
             "À jour"
           ) : (
             <>
@@ -83,6 +119,8 @@ export default function Sidebar({
   onSelectRoot,
   health,
   stats,
+  paused,
+  onTogglePause,
   embedding,
   onOpenSettings,
   onAnalyze,
@@ -130,7 +168,7 @@ export default function Sidebar({
       </div>
 
       <div className="mt-auto space-y-3 border-t border-zinc-800 p-3">
-        <IndexingProgress stats={stats} />
+        <IndexingProgress stats={stats} paused={paused} onTogglePause={onTogglePause} />
 
         {embedding && (
           <button

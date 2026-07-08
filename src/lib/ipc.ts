@@ -42,6 +42,9 @@ export const getRoots = () => invoke<string[]>("get_roots");
 export const openPath = (path: string) => invoke<void>("open_path", { path });
 export const pathDetails = (path: string) => invoke<PathDetails>("path_details", { path });
 export const indexingStats = () => invoke<IndexingStats>("indexing_stats");
+export const indexingPaused = () => invoke<boolean>("indexing_paused");
+export const setIndexingPaused = (paused: boolean) =>
+  invoke<void>("set_indexing_paused", { paused });
 export const setFolderMode = (path: string, mode: "recursive" | "block") =>
   invoke<void>("set_folder_mode", { path, mode });
 

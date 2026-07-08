@@ -1,6 +1,7 @@
 //! État applicatif partagé entre les threads de fond et les commandes IPC.
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::config::ConfigStore;
@@ -18,4 +19,6 @@ pub struct AppState {
     pub vector: Arc<VectorDb>,
     /// Dossier de données de l'app (pour l'approvisionnement d'ONNX Runtime, etc.).
     pub data_dir: PathBuf,
+    /// Pause globale de l'indexation (worker + classifieur) demandée par l'utilisateur.
+    pub paused: Arc<AtomicBool>,
 }
