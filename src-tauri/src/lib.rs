@@ -143,6 +143,45 @@ async fn test_chat_endpoint(
     }
 }
 
+/// Teste un endpoint d'embedding : embedde un échantillon et renvoie la dimension
+/// réelle du vecteur (pour vérifier qu'elle correspond au champ « Dimensions »).
+#[tauri::command]
+async fn test_embedding_endpoint(
+    base_url: String,
+    api_key: String,
+    model: String,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("{}/embeddings", base_url.trim_end_matches('/'));
+    let mut req = client
+        .post(&url)
+        .json(&serde_json::json!({ "model": model, "input": ["test"] }));
+    if !api_key.is_empty() {
+        req = req.bearer_auth(&api_key);
+    }
+    let resp = req.send().await.map_err(|e| format!("serveur injoignable: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let body: String = body.chars().take(200).collect();
+        return Err(format!("le serveur a répondu {status}: {body}"));
+    }
+    let value: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let dim = value
+        .get("data")
+        .and_then(|d| d.get(0))
+        .and_then(|e| e.get("embedding"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.len());
+    match dim {
+        Some(n) => Ok(format!("Modèle OK — {n} dimensions (règle « Dimensions » sur {n})")),
+        None => Err("réponse sans vecteur d'embedding".to_string()),
+    }
+}
+
 /// Télécharge un modèle via l'API Ollama (POST /api/pull) en STREAMING, et émet
 /// des événements `model-pull-progress` pour la barre de progression de l'UI.
 #[tauri::command]
@@ -343,6 +382,7 @@ pub fn run() {
             set_config,
             ai_health,
             test_chat_endpoint,
+            test_embedding_endpoint,
             list_installed_models,
             pull_model,
             reindex_all,

@@ -10,6 +10,7 @@ import {
   reindexAll,
   setConfig,
   testChatEndpoint,
+  testEmbeddingEndpoint,
 } from "../lib/ipc";
 
 interface Props {
@@ -31,6 +32,16 @@ const SUGGESTED: Record<"reasoning" | "vision", string[]> = {
   reasoning: ["llama3.1:8b", "llama3.2:3b", "qwen2.5:7b", "phi3:mini"],
   vision: ["moondream", "llava", "llama3.2-vision"],
 };
+
+// Modèles d'embedding Ollama courants (le nom fastembed « multilingual-e5-small »
+// n'existe PAS sur Ollama — d'où les 404).
+const EMBED_SUGGESTED: { id: string; dims: number }[] = [
+  { id: "bge-m3", dims: 1024 },
+  { id: "nomic-embed-text", dims: 768 },
+  { id: "mxbai-embed-large", dims: 1024 },
+  { id: "snowflake-arctic-embed2", dims: 1024 },
+  { id: "all-minilm", dims: 384 },
+];
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -87,7 +98,10 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
     for (const key of ["reasoning", "vision"] as const) {
       refreshModels(cfg[key].base_url, cfg[key].api_key);
     }
-  }, [cfg?.reasoning.base_url, cfg?.vision.base_url]);
+    if (cfg.embedding.mode === "openai") {
+      refreshModels(cfg.embedding.base_url, cfg.embedding.api_key);
+    }
+  }, [cfg?.reasoning.base_url, cfg?.vision.base_url, cfg?.embedding.base_url, cfg?.embedding.mode]);
 
   if (!open || !cfg) return null;
 
@@ -107,6 +121,20 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
       setTestMsg((m) => ({ ...m, [key]: `✅ ${res}` }));
     } catch (e) {
       setTestMsg((m) => ({ ...m, [key]: `⚠️ ${String(e)}` }));
+    }
+  };
+
+  const testEmbedding = async () => {
+    setTestMsg((m) => ({ ...m, embedding: "…" }));
+    try {
+      const res = await testEmbeddingEndpoint(
+        cfg.embedding.base_url,
+        cfg.embedding.api_key,
+        cfg.embedding.model
+      );
+      setTestMsg((m) => ({ ...m, embedding: `✅ ${res}` }));
+    } catch (e) {
+      setTestMsg((m) => ({ ...m, embedding: `⚠️ ${String(e)}` }));
     }
   };
 
@@ -312,11 +340,31 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                 <Field label="Modèle distant">
                   <input
                     className={inputCls}
+                    list="embed-models"
                     value={cfg.embedding.model}
-                    onChange={(e) =>
-                      setCfg({ ...cfg, embedding: { ...cfg.embedding, model: e.target.value } })
-                    }
+                    placeholder="ex : bge-m3, nomic-embed-text…"
+                    onChange={(e) => {
+                      const preset = EMBED_SUGGESTED.find((m) => m.id === e.target.value);
+                      setCfg({
+                        ...cfg,
+                        embedding: {
+                          ...cfg.embedding,
+                          model: e.target.value,
+                          dimensions: preset?.dims ?? cfg.embedding.dimensions,
+                        },
+                      });
+                    }}
                   />
+                  <datalist id="embed-models">
+                    {Array.from(
+                      new Set([
+                        ...(installed[cfg.embedding.base_url] ?? []),
+                        ...EMBED_SUGGESTED.map((m) => m.id),
+                      ])
+                    ).map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
                 </Field>
               )}
             </div>
@@ -345,6 +393,18 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                     }
                   />
                 </Field>
+              </div>
+            )}
+
+            {cfg.embedding.mode === "openai" && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={testEmbedding}
+                  className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700"
+                >
+                  <Plug size={13} /> Tester l'embedding
+                </button>
+                {testMsg.embedding && <span className="text-xs text-zinc-400">{testMsg.embedding}</span>}
               </div>
             )}
 

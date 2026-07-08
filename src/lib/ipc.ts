@@ -26,6 +26,8 @@ export const aiHealth = () => invoke<HealthReport>("ai_health");
 export const gpuAvailable = () => invoke<boolean>("gpu_available");
 export const testChatEndpoint = (baseUrl: string, apiKey: string, model: string) =>
   invoke<string>("test_chat_endpoint", { baseUrl, apiKey, model });
+export const testEmbeddingEndpoint = (baseUrl: string, apiKey: string, model: string) =>
+  invoke<string>("test_embedding_endpoint", { baseUrl, apiKey, model });
 export const listInstalledModels = (baseUrl: string, apiKey: string) =>
   invoke<string[]>("list_installed_models", { baseUrl, apiKey });
 export const pullModel = (baseUrl: string, model: string) =>
