@@ -316,23 +316,13 @@ pub fn run() {
                 config: config.clone(),
                 ai: ai.clone(),
                 vector: vector.clone(),
+                data_dir: app_data_dir.clone(),
             });
             app.manage(app_state.clone());
 
-            // --- ONNX Runtime (chargé dynamiquement, téléchargé au 1er lancement) ---
-            // On le prépare AVANT le worker (qui utilise fastembed). Bloquant au
-            // premier lancement uniquement (lib mise en cache ensuite).
-            {
-                let ort_dir = app_data_dir.clone();
-                let use_gpu = config.snapshot().embedding.use_gpu;
-                match std::thread::spawn(move || ort_setup::ensure_ort(&ort_dir, use_gpu)).join() {
-                    Ok(Ok(gpu)) => tracing::info!("ONNX Runtime prêt (GPU={gpu})"),
-                    Ok(Err(e)) => tracing::error!("préparation d'ONNX Runtime échouée : {e}"),
-                    Err(_) => tracing::error!("thread de préparation ORT a paniqué"),
-                }
-            }
-
             // --- Threads de fond ---
+            // (ONNX Runtime est préparé par le worker avant sa première utilisation,
+            //  pour ne pas retarder l'affichage de la fenêtre au premier lancement.)
             let roots = config.snapshot().indexing.roots;
             for root in roots.clone() {
                 let sc = app_state.clone();

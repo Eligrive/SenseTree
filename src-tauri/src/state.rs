@@ -1,5 +1,6 @@
 //! État applicatif partagé entre les threads de fond et les commandes IPC.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::ConfigStore;
@@ -15,4 +16,6 @@ pub struct AppState {
     pub config: Arc<ConfigStore>,
     pub ai: Arc<AiEngine>,
     pub vector: Arc<VectorDb>,
+    /// Dossier de données de l'app (pour l'approvisionnement d'ONNX Runtime, etc.).
+    pub data_dir: PathBuf,
 }
