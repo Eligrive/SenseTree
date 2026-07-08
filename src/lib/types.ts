@@ -136,8 +136,9 @@ export interface ChatSource {
 }
 
 export interface ChatResponse {
-  answer: string;
+  answer: string | null;
   sources: ChatSource[];
+  plan: ActionPlan | null;
 }
 
 export interface IndexingStats {

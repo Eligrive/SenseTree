@@ -442,8 +442,59 @@ pub struct ChatSource {
 
 #[derive(Debug, Serialize)]
 pub struct ChatResponse {
-    pub answer: String,
+    /// Réponse textuelle (si l'assistant répond au lieu d'agir).
+    pub answer: Option<String>,
     pub sources: Vec<ChatSource>,
+    /// Plan d'action Dry-Run (si l'assistant propose une action).
+    pub plan: Option<ActionPlan>,
+}
+
+#[derive(Deserialize)]
+struct LlmPlan {
+    #[serde(default)]
+    summary: String,
+    operations: Vec<Operation>,
+}
+
+/// Arborescence d'un dossier (2 niveaux, bornée) avec chemins exacts — pour que
+/// le LLM raisonne de façon STRUCTURELLE (réorganisation), pas seulement sémantique.
+fn folder_structure(root: &str, max_depth: usize, budget: usize) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for entry in walkdir::WalkDir::new(root)
+        .max_depth(max_depth)
+        .into_iter()
+        .flatten()
+    {
+        if out.len() >= budget {
+            break;
+        }
+        let depth = entry.depth();
+        if depth == 0 {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        let is_dir = entry.file_type().is_dir();
+        let pad = "  ".repeat(depth.saturating_sub(1));
+        out.push(format!(
+            "{pad}{} {}",
+            if is_dir { "[D]" } else { "[F]" },
+            entry.path().to_string_lossy()
+        ));
+    }
+    out.join("\n")
+}
+
+/// Extrait un éventuel plan d'action (objet JSON avec `operations`) d'une réponse LLM.
+fn try_extract_plan(raw: &str) -> Option<LlmPlan> {
+    let start = raw.find('{')?;
+    let end = raw.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    serde_json::from_str::<LlmPlan>(&raw[start..=end]).ok()
 }
 
 #[tauri::command]
@@ -502,13 +553,20 @@ pub async fn chat_with_assistant(
         }
     }
 
-    // --- Prompt système avec le contexte récupéré (RAG) ---
+    // --- Prompt : répondre OU proposer un plan d'action (l'assistant décide) ---
     let mut system = "Tu es l'assistant de SenseTree, un explorateur de fichiers sémantique local. \
-        Réponds à la question de l'utilisateur en t'appuyant sur les EXTRAITS DE FICHIERS fournis \
-        ci-dessous. Cite les fichiers pertinents par leur nom. Si l'information ne figure pas dans \
-        les extraits, dis-le clairement plutôt que d'inventer. Sois concis et concret."
+        RÈGLE DE FORMAT : si l'utilisateur pose une QUESTION ou demande une analyse, réponds \
+        NORMALEMENT en texte, en citant les fichiers pertinents par leur nom. \
+        Si — et SEULEMENT si — il demande une ACTION sur des fichiers (déplacer, renommer, \
+        supprimer, ranger, créer un dossier), réponds UNIQUEMENT par un objet JSON, sans aucun \
+        autre texte, au format : {\"summary\":\"...\",\"operations\":[{\"kind\":\
+        \"move|rename|delete|mkdir\",\"old_path\":\"...\",\"new_path\":\"...\",\"reason\":\"...\"}]}. \
+        Pour une réorganisation, raisonne sur la STRUCTURE du dossier fournie plus bas (arborescence). \
+        Les chemins DOIVENT être EXACTEMENT ceux listés ci-dessous — n'invente aucun chemin. \
+        Rien n'est exécuté sans validation manuelle de l'utilisateur."
         .to_string();
 
+    // Extraits (pour répondre) + chemins exacts disponibles (pour les actions).
     if !sources.is_empty() {
         let ctx: String = sources
             .iter()
@@ -517,16 +575,15 @@ pub async fn chat_with_assistant(
             .collect::<Vec<_>>()
             .join("\n\n");
         system.push_str(&format!("\n\nExtraits de fichiers pertinents :\n{ctx}"));
-    } else if let Some(scope) = &scope {
-        let summaries = state.db.summaries_for_parent(scope).unwrap_or_default();
-        if !summaries.is_empty() {
-            let ctx: String = summaries
-                .iter()
-                .take(30)
-                .map(|(p, s)| format!("- {p}: {s}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            system.push_str(&format!("\n\nContexte du dossier {scope} :\n{ctx}"));
+    }
+    // Structure du dossier courant (2 niveaux) : indispensable pour raisonner
+    // STRUCTURELLEMENT (« réorganise ce dossier ») et cibler des chemins exacts.
+    if let Some(scope) = &scope {
+        let structure = folder_structure(scope, 2, 200);
+        if !structure.is_empty() {
+            system.push_str(&format!(
+                "\n\nStructure du dossier courant ({scope}) — [D]=dossier, [F]=fichier, chemins exacts :\n{structure}"
+            ));
         }
     }
 
@@ -535,11 +592,42 @@ pub async fn chat_with_assistant(
         chat_messages.push(ChatMessage { role: m.role, content: m.content });
     }
 
-    let answer = state
+    let raw = state
         .ai
         .reasoning_client()
         .chat(chat_messages, false)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(ChatResponse { answer, sources })
+
+    // L'assistant a-t-il proposé un plan d'action ?
+    if let Some(llm_plan) = try_extract_plan(&raw) {
+        if !llm_plan.operations.is_empty() {
+            let roots = state.config.snapshot().indexing.roots;
+            if let Err(e) = validate_operations(&llm_plan.operations, &roots) {
+                return Ok(ChatResponse {
+                    answer: Some(format!("Je ne peux agir que dans tes dossiers indexés ({e}).")),
+                    sources,
+                    plan: None,
+                });
+            }
+            let mut plan = ActionPlan {
+                transaction_id: None,
+                summary: if llm_plan.summary.trim().is_empty() {
+                    "Plan d'action proposé".to_string()
+                } else {
+                    llm_plan.summary
+                },
+                operations: llm_plan.operations,
+            };
+            let payload = serde_json::to_string(&plan).map_err(|e| e.to_string())?;
+            let tx = state
+                .db
+                .record_transaction("reorganize", &payload, "draft")
+                .map_err(|e| e.to_string())?;
+            plan.transaction_id = Some(tx);
+            return Ok(ChatResponse { answer: None, sources, plan: Some(plan) });
+        }
+    }
+
+    Ok(ChatResponse { answer: Some(raw), sources, plan: None })
 }

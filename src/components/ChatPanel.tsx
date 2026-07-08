@@ -1,12 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Bot, FileText, Loader2, Send, Wand2 } from "lucide-react";
 import type { ActionPlan, ChatSource, ChatTurn } from "../lib/types";
-import {
-  applyActionPlan,
-  chatWithAssistant,
-  discardActionPlan,
-  planReorganization,
-} from "../lib/ipc";
+import { applyActionPlan, chatWithAssistant, discardActionPlan } from "../lib/ipc";
 import ActionPlanCard from "./ActionPlanCard";
 
 interface Props {
@@ -21,9 +16,6 @@ type Msg =
 
 let uid = 0;
 const nextId = () => ++uid;
-
-// Une instruction d'action (vs une simple question) déclenche un plan Dry-Run.
-const ACTION_RE = /(réorganis|reorganis|range|rang\b|trier|tri\b|classe|renomm|nettoie|nettoy|supprim|déplace|deplace|organis)/i;
 
 export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Props) {
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -45,16 +37,15 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
     setBusy(true);
 
     try {
-      if (ACTION_RE.test(text) && currentPath) {
-        const plan = await planReorganization(text, currentPath);
-        push({ id: nextId(), role: "plan", plan, status: "pending" });
+      const history: ChatTurn[] = messages
+        .filter((m): m is Extract<Msg, { role: "user" | "assistant" }> => m.role !== "plan")
+        .map((m) => ({ role: m.role, content: m.text }));
+      history.push({ role: "user", content: text });
+      const res = await chatWithAssistant(history, currentPath ?? undefined);
+      if (res.plan) {
+        push({ id: nextId(), role: "plan", plan: res.plan, status: "pending" });
       } else {
-        const history: ChatTurn[] = messages
-          .filter((m): m is Extract<Msg, { role: "user" | "assistant" }> => m.role !== "plan")
-          .map((m) => ({ role: m.role, content: m.text }));
-        history.push({ role: "user", content: text });
-        const res = await chatWithAssistant(history, currentPath ?? undefined);
-        push({ id: nextId(), role: "assistant", text: res.answer, sources: res.sources });
+        push({ id: nextId(), role: "assistant", text: res.answer ?? "", sources: res.sources });
       }
     } catch (e) {
       push({ id: nextId(), role: "assistant", text: `⚠️ ${String(e)}` });
