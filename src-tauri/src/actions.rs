@@ -432,27 +432,97 @@ pub struct ChatTurn {
     pub content: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ChatSource {
+    pub path: String,
+    pub name: String,
+    pub score: f32,
+    pub snippet: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatResponse {
+    pub answer: String,
+    pub sources: Vec<ChatSource>,
+}
+
 #[tauri::command]
 pub async fn chat_with_assistant(
     state: State<'_, Arc<AppState>>,
     messages: Vec<ChatTurn>,
     scope: Option<String>,
-) -> Result<String, String> {
+) -> Result<ChatResponse, String> {
+    use std::collections::HashMap;
     let state = state.inner().clone();
 
-    let mut chat_messages: Vec<ChatMessage> = Vec::new();
-    let mut system = "Tu es l'assistant de SenseTree, un explorateur de fichiers sémantique. \
-        Tu aides l'utilisateur à comprendre et organiser ses fichiers locaux. \
-        Sois concis et concret."
+    // La requête = dernier message utilisateur.
+    let query = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+
+    // --- RAG : récupère les extraits de fichiers pertinents (recherche globale) ---
+    let mut sources: Vec<ChatSource> = Vec::new();
+    if !query.trim().is_empty() {
+        if let Ok(embedder) = state.ai.embedder().await {
+            if let Ok(qvec) = embedder.embed_query(query.clone()).await {
+                if let Ok(hits) = state.vector.search(qvec, 24, None).await {
+                    let mut best: HashMap<String, crate::vectordb::SearchHit> = HashMap::new();
+                    for h in hits {
+                        if !std::path::Path::new(&h.path).exists() {
+                            continue;
+                        }
+                        best.entry(h.path.clone())
+                            .and_modify(|e| {
+                                if h.score > e.score {
+                                    *e = h.clone();
+                                }
+                            })
+                            .or_insert(h);
+                    }
+                    let mut v: Vec<_> = best.into_values().collect();
+                    v.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+                    v.truncate(6);
+                    sources = v
+                        .into_iter()
+                        .map(|h| ChatSource {
+                            name: std::path::Path::new(&h.path)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| h.path.clone()),
+                            path: h.path,
+                            score: h.score,
+                            snippet: h.snippet,
+                        })
+                        .collect();
+                }
+            }
+        }
+    }
+
+    // --- Prompt système avec le contexte récupéré (RAG) ---
+    let mut system = "Tu es l'assistant de SenseTree, un explorateur de fichiers sémantique local. \
+        Réponds à la question de l'utilisateur en t'appuyant sur les EXTRAITS DE FICHIERS fournis \
+        ci-dessous. Cite les fichiers pertinents par leur nom. Si l'information ne figure pas dans \
+        les extraits, dis-le clairement plutôt que d'inventer. Sois concis et concret."
         .to_string();
 
-    // On injecte le contexte du dossier courant si fourni.
-    if let Some(scope) = &scope {
+    if !sources.is_empty() {
+        let ctx: String = sources
+            .iter()
+            .enumerate()
+            .map(|(i, s)| format!("[{}] {} — {}\n{}", i + 1, s.name, s.path, s.snippet))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        system.push_str(&format!("\n\nExtraits de fichiers pertinents :\n{ctx}"));
+    } else if let Some(scope) = &scope {
         let summaries = state.db.summaries_for_parent(scope).unwrap_or_default();
         if !summaries.is_empty() {
             let ctx: String = summaries
                 .iter()
-                .take(40)
+                .take(30)
                 .map(|(p, s)| format!("- {p}: {s}"))
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -460,11 +530,16 @@ pub async fn chat_with_assistant(
         }
     }
 
-    chat_messages.push(ChatMessage { role: "system".into(), content: system });
+    let mut chat_messages = vec![ChatMessage { role: "system".into(), content: system }];
     for m in messages {
         chat_messages.push(ChatMessage { role: m.role, content: m.content });
     }
 
-    let client = state.ai.reasoning_client();
-    client.chat(chat_messages, false).await.map_err(|e| e.to_string())
+    let answer = state
+        .ai
+        .reasoning_client()
+        .chat(chat_messages, false)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ChatResponse { answer, sources })
 }

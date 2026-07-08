@@ -128,6 +128,18 @@ export interface ChatTurn {
   content: string;
 }
 
+export interface ChatSource {
+  path: string;
+  name: string;
+  score: number;
+  snippet: string;
+}
+
+export interface ChatResponse {
+  answer: string;
+  sources: ChatSource[];
+}
+
 export interface IndexingStats {
   total: number;
   pending: number;

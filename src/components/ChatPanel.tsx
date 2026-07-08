@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Loader2, Send, Wand2 } from "lucide-react";
-import type { ActionPlan, ChatTurn } from "../lib/types";
+import { Bot, FileText, Loader2, Send, Wand2 } from "lucide-react";
+import type { ActionPlan, ChatSource, ChatTurn } from "../lib/types";
 import {
   applyActionPlan,
   chatWithAssistant,
@@ -12,10 +12,11 @@ import ActionPlanCard from "./ActionPlanCard";
 interface Props {
   currentPath: string | null;
   reasoningOk: boolean;
+  onOpenSource: (path: string) => void;
 }
 
 type Msg =
-  | { id: number; role: "user" | "assistant"; text: string }
+  | { id: number; role: "user" | "assistant"; text: string; sources?: ChatSource[] }
   | { id: number; role: "plan"; plan: ActionPlan; status: "pending" | "applied" | "discarded" };
 
 let uid = 0;
@@ -24,7 +25,7 @@ const nextId = () => ++uid;
 // Une instruction d'action (vs une simple question) déclenche un plan Dry-Run.
 const ACTION_RE = /(réorganis|reorganis|range|rang\b|trier|tri\b|classe|renomm|nettoie|nettoy|supprim|déplace|deplace|organis)/i;
 
-export default function ChatPanel({ currentPath, reasoningOk }: Props) {
+export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Props) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -52,8 +53,8 @@ export default function ChatPanel({ currentPath, reasoningOk }: Props) {
           .filter((m): m is Extract<Msg, { role: "user" | "assistant" }> => m.role !== "plan")
           .map((m) => ({ role: m.role, content: m.text }));
         history.push({ role: "user", content: text });
-        const reply = await chatWithAssistant(history, currentPath ?? undefined);
-        push({ id: nextId(), role: "assistant", text: reply });
+        const res = await chatWithAssistant(history, currentPath ?? undefined);
+        push({ id: nextId(), role: "assistant", text: res.answer, sources: res.sources });
       }
     } catch (e) {
       push({ id: nextId(), role: "assistant", text: `⚠️ ${String(e)}` });
@@ -112,15 +113,29 @@ export default function ChatPanel({ currentPath, reasoningOk }: Props) {
               onDiscard={() => discard(m.id, m.plan)}
             />
           ) : (
-            <div
-              key={m.id}
-              className={`max-w-[90%] rounded-2xl px-3.5 py-2 text-sm ${
-                m.role === "user"
-                  ? "ml-auto bg-blue-600 text-white"
-                  : "bg-zinc-800/80 text-zinc-200"
-              }`}
-            >
-              <p className="whitespace-pre-wrap break-words">{m.text}</p>
+            <div key={m.id} className={m.role === "user" ? "ml-auto max-w-[90%]" : "max-w-[95%]"}>
+              <div
+                className={`rounded-2xl px-3.5 py-2 text-sm ${
+                  m.role === "user" ? "bg-blue-600 text-white" : "bg-zinc-800/80 text-zinc-200"
+                }`}
+              >
+                <p className="whitespace-pre-wrap break-words">{m.text}</p>
+              </div>
+              {m.role === "assistant" && m.sources && m.sources.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {m.sources.map((s) => (
+                    <button
+                      key={s.path}
+                      onClick={() => onOpenSource(s.path)}
+                      title={s.path}
+                      className="flex max-w-[95%] items-center gap-1 rounded-md bg-zinc-800/60 px-1.5 py-0.5 text-[11px] text-zinc-300 transition hover:bg-zinc-700"
+                    >
+                      <FileText size={11} className="shrink-0 text-emerald-400" />
+                      <span className="truncate">{s.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )
         )}

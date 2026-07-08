@@ -9,6 +9,7 @@ import type {
   ActionPlan,
   AppConfig,
   ApplyResult,
+  ChatResponse,
   ChatTurn,
   DirEntryInfo,
   DirectoryReport,
@@ -60,4 +61,4 @@ export const discardActionPlan = (transactionId: number) =>
 export const analyzeDirectory = (path: string) =>
   invoke<DirectoryReport>("analyze_directory", { path });
 export const chatWithAssistant = (messages: ChatTurn[], scope?: string) =>
-  invoke<string>("chat_with_assistant", { messages, scope });
+  invoke<ChatResponse>("chat_with_assistant", { messages, scope });

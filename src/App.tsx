@@ -204,7 +204,11 @@ export default function App() {
         />
       </main>
 
-      <ChatPanel currentPath={currentPath} reasoningOk={!!health?.reasoning_ok} />
+      <ChatPanel
+        currentPath={currentPath}
+        reasoningOk={!!health?.reasoning_ok}
+        onOpenSource={openDetail}
+      />
 
       <SettingsModal
         open={settingsOpen}
