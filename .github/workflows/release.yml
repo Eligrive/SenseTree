@@ -39,7 +39,7 @@ jobs:
 
       # Build and compile your Tauri app, generating the production installer
       - name: build and package Tauri app
-        uses: tauri-apps/tauri-action@v2
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
