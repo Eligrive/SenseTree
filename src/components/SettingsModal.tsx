@@ -47,7 +47,34 @@ const EMBED_CATALOG: EmbedModel[] = [
   { id: "snowflake-arctic-embed2", dims: 1024, local: false, server: true },
 ];
 const LOCAL_MODELS = EMBED_CATALOG.filter((m) => m.local);
-const EMBED_SUGGESTED = EMBED_CATALOG.filter((m) => m.server);
+
+// Suggestions de modèles d'embedding par type de serveur : les noms diffèrent
+// (Ollama = noms de registre ; LM Studio = modèles GGUF façon Hugging Face).
+type Suggest = { id: string; dims: number };
+const OLLAMA_EMBEDS: Suggest[] = EMBED_CATALOG.filter((m) => m.server).map((m) => ({
+  id: m.id,
+  dims: m.dims,
+}));
+const LMSTUDIO_EMBEDS: Suggest[] = [
+  { id: "text-embedding-nomic-embed-text-v1.5", dims: 768 },
+  { id: "text-embedding-all-minilm-l6-v2", dims: 384 },
+  { id: "text-embedding-bge-m3", dims: 1024 },
+  { id: "text-embedding-mxbai-embed-large-v1", dims: 1024 },
+];
+
+export type ServerKind = "ollama" | "lmstudio" | "unknown";
+function serverKind(baseUrl: string): ServerKind {
+  const u = (baseUrl ?? "").toLowerCase();
+  if (u.includes(":1234") || u.includes("lmstudio") || u.includes("lm-studio")) return "lmstudio";
+  if (u.includes(":11434") || u.includes("ollama")) return "ollama";
+  return "unknown";
+}
+function embedSuggestions(baseUrl: string): Suggest[] {
+  const k = serverKind(baseUrl);
+  if (k === "lmstudio") return LMSTUDIO_EMBEDS;
+  if (k === "ollama") return OLLAMA_EMBEDS;
+  return [...OLLAMA_EMBEDS, ...LMSTUDIO_EMBEDS];
+}
 
 function capLabel(m: EmbedModel): string {
   if (m.local && m.server) return "local ou serveur";
@@ -55,11 +82,20 @@ function capLabel(m: EmbedModel): string {
   return "serveur uniquement";
 }
 
-// Capacité d'un modèle d'embedding par son id (nom exact ou base avant ':'),
-// pour une notation uniforme en mode local ET serveur. null = inconnu (custom).
+// Retrouve un modèle du catalogue par son id, y compris pour les variantes
+// LM Studio (ex. "text-embedding-nomic-embed-text-v1.5" → nomic-embed-text).
+function findEmbed(modelId: string): EmbedModel | undefined {
+  const id = modelId.toLowerCase();
+  const base = id.split(":")[0];
+  return EMBED_CATALOG.find((x) => {
+    const xid = x.id.toLowerCase();
+    return xid === id || xid === base || id.includes(xid);
+  });
+}
+
+// Capacité d'un modèle (local / serveur / les deux), pour une notation uniforme.
 function capOf(modelId: string): string | null {
-  const base = modelId.split(":")[0];
-  const m = EMBED_CATALOG.find((x) => x.id === modelId || x.id === base);
+  const m = findEmbed(modelId);
   return m ? capLabel(m) : null;
 }
 
@@ -467,22 +503,25 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                     <div className="flex-1">
                       <ModelSelect
                         value={cfg.embedding.model}
-                        placeholder="ex : bge-m3, nomic-embed-text…"
+                        placeholder={
+                          serverKind(cfg.embedding.base_url) === "lmstudio"
+                            ? "ex : text-embedding-nomic-embed-text-v1.5…"
+                            : "ex : bge-m3, nomic-embed-text…"
+                        }
                         options={Array.from(
                           new Set([
                             ...(installed[cfg.embedding.base_url] ?? []),
-                            ...EMBED_SUGGESTED.map((m) => m.id),
+                            ...embedSuggestions(cfg.embedding.base_url).map((m) => m.id),
                           ])
                         )}
                         onPick={(v) => {
-                          const preset = EMBED_SUGGESTED.find((m) => m.id === v);
+                          const dims =
+                            embedSuggestions(cfg.embedding.base_url).find((m) => m.id === v)?.dims ??
+                            findEmbed(v)?.dims ??
+                            cfg.embedding.dimensions;
                           setCfg({
                             ...cfg,
-                            embedding: {
-                              ...cfg.embedding,
-                              model: v,
-                              dimensions: preset?.dims ?? cfg.embedding.dimensions,
-                            },
+                            embedding: { ...cfg.embedding, model: v, dimensions: dims },
                           });
                         }}
                       />
@@ -497,7 +536,11 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                         )
                       }
                       disabled={pulling.embedding}
-                      title="Télécharger ce modèle d'embedding (Ollama)"
+                      title={
+                        serverKind(cfg.embedding.base_url) === "lmstudio"
+                          ? "Télécharger ce modèle (LM Studio, via le CLI lms)"
+                          : "Télécharger ce modèle d'embedding (Ollama)"
+                      }
                       className="flex h-[34px] shrink-0 items-center rounded-lg bg-zinc-800 px-2.5 text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
                     >
                       {pulling.embedding ? (

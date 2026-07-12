@@ -281,8 +281,52 @@ async fn test_embedding_endpoint(
     }
 }
 
-/// Télécharge un modèle via l'API Ollama (POST /api/pull) en STREAMING, et émet
-/// des événements `model-pull-progress` pour la barre de progression de l'UI.
+/// Heuristique : l'endpoint pointe-t-il vers LM Studio (port 1234 par défaut) ?
+fn is_lmstudio(base_url: &str) -> bool {
+    let u = base_url.to_lowercase();
+    u.contains(":1234") || u.contains("lmstudio") || u.contains("lm-studio") || u.contains("lm_studio")
+}
+
+/// Télécharge un modèle sur LM Studio via son CLI `lms get`. LM Studio n'expose pas
+/// d'endpoint HTTP de téléchargement, on passe donc par l'outil en ligne de commande.
+async fn pull_lmstudio(app: tauri::AppHandle, model: String) -> Result<String, String> {
+    use std::process::Command;
+    use tauri::Emitter;
+
+    let emit = |status: &str, percent: u32| {
+        let _ = app.emit(
+            "model-pull-progress",
+            serde_json::json!({ "model": model, "status": status, "completed": 0, "total": 0, "percent": percent }),
+        );
+    };
+    emit("téléchargement via LM Studio (lms get)…", 0);
+
+    let m = model.clone();
+    let output = tokio::task::spawn_blocking(move || Command::new("lms").args(["get", &m, "--yes"]).output())
+        .await
+        .map_err(|e| format!("tâche lms interrompue : {e}"))?;
+
+    match output {
+        Ok(o) if o.status.success() => {
+            emit("success", 100);
+            Ok(format!("Modèle « {model} » téléchargé (LM Studio)"))
+        }
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            let out = String::from_utf8_lossy(&o.stdout);
+            let msg = if err.trim().is_empty() { out.trim() } else { err.trim() };
+            Err(format!("échec de `lms get` : {msg}"))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(
+            "CLI « lms » introuvable. Installez le CLI LM Studio (commande `lms`) ou téléchargez le modèle depuis l'application LM Studio."
+                .to_string(),
+        ),
+        Err(e) => Err(format!("lancement de `lms` impossible : {e}")),
+    }
+}
+
+/// Télécharge un modèle : Ollama (POST /api/pull, en streaming avec progression) ou
+/// LM Studio (CLI `lms get`), selon l'endpoint détecté. Émet `model-pull-progress`.
 #[tauri::command]
 async fn pull_model(
     app: tauri::AppHandle,
@@ -291,6 +335,11 @@ async fn pull_model(
 ) -> Result<String, String> {
     use futures_util::StreamExt;
     use tauri::Emitter;
+
+    // LM Studio : pas d'API de téléchargement → on passe par le CLI `lms`.
+    if is_lmstudio(&base_url) {
+        return pull_lmstudio(app, model).await;
+    }
 
     // base_url ~ http://host:11434/v1 → racine Ollama = http://host:11434
     let root = base_url
