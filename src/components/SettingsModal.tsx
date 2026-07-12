@@ -55,6 +55,14 @@ function capLabel(m: EmbedModel): string {
   return "serveur uniquement";
 }
 
+// Capacité d'un modèle d'embedding par son id (nom exact ou base avant ':'),
+// pour une notation uniforme en mode local ET serveur. null = inconnu (custom).
+function capOf(modelId: string): string | null {
+  const base = modelId.split(":")[0];
+  const m = EMBED_CATALOG.find((x) => x.id === modelId || x.id === base);
+  return m ? capLabel(m) : null;
+}
+
 // Suggestions de modèles cohérents par rôle (téléchargeables via Ollama).
 const SUGGESTED: Record<"reasoning" | "vision", string[]> = {
   reasoning: ["llama3.1:8b", "llama3.2:3b", "qwen2.5:7b", "phi3:mini"],
@@ -239,19 +247,24 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
     }
   };
 
-  const download = async (key: "reasoning" | "vision") => {
-    setPulling((p) => ({ ...p, [key]: true }));
-    setTestMsg((m) => ({ ...m, [key]: `⏳ téléchargement de « ${cfg[key].model} »…` }));
+  // Téléchargement générique d'un modèle (Ollama /api/pull) — reasoning, vision OU embedding.
+  const downloadModel = async (slot: string, baseUrl: string, apiKey: string, model: string) => {
+    if (!model.trim()) return;
+    setPulling((p) => ({ ...p, [slot]: true }));
+    setTestMsg((m) => ({ ...m, [slot]: `⏳ téléchargement de « ${model} »…` }));
     try {
-      const res = await pullModel(cfg[key].base_url, cfg[key].model);
-      setTestMsg((m) => ({ ...m, [key]: `✅ ${res}` }));
-      refreshModels(cfg[key].base_url, cfg[key].api_key);
+      const res = await pullModel(baseUrl, model);
+      setTestMsg((m) => ({ ...m, [slot]: `✅ ${res}` }));
+      refreshModels(baseUrl, apiKey);
     } catch (e) {
-      setTestMsg((m) => ({ ...m, [key]: `⚠️ ${String(e)}` }));
+      setTestMsg((m) => ({ ...m, [slot]: `⚠️ ${String(e)}` }));
     } finally {
-      setPulling((p) => ({ ...p, [key]: false }));
+      setPulling((p) => ({ ...p, [slot]: false }));
     }
   };
+
+  const download = (key: "reasoning" | "vision") =>
+    downloadModel(key, cfg[key].base_url, cfg[key].api_key, cfg[key].model);
 
   const save = async () => {
     setSaving(true);
@@ -435,38 +448,67 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                   {(() => {
                     const m = EMBED_CATALOG.find((x) => x.id === cfg.embedding.model);
                     return (
-                      <span className="mt-1 block text-[11px] text-zinc-500">
-                        {m?.server
-                          ? "Ce modèle existe aussi sur Ollama/LM Studio : bascule possible en mode « Serveur HTTP » (GPU) sans réindexer."
-                          : "Modèle disponible uniquement en local embarqué."}
-                      </span>
+                      <>
+                        <span className="mt-1 block text-[11px] text-zinc-500">
+                          Type : {m ? capLabel(m) : "local (personnalisé)"}
+                        </span>
+                        <span className="block text-[11px] text-zinc-500">
+                          {m?.server
+                            ? "Existe aussi sur Ollama/LM Studio → bascule possible en « Serveur HTTP » (GPU) sans réindexer."
+                            : "Disponible uniquement en local embarqué."}
+                        </span>
+                      </>
                     );
                   })()}
                 </Field>
               ) : (
                 <Field label="Modèle distant">
-                  <ModelSelect
-                    value={cfg.embedding.model}
-                    placeholder="ex : bge-m3, nomic-embed-text…"
-                    options={Array.from(
-                      new Set([
-                        ...(installed[cfg.embedding.base_url] ?? []),
-                        ...EMBED_SUGGESTED.map((m) => m.id),
-                      ])
-                    )}
-                    onPick={(v) => {
-                      const preset = EMBED_SUGGESTED.find((m) => m.id === v);
-                      setCfg({
-                        ...cfg,
-                        embedding: {
-                          ...cfg.embedding,
-                          model: v,
-                          dimensions: preset?.dims ?? cfg.embedding.dimensions,
-                        },
-                      });
-                    }}
-                  />
+                  <div className="flex items-start gap-1.5">
+                    <div className="flex-1">
+                      <ModelSelect
+                        value={cfg.embedding.model}
+                        placeholder="ex : bge-m3, nomic-embed-text…"
+                        options={Array.from(
+                          new Set([
+                            ...(installed[cfg.embedding.base_url] ?? []),
+                            ...EMBED_SUGGESTED.map((m) => m.id),
+                          ])
+                        )}
+                        onPick={(v) => {
+                          const preset = EMBED_SUGGESTED.find((m) => m.id === v);
+                          setCfg({
+                            ...cfg,
+                            embedding: {
+                              ...cfg.embedding,
+                              model: v,
+                              dimensions: preset?.dims ?? cfg.embedding.dimensions,
+                            },
+                          });
+                        }}
+                      />
+                    </div>
+                    <button
+                      onClick={() =>
+                        downloadModel(
+                          "embedding",
+                          cfg.embedding.base_url,
+                          cfg.embedding.api_key,
+                          cfg.embedding.model
+                        )
+                      }
+                      disabled={pulling.embedding}
+                      title="Télécharger ce modèle d'embedding (Ollama)"
+                      className="flex h-[34px] shrink-0 items-center rounded-lg bg-zinc-800 px-2.5 text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+                    >
+                      {pulling.embedding ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Download size={14} />
+                      )}
+                    </button>
+                  </div>
                   {(() => {
+                    const cap = capOf(cfg.embedding.model);
                     const list = installed[cfg.embedding.base_url] ?? [];
                     const avail = list.some(
                       (m) =>
@@ -474,15 +516,34 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                         m.split(":")[0] === cfg.embedding.model.split(":")[0]
                     );
                     return (
-                      <span
-                        className={`mt-1 block text-[11px] ${avail ? "text-emerald-400" : "text-amber-400"}`}
-                      >
-                        {avail
-                          ? "● disponible sur le serveur"
-                          : "○ introuvable — vérifiez le nom ou chargez le modèle"}
-                      </span>
+                      <>
+                        <span className="mt-1 block text-[11px] text-zinc-500">
+                          Type : {cap ?? "serveur (personnalisé)"}
+                        </span>
+                        <span
+                          className={`block text-[11px] ${avail ? "text-emerald-400" : "text-amber-400"}`}
+                        >
+                          {avail
+                            ? "● disponible sur le serveur"
+                            : "○ introuvable — télécharger ou vérifier le nom"}
+                        </span>
+                      </>
                     );
                   })()}
+                  {pulling.embedding && (
+                    <div className="mt-1.5">
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                        <div
+                          className="h-full rounded-full bg-blue-500 transition-all"
+                          style={{ width: `${pullProgress[cfg.embedding.model]?.percent ?? 0}%` }}
+                        />
+                      </div>
+                      <span className="mt-0.5 block text-[10px] text-zinc-500">
+                        {pullProgress[cfg.embedding.model]?.status ?? "démarrage…"}{" "}
+                        {pullProgress[cfg.embedding.model]?.percent ?? 0}%
+                      </span>
+                    </div>
+                  )}
                 </Field>
               )}
             </div>
