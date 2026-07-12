@@ -253,6 +253,17 @@ impl Default for AppConfig {
     }
 }
 
+/// Vrai si `path` est un dossier racine indexé, ou situé sous l'un d'eux.
+/// Comparaison insensible à la casse et aux séparateurs (adapté à Windows).
+pub fn path_under_root(roots: &[String], path: &str) -> bool {
+    let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let np = norm(path);
+    roots.iter().any(|r| {
+        let nr = norm(r);
+        !nr.is_empty() && (np == nr || np.starts_with(&format!("{nr}\\")))
+    })
+}
+
 /// Conteneur thread-safe de la configuration, avec persistance sur disque.
 #[derive(Debug)]
 pub struct ConfigStore {
@@ -296,6 +307,12 @@ impl ConfigStore {
     /// Renvoie une copie de la configuration courante.
     pub fn snapshot(&self) -> AppConfig {
         self.inner.read().expect("config lock poisoned").clone()
+    }
+
+    /// Vrai si `path` fait partie de l'indexation (racine ou sous un dossier racine).
+    pub fn is_under_root(&self, path: &str) -> bool {
+        let roots = self.inner.read().expect("config lock poisoned").indexing.roots.clone();
+        path_under_root(&roots, path)
     }
 
     /// Remplace la configuration et la persiste immédiatement.

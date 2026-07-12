@@ -27,6 +27,8 @@ pub struct DirEntryInfo {
     pub indexed: bool,
     /// Vrai si le chemin est à l'intérieur d'un dossier-bloc (non indexé individuellement).
     pub in_block: bool,
+    /// Vrai si le chemin fait partie de l'indexation (racine ou sous une racine).
+    pub under_root: bool,
 }
 
 /// Liste le contenu direct d'un dossier, trié (dossiers d'abord, puis alphabétique).
@@ -67,6 +69,8 @@ pub async fn list_directory(
         .db
         .is_under_block(path.trim_end_matches(['/', '\\']))
         .unwrap_or(false);
+    // Racines indexées (pour marquer chaque entrée « fait partie de l'indexation »).
+    let roots = state.config.snapshot().indexing.roots;
 
     let mut entries: Vec<DirEntryInfo> = Vec::new();
     let read = fs::read_dir(&path).map_err(|e| format!("lecture du dossier impossible: {e}"))?;
@@ -96,11 +100,13 @@ pub async fn list_directory(
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase());
 
+        let under_root = crate::config::path_under_root(&roots, &path_str);
         entries.push(DirEntryInfo {
             index_status: statuses.get(&path_str).cloned(),
             folder_mode: if is_dir { folder_modes.get(&path_str).cloned() } else { None },
             indexed: indexed.contains(&path_str),
             in_block: under_block,
+            under_root,
             path: path_str,
             name,
             is_directory: is_dir,

@@ -19,6 +19,7 @@ import type {
   TreeNode,
 } from "./lib/types";
 import {
+  addIndexedFolder,
   aiHealth,
   analyzeDirectory,
   getConfig,
@@ -29,6 +30,8 @@ import {
   listDirectory,
   openPath,
   pathDetails,
+  pickFolder,
+  removeIndexedFolder,
   semanticSearch,
   semanticTree,
   setFolderMode,
@@ -163,6 +166,53 @@ export default function App() {
     navigate(root);
   };
 
+  // Rafraîchit la liste courante (statuts under_root/mode après un changement de racines).
+  const refreshListing = useCallback(() => {
+    if (currentPath && !searchMode) {
+      listDirectory(currentPath).then(setEntries).catch(() => {});
+    }
+  }, [currentPath, searchMode]);
+
+  // Ajoute un dossier donné à l'indexation (utilisé par l'explorateur : « + indexer »).
+  const addRootPath = useCallback(
+    async (path: string) => {
+      try {
+        setRoots(await addIndexedFolder(path));
+        refreshListing();
+      } catch (e) {
+        console.error("add_indexed_folder:", e);
+      }
+    },
+    [refreshListing]
+  );
+
+  // Ajoute un dossier via le sélecteur natif (bouton « Ajouter » de la barre latérale).
+  const addRoot = useCallback(async () => {
+    try {
+      const path = await pickFolder();
+      if (path) await addRootPath(path);
+    } catch (e) {
+      console.error("pick_folder:", e);
+    }
+  }, [addRootPath]);
+
+  const removeRoot = useCallback(
+    async (root: string) => {
+      try {
+        const next = await removeIndexedFolder(root);
+        setRoots(next);
+        if (currentRoot === root) {
+          if (next.length > 0) selectRoot(next[0]);
+          else setCurrentRoot(null);
+        }
+        refreshListing();
+      } catch (e) {
+        console.error("remove_indexed_folder:", e);
+      }
+    },
+    [currentRoot, refreshListing]
+  );
+
   const search = (query: string) => {
     setSearchMode(true);
     setSearching(true);
@@ -223,6 +273,8 @@ export default function App() {
         roots={roots}
         currentRoot={currentRoot}
         onSelectRoot={selectRoot}
+        onAddRoot={addRoot}
+        onRemoveRoot={removeRoot}
         health={health}
         stats={stats}
         paused={paused}
@@ -248,6 +300,7 @@ export default function App() {
           scopeToCurrent={scopeToCurrent}
           onToggleScope={setScopeToCurrent}
           onSetFolderMode={changeFolderMode}
+          onAddRoot={addRootPath}
           treeData={treeData}
           resultView={resultView}
           onSetResultView={setResultView}

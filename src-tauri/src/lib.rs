@@ -65,6 +65,11 @@ async fn set_folder_mode(
     mode: String,
 ) -> Result<(), String> {
     let st = state.inner().clone();
+    // Garde-fou : on ne classe (bloc/récursif) que des dossiers faisant partie de
+    // l'indexation. Un dossier hors périmètre doit d'abord être ajouté aux racines.
+    if !st.config.is_under_root(&path) {
+        return Err("Ce dossier ne fait pas partie de l'indexation : ajoutez-le d'abord aux dossiers indexés.".into());
+    }
     st.db.set_folder_profile_manual(&path, &mode).map_err(|e| e.to_string())?;
 
     if mode == "block" {
@@ -81,6 +86,93 @@ async fn set_folder_mode(
         std::thread::spawn(move || crawler::scan_directory(sc, &p));
     }
     Ok(())
+}
+
+/// Ouvre un sélecteur natif de dossier ; renvoie le chemin choisi (ou None).
+#[tauri::command]
+async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |path| {
+        let _ = tx.send(path);
+    });
+    match rx.await {
+        Ok(Some(fp)) => fp.into_path().ok().map(|p| p.to_string_lossy().to_string()),
+        _ => None,
+    }
+}
+
+/// Ajoute un dossier à l'indexation (racine) et lance son scan. Renvoie la liste à jour.
+#[tauri::command]
+async fn add_indexed_folder(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+) -> Result<Vec<String>, String> {
+    let st = state.inner().clone();
+    let norm = path.trim_end_matches(['/', '\\']).to_string();
+    if norm.is_empty() {
+        return Err("chemin vide".into());
+    }
+    if !std::path::Path::new(&norm).is_dir() {
+        return Err("le dossier est introuvable".into());
+    }
+    let mut cfg = st.config.snapshot();
+    let already = cfg
+        .indexing
+        .roots
+        .iter()
+        .any(|r| r.trim_end_matches(['/', '\\']).eq_ignore_ascii_case(&norm));
+    if already {
+        return Ok(cfg.indexing.roots);
+    }
+    cfg.indexing.roots.push(norm.clone());
+    let roots = cfg.indexing.roots.clone();
+    st.config.replace(cfg).map_err(|e| e.to_string())?;
+
+    // Indexation immédiate + surveillance temps réel du nouveau dossier.
+    let sc = st.clone();
+    let p = norm.clone();
+    std::thread::spawn(move || crawler::scan_directory(sc, &p));
+    watchdog::watch_root(st.clone(), norm);
+    Ok(roots)
+}
+
+/// Retire un dossier de l'indexation. Purge ses données, mais préserve les
+/// sous-dossiers ajoutés explicitement (ils restent indexés / sont ré-indexés).
+#[tauri::command]
+async fn remove_indexed_folder(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+) -> Result<Vec<String>, String> {
+    let st = state.inner().clone();
+    let norm = path.trim_end_matches(['/', '\\']).to_string();
+    let mut cfg = st.config.snapshot();
+    let before = cfg.indexing.roots.len();
+    cfg.indexing
+        .roots
+        .retain(|r| !r.trim_end_matches(['/', '\\']).eq_ignore_ascii_case(&norm));
+    let remaining = cfg.indexing.roots.clone();
+    if remaining.len() == before {
+        return Ok(remaining); // ce n'était pas une racine
+    }
+    st.config.replace(cfg).map_err(|e| e.to_string())?;
+
+    // Le chemin reste-t-il couvert par une autre racine (racine parente) ?
+    let still_covered = config::path_under_root(&remaining, &norm);
+    if !still_covered {
+        // Plus couvert : on purge tout le sous-arbre…
+        st.vector.delete_under(&norm).await.ok();
+        st.db.purge_tree(&norm).map_err(|e| e.to_string())?;
+        // …puis on ré-indexe les sous-racines explicitement conservées.
+        for r in &remaining {
+            if config::path_under_root(std::slice::from_ref(&norm), r.trim_end_matches(['/', '\\'])) {
+                let sc = st.clone();
+                let p = r.clone();
+                std::thread::spawn(move || crawler::scan_directory(sc, &p));
+            }
+        }
+    }
+    Ok(remaining)
 }
 
 #[tauri::command]
@@ -341,6 +433,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app
                 .path()
@@ -430,6 +523,9 @@ pub fn run() {
             explorer::get_roots,
             explorer::path_details,
             set_folder_mode,
+            pick_folder,
+            add_indexed_folder,
+            remove_indexed_folder,
             search::semantic_search,
             search::semantic_tree,
             actions::plan_reorganization,

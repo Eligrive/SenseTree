@@ -721,6 +721,28 @@ impl Database {
         Ok(())
     }
 
+    /// Purge tout un sous-arbre (le dossier lui-même ET ses descendants), profils
+    /// de dossiers inclus — utilisé quand un dossier est retiré de l'indexation.
+    pub fn purge_tree(&self, folder: &str) -> Result<()> {
+        let conn = self.conn()?;
+        let root = folder.trim_end_matches(['/', '\\']);
+        let child_pattern = like_prefix(&format!("{root}{}", std::path::MAIN_SEPARATOR));
+        for table in [
+            "indexed_files",
+            "file_semantics",
+            "indexing_queue",
+            "file_catalog",
+            "folder_profiles",
+        ] {
+            conn.execute(
+                &format!("DELETE FROM {table} WHERE path LIKE ?1 ESCAPE '\\'"),
+                params![child_pattern],
+            )?;
+            conn.execute(&format!("DELETE FROM {table} WHERE path = ?1"), params![root])?;
+        }
+        Ok(())
+    }
+
     // =====================================================================
     // TRANSACTIONS DRY-RUN
     // =====================================================================

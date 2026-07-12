@@ -41,6 +41,11 @@ export const reindexAll = () => invoke<void>("reindex_all");
 export const listDirectory = (path: string) =>
   invoke<DirEntryInfo[]>("list_directory", { path });
 export const getRoots = () => invoke<string[]>("get_roots");
+export const pickFolder = () => invoke<string | null>("pick_folder");
+export const addIndexedFolder = (path: string) =>
+  invoke<string[]>("add_indexed_folder", { path });
+export const removeIndexedFolder = (path: string) =>
+  invoke<string[]>("remove_indexed_folder", { path });
 export const openPath = (path: string) => invoke<void>("open_path", { path });
 export const pathDetails = (path: string) => invoke<PathDetails>("path_details", { path });
 export const indexingStats = () => invoke<IndexingStats>("indexing_stats");

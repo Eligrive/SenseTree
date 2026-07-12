@@ -15,6 +15,14 @@ use crate::parser::{FileType, Parser};
 use crate::state::AppState;
 
 pub fn start_watching(state: Arc<AppState>, roots: Vec<String>) {
+    for root in roots {
+        watch_root(state.clone(), root);
+    }
+}
+
+/// Surveille une racine dans son propre thread. Réutilisé pour les dossiers
+/// ajoutés à l'indexation en cours de session.
+pub fn watch_root(state: Arc<AppState>, root: String) {
     thread::spawn(move || {
         let (tx, rx) = channel();
         let mut debouncer = match new_debouncer(Duration::from_secs(2), tx) {
@@ -25,16 +33,14 @@ pub fn start_watching(state: Arc<AppState>, roots: Vec<String>) {
             }
         };
 
-        for root in &roots {
-            if let Err(e) = debouncer
-                .watcher()
-                .watch(Path::new(root), RecursiveMode::Recursive)
-            {
-                tracing::warn!("watchdog: impossible de surveiller {root}: {e}");
-            } else {
-                tracing::info!("🛡️ Watchdog actif sur : {root}");
-            }
+        if let Err(e) = debouncer
+            .watcher()
+            .watch(Path::new(&root), RecursiveMode::Recursive)
+        {
+            tracing::warn!("watchdog: impossible de surveiller {root}: {e}");
+            return;
         }
+        tracing::info!("🛡️ Watchdog actif sur : {root}");
 
         for res in rx {
             match res {
@@ -48,9 +54,17 @@ pub fn start_watching(state: Arc<AppState>, roots: Vec<String>) {
 fn handle_batch(state: &AppState, events: Vec<notify_debouncer_mini::DebouncedEvent>) {
     let unique: HashSet<_> = events.into_iter().map(|e| e.path).collect();
     let db = &state.db;
+    // Racines courantes : un watcher survivant d'un dossier retiré de l'indexation
+    // ne doit plus rien traiter (ses événements sont ignorés).
+    let roots = state.config.snapshot().indexing.roots;
 
     for path_buf in unique {
         let path_str = path_buf.to_string_lossy().to_string();
+
+        // Hors indexation (racine supprimée, ou événement hors périmètre) : on ignore.
+        if !crate::config::path_under_root(&roots, &path_str) {
+            continue;
+        }
 
         // Suppression : on remet en file pour purge des vecteurs.
         if !path_buf.exists() {

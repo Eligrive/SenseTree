@@ -65,6 +65,7 @@ export interface DirEntryInfo {
   folder_mode: string | null; // 'recursive' | 'block' | 'pending' | null
   indexed: boolean;
   in_block: boolean;
+  under_root: boolean;
 }
 
 export interface SearchResult {

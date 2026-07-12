@@ -15,6 +15,7 @@ import {
   List,
   Loader2,
   Network,
+  Plus,
   Search,
   Sparkles,
   X,
@@ -38,6 +39,7 @@ interface Props {
   scopeToCurrent: boolean;
   onToggleScope: (value: boolean) => void;
   onSetFolderMode: (path: string, mode: "recursive" | "block") => void;
+  onAddRoot: (path: string) => void;
   treeData: TreeNode | null;
   resultView: ResultView;
   onSetResultView: (v: ResultView) => void;
@@ -47,11 +49,29 @@ interface Props {
 function FolderModeBadge({
   entry,
   onSetFolderMode,
+  onAddRoot,
 }: {
   entry: DirEntryInfo;
   onSetFolderMode: (path: string, mode: "recursive" | "block") => void;
+  onAddRoot: (path: string) => void;
 }) {
   const mode = entry.folder_mode;
+
+  // Hors indexation : on ne peut pas classer (bloc/récursif). On propose de l'ajouter.
+  if (!entry.under_root) {
+    return (
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onAddRoot(entry.path);
+        }}
+        title="Ce dossier ne fait pas partie de l'indexation — cliquer pour l'ajouter"
+        className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-zinc-600 transition hover:bg-emerald-500/15 hover:text-emerald-400"
+      >
+        <Plus size={11} /> indexer
+      </button>
+    );
+  }
 
   // Pas encore classé (le crawler n'a pas encore atteint ce dossier).
   if (mode == null) {
@@ -168,6 +188,7 @@ export default function Explorer({
   scopeToCurrent,
   onToggleScope,
   onSetFolderMode,
+  onAddRoot,
   treeData,
   resultView,
   onSetResultView,
@@ -354,7 +375,11 @@ export default function Explorer({
                         </span>
                         <span className="truncate text-zinc-200">{entry.name}</span>
                         {entry.is_directory && (
-                          <FolderModeBadge entry={entry} onSetFolderMode={onSetFolderMode} />
+                          <FolderModeBadge
+                            entry={entry}
+                            onSetFolderMode={onSetFolderMode}
+                            onAddRoot={onAddRoot}
+                          />
                         )}
                         <IndexBadge entry={entry} />
                       </div>
