@@ -65,3 +65,7 @@ local_storage/
 data/vectors/
 
 .github/copilot-instructions.md
+# Fichiers temporaires de lancement local
+devrun.log
+devrun.err.log
+devrun.pid
