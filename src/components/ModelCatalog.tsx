@@ -3,6 +3,8 @@ import {
   AlertTriangle,
   Check,
   Download,
+  ExternalLink,
+  HelpCircle,
   Loader2,
   RefreshCw,
   Search,
@@ -11,9 +13,9 @@ import {
 } from "lucide-react";
 import {
   CATALOG,
-  availabilityOf,
   hfName,
   idForBackend,
+  availabilityOf,
   type Backend,
   type CatalogModel,
   type ServerKind,
@@ -56,9 +58,29 @@ const TASK_LABEL: Record<Task, string> = {
   vision: "Vision",
 };
 
-/// Score MTEB (0–1) → convention du leaderboard (×100).
+/// Bornes de taille : un 27 B ne tient pas sur un GPU grand public.
+const SIZE_LIMITS = [
+  { label: "Toutes tailles", max: Infinity },
+  { label: "≤ 1 B (léger)", max: 1 },
+  { label: "≤ 4 B", max: 4 },
+  { label: "≤ 8 B", max: 8 },
+];
+
 const fmtScore = (x: number) => (x * 100).toFixed(1);
-const fmtParams = (b: number) => (b >= 1 ? `${b.toFixed(1).replace(".", ",")} B` : `${Math.round(b * 1000)} M`);
+const fmtParams = (b: number) =>
+  b >= 1 ? `${b.toFixed(1).replace(".", ",")} B` : `${Math.round(b * 1000)} M`;
+
+/// Ligne unifiée : un modèle du classement, enrichi de nos infos curatées.
+interface Row {
+  hf: string;
+  bench?: ModelBenchmark;
+  curated?: CatalogModel;
+  /// Identifiant utilisable sur le backend courant (undefined = indisponible).
+  id?: string;
+  /// Vrai si `id` est DÉDUIT du nom HF (non vérifié) — à signaler à l'utilisateur.
+  guessed: boolean;
+  installed: boolean;
+}
 
 function Stars({ n }: { n: number }) {
   return (
@@ -66,18 +88,6 @@ function Stars({ n }: { n: number }) {
       {[1, 2, 3, 4, 5].map((i) => (
         <Star key={i} size={11} className={i <= n ? "fill-amber-400 text-amber-400" : "text-zinc-700"} />
       ))}
-    </span>
-  );
-}
-
-function Badge({ label, active }: { label: string; active: boolean }) {
-  return (
-    <span
-      className={`rounded px-1.5 py-0.5 text-[10px] ${
-        active ? "bg-blue-500/20 text-blue-300" : "bg-zinc-800 text-zinc-500"
-      }`}
-    >
-      {label}
     </span>
   );
 }
@@ -96,18 +106,21 @@ export default function ModelCatalog({
   downloading,
 }: Props) {
   const [query, setQuery] = useState("");
-  const [onlyAvailable, setOnlyAvailable] = useState(false);
+  const [onlyUsable, setOnlyUsable] = useState(false);
+  const [sizeLimit, setSizeLimit] = useState(0);
   const [boards, setBoards] = useState<string[]>(loadBoards);
   const [available, setAvailable] = useState<BoardInfo[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [sortBoard, setSortBoard] = useState<string>("relevance");
+  const [sortBoard, setSortBoard] = useState<string>("");
   const [bench, setBench] = useState<Record<string, ModelBenchmark>>({});
   const [loadingBench, setLoadingBench] = useState(false);
   const [benchError, setBenchError] = useState<string | null>(null);
+  const [limit, setLimit] = useState(40);
 
-  // Seuls les embeddings sont couverts par MTEB (les LLM de chat/vision n'y sont pas).
+  // MTEB ne couvre que les embeddings : les LLM de chat/vision gardent la liste curatée.
   const hasScores = task === "embedding";
   const boardKey = boards.join("|");
+  const primaryBoard = sortBoard || boards[0] || "";
 
   useEffect(() => {
     if (open && hasScores) listBenchmarkBoards().then(setAvailable).catch(() => setAvailable([]));
@@ -132,40 +145,96 @@ export default function ModelCatalog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, task, boardKey]);
 
-  const labelOf = (board: string) => available.find((b) => b.name === board)?.display_name ?? board;
-  const benchOf = (m: CatalogModel): ModelBenchmark | undefined => {
-    const h = hfName(m);
-    return h ? bench[h] : undefined;
-  };
-  const scoreOn = (m: CatalogModel, board: string): BoardScore | undefined =>
-    benchOf(m)?.scores.find((s) => s.board === board);
+  const labelOf = (b: string) => available.find((x) => x.name === b)?.display_name ?? b;
 
   const isInstalled = (id: string) =>
     backend === "local"
       ? !!localDownloaded[id]
       : installedServer.some((m) => m === id || m.split(":")[0] === id.split(":")[0]);
 
-  const rows = useMemo(() => {
+  /// Résout l'identifiant utilisable pour le backend courant.
+  /// C'est LE point dur : aucune API ne relie un modèle du leaderboard au catalogue
+  /// d'Ollama. On privilégie donc, dans l'ordre : nom vérifié (curaté) → modèle déjà
+  /// installé → nom déduit du nom HF, explicitement marqué comme non vérifié.
+  const resolveId = (hf: string, cur?: CatalogModel): { id?: string; guessed: boolean } => {
+    if (backend === "local") {
+      // Le local (fastembed) est un ensemble FIXE : pas de déduction possible.
+      return { id: cur?.local, guessed: false };
+    }
+    const verified = serverKind === "lmstudio" ? cur?.lmstudio : cur?.ollama;
+    if (verified) return { id: verified, guessed: false };
+
+    const short = (hf.split("/")[1] ?? hf).toLowerCase();
+    const hit = installedServer.find(
+      (m) => m.toLowerCase() === short || m.toLowerCase().split(":")[0] === short
+    );
+    if (hit) return { id: hit, guessed: false };
+
+    // LM Studio installe depuis Hugging Face → le nom du dépôt est la bonne clé.
+    return { id: serverKind === "lmstudio" ? hf : short, guessed: true };
+  };
+
+  const curatedByHf = useMemo(() => {
+    const m = new Map<string, CatalogModel>();
+    for (const c of CATALOG) {
+      const h = hfName(c);
+      if (h) m.set(h, c);
+    }
+    return m;
+  }, []);
+
+  const rows: Row[] = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return CATALOG.filter((m) => m.task === task)
-      .filter((m) => (q ? (m.name + m.goodFor).toLowerCase().includes(q) : true))
-      .filter((m) => {
-        if (!onlyAvailable) return true;
-        const id = idForBackend(m, backend, serverKind);
-        return !!id && isInstalled(id);
+
+    // Chat / vision : pas de leaderboard MTEB → on reste sur la liste curatée.
+    if (!hasScores) {
+      return CATALOG.filter((c) => c.task === task)
+        .filter((c) => (q ? (c.name + c.goodFor).toLowerCase().includes(q) : true))
+        .sort((a, b) => b.quality - a.quality)
+        .map((c) => {
+          const id = idForBackend(c, backend, serverKind);
+          return {
+            hf: c.name,
+            curated: c,
+            id,
+            guessed: false,
+            installed: !!id && isInstalled(id),
+          };
+        });
+    }
+
+    // Embeddings : la LISTE vient du leaderboard (donc les nouveaux modèles arrivent seuls).
+    const max = SIZE_LIMITS[sizeLimit].max;
+    const out: Row[] = Object.values(bench)
+      .filter((b) => (q ? b.name.toLowerCase().includes(q) : true))
+      .filter((b) => (b.params_b == null ? true : b.params_b <= max))
+      .map((b) => {
+        const cur = curatedByHf.get(b.name);
+        const { id, guessed } = resolveId(b.name, cur);
+        return {
+          hf: b.name,
+          bench: b,
+          curated: cur,
+          id,
+          guessed,
+          installed: !!id && isInstalled(id),
+        };
       })
-      .sort((a, b) => {
-        if (sortBoard !== "relevance") {
-          const sa = scoreOn(a, sortBoard)?.mean ?? null;
-          const sb = scoreOn(b, sortBoard)?.mean ?? null;
-          if (sa != null && sb != null) return sb - sa;
-          if (sa != null) return -1; // les non évalués en dernier
-          if (sb != null) return 1;
-        }
-        return b.quality - a.quality || a.name.localeCompare(b.name);
-      });
+      .filter((r) => !onlyUsable || (r.installed && !!r.id));
+
+    const scoreOf = (r: Row) =>
+      r.bench?.scores.find((s) => s.board === primaryBoard)?.mean ?? null;
+
+    return out.sort((a, b) => {
+      const sa = scoreOf(a);
+      const sb = scoreOf(b);
+      if (sa != null && sb != null) return sb - sa;
+      if (sa != null) return -1; // les non évalués en dernier, jamais assimilés à zéro
+      if (sb != null) return 1;
+      return a.hf.localeCompare(b.hf);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task, backend, serverKind, query, onlyAvailable, sortBoard, bench, installedServer, localDownloaded]);
+  }, [task, backend, serverKind, query, onlyUsable, sizeLimit, primaryBoard, bench, installedServer, localDownloaded]);
 
   if (!open) return null;
 
@@ -179,20 +248,30 @@ export default function ModelCatalog({
           : "Serveur HTTP";
 
   const toggleBoard = (name: string) =>
-    setBoards((prev) =>
-      prev.includes(name) ? prev.filter((b) => b !== name) : [...prev, name]
-    );
+    setBoards((prev) => (prev.includes(name) ? prev.filter((b) => b !== name) : [...prev, name]));
+
+  const shown = rows.slice(0, limit);
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-6">
-      <div className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl">
+      <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl">
         <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-3.5">
           <div>
             <h2 className="text-base font-semibold text-zinc-100">
               Catalogue de modèles — {TASK_LABEL[task]}
             </h2>
             <p className="text-[11px] text-zinc-500">
-              Cible actuelle : <span className="text-zinc-300">{backendLabel}</span>
+              {hasScores ? (
+                <>
+                  {rows.length} modèles du leaderboard MTEB · cible :{" "}
+                  <span className="text-zinc-300">{backendLabel}</span>
+                </>
+              ) : (
+                <>
+                  Liste curatée (MTEB ne couvre pas les LLM) · cible :{" "}
+                  <span className="text-zinc-300">{backendLabel}</span>
+                </>
+              )}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -213,7 +292,7 @@ export default function ModelCatalog({
           </div>
         </div>
 
-        {/* Choix des classements : global multilingue, ou les langues qui te concernent. */}
+        {/* Choix des classements : global multilingue, ou TES langues. */}
         {hasScores && (
           <div className="border-b border-zinc-800 px-5 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
@@ -255,7 +334,7 @@ export default function ModelCatalog({
                       />
                       <span className="truncate">{b.display_name}</span>
                       <span className="ml-auto shrink-0 text-[10px] text-zinc-600">
-                        {b.num_models ?? "?"} modèles
+                        {b.num_models ?? "?"}
                       </span>
                     </label>
                   ))}
@@ -265,20 +344,20 @@ export default function ModelCatalog({
           </div>
         )}
 
-        {/* Le piège à ne pas reproduire : un score dans UNE langue ne dit rien des autres. */}
         {hasScores && (
           <div className="flex gap-2 border-b border-zinc-800 bg-amber-500/5 px-5 py-2">
             <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-400" />
             <p className="text-[11px] leading-relaxed text-amber-200/80">
-              Un bon score dans une langue <strong>ne prédit pas</strong> les autres : les modèles
-              anglophones chutent à ~20 en coréen contre ~67 pour un vrai multilingue. Choisis les
-              classements correspondant à <strong>tes</strong> langues. « non évalué » ≠ mauvais.
+              Un bon score dans une langue <strong>ne prédit pas</strong> les autres (les modèles
+              anglophones chutent à ~20 en coréen contre ~67 pour un multilingue). « non évalué » ≠
+              mauvais. Et un modèle du classement <strong>n'est pas forcément installable</strong> :
+              les noms non vérifiés sont signalés.
             </p>
           </div>
         )}
 
         {/* Filtres */}
-        <div className="flex items-center gap-3 border-b border-zinc-800 px-5 py-2.5">
+        <div className="flex items-center gap-2 border-b border-zinc-800 px-5 py-2.5">
           <div className="flex flex-1 items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5">
             <Search size={13} className="shrink-0 text-zinc-500" />
             <input
@@ -289,161 +368,187 @@ export default function ModelCatalog({
             />
           </div>
           {hasScores && (
-            <select
-              value={sortBoard}
-              onChange={(e) => setSortBoard(e.target.value)}
-              className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 outline-none"
-            >
-              <option value="relevance">Tri : pertinence (curaté)</option>
-              {boards.map((b) => (
-                <option key={b} value={b}>
-                  Tri : score {labelOf(b)}
-                </option>
-              ))}
-            </select>
+            <>
+              <select
+                value={sizeLimit}
+                onChange={(e) => setSizeLimit(Number(e.target.value))}
+                className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 outline-none"
+                title="Un 27 B ne tiendra pas sur un GPU grand public"
+              >
+                {SIZE_LIMITS.map((s, i) => (
+                  <option key={s.label} value={i}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={sortBoard}
+                onChange={(e) => setSortBoard(e.target.value)}
+                className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 outline-none"
+              >
+                {boards.map((b) => (
+                  <option key={b} value={b}>
+                    Trier : {labelOf(b)}
+                  </option>
+                ))}
+              </select>
+            </>
           )}
           <label className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-400">
             <input
               type="checkbox"
-              checked={onlyAvailable}
-              onChange={(e) => setOnlyAvailable(e.target.checked)}
+              checked={onlyUsable}
+              onChange={(e) => setOnlyUsable(e.target.checked)}
             />
-            Installés seulement
+            Installés
           </label>
         </div>
 
         {benchError && (
           <p className="border-b border-zinc-800 px-5 py-2 text-[11px] text-rose-400">
-            Leaderboard MTEB indisponible ({benchError}) — valeurs de repli affichées.
+            Leaderboard MTEB indisponible ({benchError}).
           </p>
         )}
 
         {/* Liste */}
         <div className="flex-1 space-y-2 overflow-y-auto p-4">
-          {rows.length === 0 && (
+          {loadingBench && shown.length === 0 && (
+            <p className="py-8 text-center text-sm text-zinc-600">Chargement du leaderboard…</p>
+          )}
+          {!loadingBench && shown.length === 0 && (
             <p className="py-8 text-center text-sm text-zinc-600">Aucun modèle ne correspond.</p>
           )}
-          {rows.map((m) => {
-            const id = idForBackend(m, backend, serverKind);
-            const usable = !!id;
-            const installed = usable && isInstalled(id);
-            const inUse = usable && currentModel === id;
-            const busy = usable && !!downloading[id];
-            const b = benchOf(m);
 
-            // Specs live si disponibles, sinon repli sur le catalogue.
-            const dims = b?.embed_dim ?? m.dims;
-            const params = b?.params_b ? fmtParams(b.params_b) : m.params;
+          {shown.map((r) => {
+            const cur = r.curated;
+            const b = r.bench;
+            const inUse = !!r.id && currentModel === r.id;
+            const busy = !!r.id && !!downloading[r.id];
+            const dims = b?.embed_dim ?? cur?.dims;
+            const params = b?.params_b ? fmtParams(b.params_b) : cur?.params;
+            const displayName = cur?.name ?? r.hf.split("/")[1] ?? r.hf;
+            const primary = b?.scores.find((s: BoardScore) => s.board === primaryBoard);
 
             return (
               <div
-                key={m.key}
+                key={r.hf}
                 className={`rounded-xl border p-3 ${
-                  inUse
-                    ? "border-blue-500/40 bg-blue-500/5"
-                    : usable
-                      ? "border-zinc-800 bg-zinc-900/30"
-                      : "border-zinc-900 bg-zinc-900/10 opacity-60"
+                  inUse ? "border-blue-500/40 bg-blue-500/5" : "border-zinc-800 bg-zinc-900/30"
                 }`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-semibold text-zinc-100">{m.name}</span>
-                      <Stars n={m.quality} />
+                      {primary?.rank != null && primary.mean != null && (
+                        <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
+                          #{primary.rank}
+                        </span>
+                      )}
+                      <span className="text-sm font-semibold text-zinc-100">{displayName}</span>
+                      {cur && <Stars n={cur.quality} />}
                       {inUse && (
                         <span className="rounded bg-blue-500/20 px-1.5 py-0.5 text-[10px] text-blue-300">
                           utilisé
                         </span>
                       )}
+                      {!cur && (
+                        <span
+                          className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-400/80"
+                          title="Découvert automatiquement via le leaderboard"
+                        >
+                          découvert
+                        </span>
+                      )}
                     </div>
 
-                    <p className="mt-1 text-[12px] text-zinc-300">{m.goodFor}</p>
+                    {cur && <p className="mt-1 text-[12px] text-zinc-300">{cur.goodFor}</p>}
 
                     {/* Scores officiels, un par classement choisi. */}
                     {hasScores && (
                       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                         {boards.map((board) => {
-                          const s = scoreOn(m, board);
+                          const s = b?.scores.find((x) => x.board === board);
                           const scored = s?.mean != null;
                           return (
                             <span
                               key={board}
                               title={
                                 scored
-                                  ? `${labelOf(board)} — rang ${s!.rank}/${s!.total} (MTEB)`
-                                  : `${labelOf(board)} — modèle non évalué sur ce classement`
+                                  ? `${labelOf(board)} — rang ${s!.rank}/${s!.total}`
+                                  : `${labelOf(board)} — non évalué`
                               }
                               className={`rounded px-1.5 py-0.5 text-[10px] ${
-                                scored
-                                  ? "bg-blue-500/15 text-blue-300"
-                                  : "bg-zinc-800/60 text-zinc-600"
+                                scored ? "bg-blue-500/15 text-blue-300" : "bg-zinc-800/60 text-zinc-600"
                               }`}
                             >
                               {labelOf(board)} :{" "}
-                              {scored ? (
-                                <>
-                                  <strong>{fmtScore(s!.mean!)}</strong>
-                                  {s!.rank != null && (
-                                    <span className="text-zinc-500">
-                                      {" "}
-                                      #{s!.rank}/{s!.total}
-                                    </span>
-                                  )}
-                                </>
-                              ) : (
-                                "non évalué"
-                              )}
+                              {scored ? <strong>{fmtScore(s!.mean!)}</strong> : "non évalué"}
                             </span>
                           );
                         })}
-                        {loadingBench && <Loader2 size={11} className="animate-spin text-zinc-600" />}
                       </div>
                     )}
 
                     <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px] text-zinc-500">
-                      <span>{params}</span>
+                      {params && <span>{params}</span>}
                       {dims && <span>{dims} dims</span>}
                       {b?.max_tokens && <span>{Math.round(b.max_tokens)} tokens</span>}
-                      <span className="flex items-center gap-1">
-                        {availabilityOf(m).map((bk) => (
-                          <Badge
-                            key={bk}
-                            label={bk}
-                            active={
-                              (bk === "Local" && backend === "local") ||
-                              (bk === "Ollama" && backend === "server" && serverKind !== "lmstudio") ||
-                              (bk === "LM Studio" && backend === "server" && serverKind === "lmstudio")
-                            }
-                          />
-                        ))}
-                      </span>
+                      {cur && (
+                        <span className="flex items-center gap-1">
+                          {availabilityOf(cur).map((bk) => (
+                            <span key={bk} className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-500">
+                              {bk}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                      {b?.url && (
+                        <a
+                          href={b.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center gap-0.5 text-zinc-500 hover:text-zinc-300"
+                        >
+                          <ExternalLink size={10} /> HF
+                        </a>
+                      )}
                     </div>
 
-                    {!usable && (
+                    {r.id ? (
+                      <p className="mt-1.5 flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
+                        {r.id}
+                        {r.guessed && (
+                          <span
+                            className="flex items-center gap-0.5 rounded bg-amber-500/10 px-1 py-0.5 font-sans text-[10px] text-amber-400/90"
+                            title="Aucune API ne relie le leaderboard au catalogue Ollama : ce nom est déduit et peut être faux."
+                          >
+                            <HelpCircle size={9} /> nom déduit — à vérifier
+                          </span>
+                        )}
+                      </p>
+                    ) : (
                       <p className="mt-1.5 text-[11px] text-amber-400/80">
-                        Indisponible sur « {backendLabel} » — proposé sur : {availabilityOf(m).join(", ")}.
+                        Pas de version « {backendLabel} » connue pour ce modèle.
                       </p>
                     )}
-                    {usable && <p className="mt-1.5 font-mono text-[10px] text-zinc-600">{id}</p>}
                   </div>
 
-                  {usable && (
+                  {r.id && (
                     <div className="flex shrink-0 flex-col gap-1.5">
                       <button
-                        onClick={() => onUse(id, dims)}
+                        onClick={() => onUse(r.id!, dims)}
                         disabled={inUse}
                         className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-40"
                       >
                         {inUse ? "Utilisé" : "Utiliser"}
                       </button>
-                      {installed ? (
+                      {r.installed ? (
                         <span className="flex items-center justify-center gap-1 text-[11px] text-emerald-400">
                           <Check size={12} /> installé
                         </span>
                       ) : (
                         <button
-                          onClick={() => onDownload(id)}
+                          onClick={() => onDownload(r.id!)}
                           disabled={busy}
                           className="flex items-center justify-center gap-1 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
                         >
@@ -457,14 +562,23 @@ export default function ModelCatalog({
               </div>
             );
           })}
+
+          {rows.length > shown.length && (
+            <button
+              onClick={() => setLimit((l) => l + 40)}
+              className="w-full rounded-lg bg-zinc-900 py-2 text-xs text-zinc-400 hover:bg-zinc-800"
+            >
+              Afficher plus ({rows.length - shown.length} restants)
+            </button>
+          )}
         </div>
 
         <div className="border-t border-zinc-800 px-5 py-2.5">
           <p className="text-[11px] text-zinc-600">
-            Scores, rangs et specs proviennent de l'<strong>API officielle du leaderboard MTEB</strong>{" "}
-            (cache 7 jours) — ils se mettent à jour seuls. Les dimensions appliquées à l'indexation
-            sont donc toujours justes. Les notes ★ restent un avis curaté. Changer de modèle
-            d'embedding impose une réindexation.
+            La liste elle-même vient de l'<strong>API officielle du leaderboard MTEB</strong> — les
+            nouveaux modèles apparaissent donc <strong>tout seuls</strong>. Les dimensions sont lues
+            en direct, donc toujours justes pour l'indexation. Changer de modèle d'embedding impose
+            une réindexation.
           </p>
         </div>
       </div>
