@@ -52,18 +52,32 @@ export interface LocalModelStatus {
   downloaded: boolean;
 }
 
-/// Specs et score de référence d'un modèle, tirés en direct de MTEB.
+/// Un classement MTEB disponible (global multilingue, ou par langue).
+export interface BoardInfo {
+  name: string; // ex. "MTEB(fra, v1)"
+  display_name: string; // ex. "French"
+  num_models: number | null;
+  languages: number;
+}
+
+/// Score d'un modèle sur un classement.
+/// `mean = null` signifie NON ÉVALUÉ — surtout pas « zéro ».
+export interface BoardScore {
+  board: string; // nom du classement
+  mean: number | null;
+  retrieval: number | null;
+  rank: number | null;
+  total: number | null;
+}
+
+/// Specs et scores d'un modèle, via l'API officielle du leaderboard MTEB.
 export interface ModelBenchmark {
-  mteb_id: string;
+  name: string; // nom Hugging Face (ex. "Qwen/Qwen3-Embedding-0.6B")
+  url: string | null;
   embed_dim: number | null;
-  n_parameters: number | null;
+  params_b: number | null;
   max_tokens: number | null;
-  memory_mb: number | null;
-  languages: string[];
-  french: boolean;
-  /// Moyenne ndcg@10 sur des tâches de retrieval ANGLAIS (seules comparables).
-  retrieval_en: number | null;
-  retrieval_tasks: number;
+  scores: BoardScore[];
 }
 
 export interface HealthReport {

@@ -274,6 +274,11 @@ export const CATALOG: CatalogModel[] = [
   },
 ];
 
+/// Nom Hugging Face du modèle (clé de l'API MTEB) : `Org__Modele` → `Org/Modele`.
+export function hfName(m: CatalogModel): string | undefined {
+  return m.mteb?.replace(/__/g, "/");
+}
+
 /// Devine le type de serveur d'après son URL (ports par défaut d'Ollama / LM Studio).
 export function serverKind(baseUrl: string): ServerKind {
   const u = (baseUrl ?? "").toLowerCase();

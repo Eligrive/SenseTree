@@ -239,16 +239,25 @@ fn list_local_models(state: State<'_, Arc<AppState>>) -> Vec<LocalModelStatus> {
         .collect()
 }
 
-/// Specs et scores de référence des modèles (MTEB), avec cache local 7 jours.
-/// `ids` = identifiants MTEB (`Org__Modele`) fournis par le catalogue du frontend.
+/// Classements MTEB disponibles (global multilingue + par langue), pour que
+/// l'utilisateur choisisse ceux qui correspondent à SES langues.
+#[tauri::command]
+async fn list_benchmark_boards() -> Result<Vec<benchmarks::BoardInfo>, String> {
+    benchmarks::list_boards()
+        .await
+        .map_err(|e| format!("liste des classements : {e}"))
+}
+
+/// Scores et specs des modèles depuis l'API OFFICIELLE du leaderboard MTEB, sur les
+/// classements choisis par l'utilisateur. Cache local 7 jours (par classement).
 #[tauri::command]
 async fn model_benchmarks(
     state: State<'_, Arc<AppState>>,
-    ids: Vec<String>,
+    boards: Vec<String>,
     refresh: bool,
 ) -> Result<Vec<benchmarks::ModelBenchmark>, String> {
     let st = state.inner().clone();
-    benchmarks::load(&st.data_dir, ids, refresh)
+    benchmarks::load(&st.data_dir, boards, refresh)
         .await
         .map_err(|e| format!("récupération des benchmarks : {e}"))
 }
@@ -621,6 +630,7 @@ pub fn run() {
             list_local_models,
             download_local_model,
             model_benchmarks,
+            list_benchmark_boards,
             pull_model,
             reindex_all,
             explorer::list_directory,

@@ -9,6 +9,7 @@ import type {
   ActionPlan,
   AppConfig,
   ApplyResult,
+  BoardInfo,
   ChatResponse,
   ChatTurn,
   DirEntryInfo,
@@ -38,8 +39,9 @@ export const listInstalledModels = (baseUrl: string, apiKey: string) =>
 export const listLocalModels = () => invoke<LocalModelStatus[]>("list_local_models");
 export const downloadLocalModel = (model: string) =>
   invoke<string>("download_local_model", { model });
-export const modelBenchmarks = (ids: string[], refresh = false) =>
-  invoke<ModelBenchmark[]>("model_benchmarks", { ids, refresh });
+export const listBenchmarkBoards = () => invoke<BoardInfo[]>("list_benchmark_boards");
+export const modelBenchmarks = (boards: string[], refresh = false) =>
+  invoke<ModelBenchmark[]>("model_benchmarks", { boards, refresh });
 export const pullModel = (baseUrl: string, model: string) =>
   invoke<string>("pull_model", { baseUrl, model });
 export const reindexAll = () => invoke<void>("reindex_all");
