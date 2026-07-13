@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  BookOpen,
   ChevronDown,
   ChevronRight,
   Download,
@@ -11,12 +12,17 @@ import {
   Save,
   X,
 } from "lucide-react";
-import type { AppConfig, ChatConfig, PromptsConfig } from "../lib/types";
+import type { AppConfig, ChatConfig, LocalModelStatus, PromptsConfig } from "../lib/types";
+import type { Backend, Task } from "../lib/models";
+import { serverKind } from "../lib/models";
+import ModelCatalog from "./ModelCatalog";
 import {
+  downloadLocalModel,
   getConfig,
   getDefaultPrompts,
   gpuAvailable,
   listInstalledModels,
+  listLocalModels,
   pullModel,
   reindexAll,
   setConfig,
@@ -46,36 +52,6 @@ const EMBED_CATALOG: EmbedModel[] = [
   { id: "bge-m3", dims: 1024, local: false, server: true },
   { id: "snowflake-arctic-embed2", dims: 1024, local: false, server: true },
 ];
-const LOCAL_MODELS = EMBED_CATALOG.filter((m) => m.local);
-
-// Suggestions de modèles d'embedding par type de serveur : les noms diffèrent
-// (Ollama = noms de registre ; LM Studio = modèles GGUF façon Hugging Face).
-type Suggest = { id: string; dims: number };
-const OLLAMA_EMBEDS: Suggest[] = EMBED_CATALOG.filter((m) => m.server).map((m) => ({
-  id: m.id,
-  dims: m.dims,
-}));
-const LMSTUDIO_EMBEDS: Suggest[] = [
-  { id: "text-embedding-nomic-embed-text-v1.5", dims: 768 },
-  { id: "text-embedding-all-minilm-l6-v2", dims: 384 },
-  { id: "text-embedding-bge-m3", dims: 1024 },
-  { id: "text-embedding-mxbai-embed-large-v1", dims: 1024 },
-];
-
-export type ServerKind = "ollama" | "lmstudio" | "unknown";
-function serverKind(baseUrl: string): ServerKind {
-  const u = (baseUrl ?? "").toLowerCase();
-  if (u.includes(":1234") || u.includes("lmstudio") || u.includes("lm-studio")) return "lmstudio";
-  if (u.includes(":11434") || u.includes("ollama")) return "ollama";
-  return "unknown";
-}
-function embedSuggestions(baseUrl: string): Suggest[] {
-  const k = serverKind(baseUrl);
-  if (k === "lmstudio") return LMSTUDIO_EMBEDS;
-  if (k === "ollama") return OLLAMA_EMBEDS;
-  return [...OLLAMA_EMBEDS, ...LMSTUDIO_EMBEDS];
-}
-
 function capLabel(m: EmbedModel): string {
   if (m.local && m.server) return "local ou serveur";
   if (m.local) return "local uniquement";
@@ -98,12 +74,6 @@ function capOf(modelId: string): string | null {
   const m = findEmbed(modelId);
   return m ? capLabel(m) : null;
 }
-
-// Suggestions de modèles cohérents par rôle (téléchargeables via Ollama).
-const SUGGESTED: Record<"reasoning" | "vision", string[]> = {
-  reasoning: ["llama3.1:8b", "llama3.2:3b", "qwen2.5:7b", "phi3:mini"],
-  vision: ["moondream", "llava", "llama3.2-vision"],
-};
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -210,12 +180,21 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   const [gpuSupported, setGpuSupported] = useState(false);
   const [defaultPrompts, setDefaultPrompts] = useState<PromptsConfig | null>(null);
   const [showPrompts, setShowPrompts] = useState(false);
+  // Modèles locaux (fastembed) et leur état de téléchargement.
+  const [localModels, setLocalModels] = useState<LocalModelStatus[]>([]);
+  // Catalogue ouvert pour telle tâche (null = fermé) + téléchargements en cours.
+  const [catalogTask, setCatalogTask] = useState<Task | null>(null);
+  const [dlBusy, setDlBusy] = useState<Record<string, boolean>>({});
+
+  const refreshLocalModels = () =>
+    listLocalModels().then(setLocalModels).catch(() => setLocalModels([]));
 
   useEffect(() => {
     if (open) {
       getConfig().then(setCfg).catch(() => setCfg(null));
       gpuAvailable().then(setGpuSupported).catch(() => setGpuSupported(false));
       getDefaultPrompts().then(setDefaultPrompts).catch(() => setDefaultPrompts(null));
+      refreshLocalModels();
     }
   }, [open]);
 
@@ -302,6 +281,58 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   const download = (key: "reasoning" | "vision") =>
     downloadModel(key, cfg[key].base_url, cfg[key].api_key, cfg[key].model);
 
+  // --- Catalogue de modèles ------------------------------------------------
+  const chatKey = catalogTask === "reasoning" || catalogTask === "vision" ? catalogTask : null;
+  const catalogBackend: Backend =
+    catalogTask === "embedding" && cfg.embedding.mode === "local" ? "local" : "server";
+  const catalogUrl =
+    catalogTask === "embedding" ? cfg.embedding.base_url : chatKey ? cfg[chatKey].base_url : "";
+  const catalogApiKey =
+    catalogTask === "embedding" ? cfg.embedding.api_key : chatKey ? cfg[chatKey].api_key : "";
+  const catalogCurrent =
+    catalogTask === "embedding" ? cfg.embedding.model : chatKey ? cfg[chatKey].model : "";
+  const localDownloaded: Record<string, boolean> = Object.fromEntries(
+    localModels.map((m) => [m.id, m.downloaded])
+  );
+
+  const catalogUse = (id: string, dims?: number) => {
+    if (catalogTask === "embedding") {
+      setCfg({
+        ...cfg,
+        embedding: { ...cfg.embedding, model: id, dimensions: dims ?? cfg.embedding.dimensions },
+      });
+    } else if (chatKey) {
+      patchChat(chatKey, { model: id });
+    }
+  };
+
+  const catalogDownload = async (id: string) => {
+    setDlBusy((b) => ({ ...b, [id]: true }));
+    try {
+      if (catalogBackend === "local") {
+        await downloadLocalModel(id);
+        await refreshLocalModels();
+      } else {
+        await pullModel(catalogUrl, id);
+        refreshModels(catalogUrl, catalogApiKey);
+      }
+    } catch (e) {
+      setTestMsg((m) => ({ ...m, save: `⚠️ ${String(e)}` }));
+    } finally {
+      setDlBusy((b) => ({ ...b, [id]: false }));
+    }
+  };
+
+  const catalogButton = (task: Task) => (
+    <button
+      onClick={() => setCatalogTask(task)}
+      title="Parcourir le catalogue (benchmarks, langues, disponibilité)"
+      className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-2.5 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700"
+    >
+      <BookOpen size={13} /> Catalogue
+    </button>
+  );
+
   const save = async () => {
     setSaving(true);
     try {
@@ -328,9 +359,9 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   };
 
   const chatSection = (key: "reasoning" | "vision", title: string) => {
-    const options = Array.from(
-      new Set([...(installed[cfg[key].base_url] ?? []), ...SUGGESTED[key]])
-    );
+    // Menu déroulant = UNIQUEMENT les modèles réellement présents sur le serveur.
+    // Pour en découvrir/installer d'autres → bouton « Catalogue ».
+    const options = installed[cfg[key].base_url] ?? [];
     const isInstalled = (installed[cfg[key].base_url] ?? []).some(
       (m) => m === cfg[key].model || m.split(":")[0] === cfg[key].model.split(":")[0]
     );
@@ -422,6 +453,7 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
           >
             <RefreshCw size={13} />
           </button>
+          {catalogButton(key)}
           {testMsg[key] && <span className="text-xs text-zinc-400">{testMsg[key]}</span>}
         </div>
       </section>
@@ -459,46 +491,61 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                 </select>
               </Field>
               {cfg.embedding.mode === "local" ? (
-                <Field label="Modèle local">
-                  <select
-                    className={inputCls}
-                    value={cfg.embedding.model}
-                    onChange={(e) => {
-                      const preset = LOCAL_MODELS.find((m) => m.id === e.target.value);
-                      setCfg({
-                        ...cfg,
-                        embedding: {
-                          ...cfg.embedding,
-                          model: e.target.value,
-                          dimensions: preset?.dims ?? cfg.embedding.dimensions,
-                        },
-                      });
-                    }}
-                  >
-                    {LOCAL_MODELS.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.id} · {m.dims}d · {capLabel(m)}
-                      </option>
-                    ))}
-                  </select>
+                <Field label="Modèle local (téléchargés)">
                   {(() => {
-                    const m = EMBED_CATALOG.find((x) => x.id === cfg.embedding.model);
+                    // Menu déroulant = UNIQUEMENT les modèles déjà téléchargés.
+                    // Le modèle courant est toujours listé, même s'il ne l'est pas encore.
+                    const opts = localModels.filter((m) => m.downloaded).map((m) => m.id);
+                    if (!opts.includes(cfg.embedding.model)) opts.unshift(cfg.embedding.model);
+                    const noneReady = localModels.every((m) => !m.downloaded);
                     return (
                       <>
-                        <span className="mt-1 block text-[11px] text-zinc-500">
-                          Type : {m ? capLabel(m) : "local (personnalisé)"}
-                        </span>
-                        <span className="block text-[11px] text-zinc-500">
-                          {m?.server
-                            ? "Existe aussi sur Ollama/LM Studio → bascule possible en « Serveur HTTP » (GPU) sans réindexer."
-                            : "Disponible uniquement en local embarqué."}
-                        </span>
+                        <select
+                          className={inputCls}
+                          value={cfg.embedding.model}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            const dims =
+                              localModels.find((m) => m.id === v)?.dimensions ??
+                              findEmbed(v)?.dims ??
+                              cfg.embedding.dimensions;
+                            setCfg({
+                              ...cfg,
+                              embedding: { ...cfg.embedding, model: v, dimensions: dims },
+                            });
+                          }}
+                        >
+                          {opts.map((id) => {
+                            const lm = localModels.find((m) => m.id === id);
+                            return (
+                              <option key={id} value={id}>
+                                {id}
+                                {lm ? ` · ${lm.dimensions}d` : ""}
+                                {lm && !lm.downloaded ? " · non téléchargé" : ""}
+                              </option>
+                            );
+                          })}
+                        </select>
+                        {noneReady && (
+                          <span className="mt-1 block text-[11px] text-amber-400">
+                            Aucun modèle local téléchargé — ouvre le catalogue pour en installer un
+                            (il sera sinon téléchargé à la première indexation).
+                          </span>
+                        )}
                       </>
+                    );
+                  })()}
+                  {(() => {
+                    const m = findEmbed(cfg.embedding.model);
+                    return (
+                      <span className="mt-1 block text-[11px] text-zinc-500">
+                        Type : {m ? capLabel(m) : "local (personnalisé)"}
+                      </span>
                     );
                   })()}
                 </Field>
               ) : (
-                <Field label="Modèle distant">
+                <Field label="Modèle distant (installés sur le serveur)">
                   <div className="flex items-start gap-1.5">
                     <div className="flex-1">
                       <ModelSelect
@@ -508,17 +555,10 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                             ? "ex : text-embedding-nomic-embed-text-v1.5…"
                             : "ex : bge-m3, nomic-embed-text…"
                         }
-                        options={Array.from(
-                          new Set([
-                            ...(installed[cfg.embedding.base_url] ?? []),
-                            ...embedSuggestions(cfg.embedding.base_url).map((m) => m.id),
-                          ])
-                        )}
+                        // Uniquement ce qui est réellement présent sur le serveur.
+                        options={installed[cfg.embedding.base_url] ?? []}
                         onPick={(v) => {
-                          const dims =
-                            embedSuggestions(cfg.embedding.base_url).find((m) => m.id === v)?.dims ??
-                            findEmbed(v)?.dims ??
-                            cfg.embedding.dimensions;
+                          const dims = findEmbed(v)?.dims ?? cfg.embedding.dimensions;
                           setCfg({
                             ...cfg,
                             embedding: { ...cfg.embedding, model: v, dimensions: dims },
@@ -647,17 +687,20 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
               </div>
             )}
 
-            {cfg.embedding.mode === "openai" && (
-              <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2">
+              {cfg.embedding.mode === "openai" && (
                 <button
                   onClick={testEmbedding}
                   className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700"
                 >
                   <Plug size={13} /> Tester l'embedding
                 </button>
-                {testMsg.embedding && <span className="text-xs text-zinc-400">{testMsg.embedding}</span>}
-              </div>
-            )}
+              )}
+              {catalogButton("embedding")}
+              {testMsg.embedding && (
+                <span className="text-xs text-zinc-400">{testMsg.embedding}</span>
+              )}
+            </div>
 
             {cfg.embedding.mode === "local" && (
               <div className="space-y-1">
@@ -819,6 +862,22 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
           </button>
         </div>
       </div>
+
+      {catalogTask && (
+        <ModelCatalog
+          open
+          onClose={() => setCatalogTask(null)}
+          task={catalogTask}
+          backend={catalogBackend}
+          serverKind={serverKind(catalogUrl)}
+          installedServer={installed[catalogUrl] ?? []}
+          localDownloaded={localDownloaded}
+          currentModel={catalogCurrent}
+          onUse={catalogUse}
+          onDownload={catalogDownload}
+          downloading={dlBusy}
+        />
+      )}
     </div>
   );
 }

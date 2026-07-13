@@ -215,6 +215,43 @@ async fn list_installed_models(base_url: String, api_key: String) -> Result<Vec<
     fetch_models(&base_url, &api_key).await
 }
 
+#[derive(serde::Serialize)]
+struct LocalModelStatus {
+    id: String,
+    dimensions: usize,
+    /// Vrai si le modèle est déjà téléchargé dans le cache local.
+    downloaded: bool,
+}
+
+/// État des modèles d'embedding LOCAUX (fastembed) : lesquels sont déjà téléchargés.
+/// Permet de ne proposer dans le menu déroulant que ce qui est réellement utilisable.
+#[tauri::command]
+fn list_local_models(state: State<'_, Arc<AppState>>) -> Vec<LocalModelStatus> {
+    let dir = state.data_dir.clone();
+    providers::supported_local_models()
+        .into_iter()
+        .map(|(id, dimensions)| LocalModelStatus {
+            downloaded: providers::is_local_model_cached(&dir, id),
+            id: id.to_string(),
+            dimensions,
+        })
+        .collect()
+}
+
+/// Télécharge un modèle d'embedding local (le charge une fois pour peupler le cache).
+#[tauri::command]
+async fn download_local_model(
+    state: State<'_, Arc<AppState>>,
+    model: String,
+) -> Result<String, String> {
+    let st = state.inner().clone();
+    st.ai
+        .preload_local_model(&model)
+        .await
+        .map_err(|e| format!("téléchargement du modèle local : {e}"))?;
+    Ok(format!("Modèle local « {model} » téléchargé"))
+}
+
 /// Teste un endpoint ET vérifie que le modèle configuré est réellement présent.
 /// (Avant, on ne testait que l'accessibilité du serveur — d'où un « OK » trompeur
 /// quand le modèle n'était pas installé.)
@@ -566,6 +603,8 @@ pub fn run() {
             test_chat_endpoint,
             test_embedding_endpoint,
             list_installed_models,
+            list_local_models,
+            download_local_model,
             pull_model,
             reindex_all,
             explorer::list_directory,

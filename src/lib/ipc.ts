@@ -15,6 +15,7 @@ import type {
   DirectoryReport,
   HealthReport,
   IndexingStats,
+  LocalModelStatus,
   PathDetails,
   PromptsConfig,
   SearchResult,
@@ -33,6 +34,9 @@ export const testEmbeddingEndpoint = (baseUrl: string, apiKey: string, model: st
   invoke<string>("test_embedding_endpoint", { baseUrl, apiKey, model });
 export const listInstalledModels = (baseUrl: string, apiKey: string) =>
   invoke<string[]>("list_installed_models", { baseUrl, apiKey });
+export const listLocalModels = () => invoke<LocalModelStatus[]>("list_local_models");
+export const downloadLocalModel = (model: string) =>
+  invoke<string>("download_local_model", { model });
 export const pullModel = (baseUrl: string, model: string) =>
   invoke<string>("pull_model", { baseUrl, model });
 export const reindexAll = () => invoke<void>("reindex_all");

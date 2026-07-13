@@ -59,13 +59,52 @@ pub struct LocalEmbedder {
     batch_size: usize,
 }
 
+/// Modèles d'embedding locaux (fastembed) supportés : identifiant convivial + dimension.
+pub fn supported_local_models() -> Vec<(&'static str, usize)> {
+    vec![
+        ("multilingual-e5-small", 384),
+        ("multilingual-e5-base", 768),
+        ("multilingual-e5-large", 1024),
+        ("bge-small-en-v1.5", 384),
+        ("bge-base-en-v1.5", 768),
+        ("all-minilm", 384),
+        ("nomic-embed-text", 768),
+        ("mxbai-embed-large", 1024),
+    ]
+}
+
+/// Dossier de cache des modèles locaux, sous le dossier de données de l'app.
+/// (Avant, fastembed utilisait un cache RELATIF au répertoire courant — imprévisible.)
+pub fn local_cache_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("models")
+}
+
+/// Vrai si le modèle local est déjà téléchargé dans le cache (layout hf-hub :
+/// `models--{org}--{repo}`).
+pub fn is_local_model_cached(data_dir: &std::path::Path, name: &str) -> bool {
+    let (kind, _, _) = resolve_local_model(name);
+    let code = fastembed::TextEmbedding::list_supported_models()
+        .into_iter()
+        .find(|m| format!("{:?}", m.model) == format!("{:?}", kind))
+        .map(|m| m.model_code);
+    let Some(code) = code else { return false };
+    let folder = format!("models--{}", code.replace('/', "--"));
+    local_cache_dir(data_dir).join(folder).exists()
+}
+
 impl LocalEmbedder {
     /// Charge le modèle (bloquant : à appeler via `spawn_blocking`).
     /// Télécharge le modèle depuis Hugging Face au premier lancement, puis le met en cache.
-    pub fn load(cfg: &EmbeddingConfig, batch_size: usize) -> Result<Self> {
+    pub fn load(
+        cfg: &EmbeddingConfig,
+        batch_size: usize,
+        cache_dir: std::path::PathBuf,
+    ) -> Result<Self> {
         let (model_kind, dimensions, needs_e5_prefix) = resolve_local_model(&cfg.model);
 
-        let mut options = fastembed::InitOptions::new(model_kind).with_show_download_progress(false);
+        let mut options = fastembed::InitOptions::new(model_kind)
+            .with_show_download_progress(false)
+            .with_cache_dir(cache_dir);
 
         if cfg.use_gpu {
             // La lib ORT chargée (CPU ou GPU) est décidée par `ort_setup::ensure_ort`
@@ -377,9 +416,11 @@ impl AiEngine {
 
                 let embed_cfg = cfg.embedding.clone();
                 let batch = cfg.indexing.batch_size;
-                let local = tokio::task::spawn_blocking(move || LocalEmbedder::load(&embed_cfg, batch))
-                    .await
-                    .context("tâche de chargement du modèle interrompue")??;
+                let cache = local_cache_dir(&self.data_dir);
+                let local =
+                    tokio::task::spawn_blocking(move || LocalEmbedder::load(&embed_cfg, batch, cache))
+                        .await
+                        .context("tâche de chargement du modèle interrompue")??;
                 Arc::new(local)
             }
             EmbeddingMode::Openai => Arc::new(OpenAiEmbedder::new(self.http.clone(), &cfg.embedding)),
@@ -402,6 +443,31 @@ impl AiEngine {
     /// Vrai si un modèle d'embedding est actuellement chargé en mémoire.
     pub async fn embedder_loaded(&self) -> bool {
         self.embedder.lock().await.is_some()
+    }
+
+    /// Pré-télécharge un modèle d'embedding local (le charge puis le libère), afin
+    /// que le catalogue puisse l'installer sans attendre la première indexation.
+    pub async fn preload_local_model(&self, model: &str) -> Result<()> {
+        let dir = self.data_dir.clone();
+        self.ort_ready
+            .get_or_try_init(|| async move {
+                tokio::task::spawn_blocking(move || crate::ort_setup::ensure_ort(&dir, false))
+                    .await
+                    .context("tâche de préparation ORT interrompue")?
+                    .map(|_gpu| ())
+            })
+            .await?;
+
+        let cfg = self.config.snapshot();
+        let embed_cfg = EmbeddingConfig {
+            model: model.to_string(),
+            ..cfg.embedding.clone()
+        };
+        let cache = local_cache_dir(&self.data_dir);
+        tokio::task::spawn_blocking(move || LocalEmbedder::load(&embed_cfg, 1, cache))
+            .await
+            .context("tâche de téléchargement interrompue")??;
+        Ok(())
     }
 
     pub fn reasoning_client(&self) -> OpenAiChatClient {

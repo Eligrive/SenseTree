@@ -45,6 +45,13 @@ export interface AppConfig {
   prompts: PromptsConfig;
 }
 
+/// État d'un modèle d'embedding local (fastembed) : est-il déjà téléchargé ?
+export interface LocalModelStatus {
+  id: string;
+  dimensions: number;
+  downloaded: boolean;
+}
+
 export interface HealthReport {
   embedding_ok: boolean;
   embedding_detail: string;
