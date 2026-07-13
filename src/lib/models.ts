@@ -1,4 +1,4 @@
-// Catalogue curaté de modèles, pour choisir en connaissance de cause.
+﻿// Catalogue curaté de modèles, pour choisir en connaissance de cause.
 //
 // Les notes `quality` (1–5) sont INDICATIVES : elles reflètent le classement des
 // modèles sur les benchmarks de référence (MTEB multilingue pour les embeddings,
@@ -13,6 +13,9 @@ export interface CatalogModel {
   key: string;
   name: string;
   task: Task;
+  /// Identifiant dans le dépôt MTEB (`Org__Modele`) → specs et score live.
+  /// Absent pour les LLM de chat/vision (non évalués par MTEB).
+  mteb?: string;
   /// Identifiant selon le backend. Absent = non disponible sur ce backend.
   local?: string;
   ollama?: string;
@@ -36,6 +39,7 @@ export const CATALOG: CatalogModel[] = [
     key: "qwen3-embed-0.6b",
     name: "Qwen3-Embedding 0.6B",
     task: "embedding",
+    mteb: "Qwen__Qwen3-Embedding-0.6B",
     ollama: "qwen3-embedding",
     lmstudio: "text-embedding-qwen3-embedding-0.6b",
     dims: 1024,
@@ -50,6 +54,7 @@ export const CATALOG: CatalogModel[] = [
     key: "bge-m3",
     name: "BGE-M3",
     task: "embedding",
+    mteb: "BAAI__bge-m3",
     ollama: "bge-m3",
     lmstudio: "text-embedding-bge-m3",
     dims: 1024,
@@ -64,6 +69,7 @@ export const CATALOG: CatalogModel[] = [
     key: "arctic-embed2",
     name: "Snowflake Arctic-Embed 2",
     task: "embedding",
+    mteb: "Snowflake__snowflake-arctic-embed-l-v2.0",
     ollama: "snowflake-arctic-embed2",
     dims: 1024,
     params: "0,3 B",
@@ -76,6 +82,7 @@ export const CATALOG: CatalogModel[] = [
     key: "e5-large",
     name: "Multilingual E5 large",
     task: "embedding",
+    mteb: "intfloat__multilingual-e5-large",
     local: "multilingual-e5-large",
     lmstudio: "text-embedding-multilingual-e5-large",
     dims: 1024,
@@ -89,6 +96,7 @@ export const CATALOG: CatalogModel[] = [
     key: "e5-base",
     name: "Multilingual E5 base",
     task: "embedding",
+    mteb: "intfloat__multilingual-e5-base",
     local: "multilingual-e5-base",
     dims: 768,
     params: "0,28 B",
@@ -101,6 +109,7 @@ export const CATALOG: CatalogModel[] = [
     key: "e5-small",
     name: "Multilingual E5 small",
     task: "embedding",
+    mteb: "intfloat__multilingual-e5-small",
     local: "multilingual-e5-small",
     dims: 384,
     params: "0,12 B",
@@ -113,6 +122,7 @@ export const CATALOG: CatalogModel[] = [
     key: "nomic-embed",
     name: "Nomic Embed Text v1.5",
     task: "embedding",
+    mteb: "nomic-ai__nomic-embed-text-v1.5",
     local: "nomic-embed-text",
     ollama: "nomic-embed-text",
     dims: 768,
@@ -126,6 +136,7 @@ export const CATALOG: CatalogModel[] = [
     key: "mxbai-embed",
     name: "mxbai-embed-large v1",
     task: "embedding",
+    mteb: "mixedbread-ai__mxbai-embed-large-v1",
     local: "mxbai-embed-large",
     ollama: "mxbai-embed-large",
     dims: 1024,
@@ -139,6 +150,7 @@ export const CATALOG: CatalogModel[] = [
     key: "bge-base-en",
     name: "BGE base EN v1.5",
     task: "embedding",
+    mteb: "BAAI__bge-base-en-v1.5",
     local: "bge-base-en-v1.5",
     dims: 768,
     params: "0,11 B",
@@ -151,6 +163,7 @@ export const CATALOG: CatalogModel[] = [
     key: "bge-small-en",
     name: "BGE small EN v1.5",
     task: "embedding",
+    mteb: "BAAI__bge-small-en-v1.5",
     local: "bge-small-en-v1.5",
     dims: 384,
     params: "0,03 B",
@@ -163,6 +176,7 @@ export const CATALOG: CatalogModel[] = [
     key: "all-minilm",
     name: "all-MiniLM-L6-v2",
     task: "embedding",
+    mteb: "sentence-transformers__all-MiniLM-L6-v2",
     local: "all-minilm",
     ollama: "all-minilm",
     dims: 384,

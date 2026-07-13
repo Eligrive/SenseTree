@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Check, Download, Loader2, Search, Star, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Check, Download, Loader2, RefreshCw, Search, Star, X } from "lucide-react";
 import {
   CATALOG,
   availabilityOf,
@@ -9,24 +9,20 @@ import {
   type ServerKind,
   type Task,
 } from "../lib/models";
+import type { ModelBenchmark } from "../lib/types";
+import { modelBenchmarks } from "../lib/ipc";
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  /// Tâche concernée (une section des Paramètres = une tâche).
   task: Task;
-  /// Backend visé : « local » (embedding embarqué) ou « server » (Ollama / LM Studio).
   backend: Backend;
   serverKind: ServerKind;
-  /// Modèles présents sur le serveur (issus de /v1/models).
   installedServer: string[];
-  /// Modèles locaux déjà téléchargés (id → true).
   localDownloaded: Record<string, boolean>;
-  /// Modèle actuellement configuré (pour le marquer « utilisé »).
   currentModel: string;
   onUse: (id: string, dims?: number) => void;
   onDownload: (id: string) => void;
-  /// Téléchargements en cours (id → true).
   downloading: Record<string, boolean>;
 }
 
@@ -36,9 +32,21 @@ const TASK_LABEL: Record<Task, string> = {
   vision: "Vision",
 };
 
+type SortBy = "relevance" | "score";
+
+/// ndcg@10 (0–1) → convention MTEB (×100).
+function fmtScore(x: number): string {
+  return (x * 100).toFixed(1);
+}
+
+function fmtParams(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1).replace(".", ",")} B`;
+  return `${Math.round(n / 1e6)} M`;
+}
+
 function Stars({ n }: { n: number }) {
   return (
-    <span className="flex shrink-0 items-center gap-0.5" title={`${n}/5 (indicatif)`}>
+    <span className="flex shrink-0 items-center gap-0.5" title={`${n}/5 — avis curaté`}>
       {[1, 2, 3, 4, 5].map((i) => (
         <Star
           key={i}
@@ -77,12 +85,38 @@ export default function ModelCatalog({
 }: Props) {
   const [query, setQuery] = useState("");
   const [onlyAvailable, setOnlyAvailable] = useState(false);
+  const [sortBy, setSortBy] = useState<SortBy>("relevance");
+  const [bench, setBench] = useState<Record<string, ModelBenchmark>>({});
+  const [loadingBench, setLoadingBench] = useState(false);
+  const [benchError, setBenchError] = useState<string | null>(null);
 
-  // Le modèle est-il installé pour le backend courant ?
+  const mtebIds = useMemo(
+    () => CATALOG.filter((m) => m.task === task && m.mteb).map((m) => m.mteb as string),
+    [task]
+  );
+
+  const fetchBench = (refresh: boolean) => {
+    if (mtebIds.length === 0) return;
+    setLoadingBench(true);
+    setBenchError(null);
+    modelBenchmarks(mtebIds, refresh)
+      .then((list) => setBench(Object.fromEntries(list.map((b) => [b.mteb_id, b]))))
+      .catch((e) => setBenchError(String(e)))
+      .finally(() => setLoadingBench(false));
+  };
+
+  useEffect(() => {
+    if (open) fetchBench(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, task]);
+
   const isInstalled = (id: string) =>
     backend === "local"
       ? !!localDownloaded[id]
       : installedServer.some((m) => m === id || m.split(":")[0] === id.split(":")[0]);
+
+  const scoreOf = (m: CatalogModel): number | null =>
+    m.mteb ? (bench[m.mteb]?.retrieval_en ?? null) : null;
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -93,9 +127,18 @@ export default function ModelCatalog({
         const id = idForBackend(m, backend, serverKind);
         return !!id && isInstalled(id);
       })
-      .sort((a, b) => b.quality - a.quality || a.name.localeCompare(b.name));
+      .sort((a, b) => {
+        if (sortBy === "score") {
+          const sa = scoreOf(a);
+          const sb = scoreOf(b);
+          if (sa != null && sb != null) return sb - sa;
+          if (sa != null) return -1;
+          if (sb != null) return 1;
+        }
+        return b.quality - a.quality || a.name.localeCompare(b.name);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task, backend, serverKind, query, onlyAvailable, installedServer, localDownloaded]);
+  }, [task, backend, serverKind, query, onlyAvailable, sortBy, bench, installedServer, localDownloaded]);
 
   if (!open) return null;
 
@@ -107,6 +150,8 @@ export default function ModelCatalog({
         : serverKind === "ollama"
           ? "Serveur Ollama"
           : "Serveur HTTP";
+
+  const hasScores = task === "embedding";
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-6">
@@ -120,10 +165,41 @@ export default function ModelCatalog({
               Cible actuelle : <span className="text-zinc-300">{backendLabel}</span>
             </p>
           </div>
-          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300">
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            {hasScores && (
+              <button
+                onClick={() => fetchBench(true)}
+                disabled={loadingBench}
+                title="Rafraîchir les specs et scores depuis MTEB"
+                className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-2.5 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+              >
+                {loadingBench ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <RefreshCw size={13} />
+                )}
+                MTEB
+              </button>
+            )}
+            <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300">
+              <X size={18} />
+            </button>
+          </div>
         </div>
+
+        {/* Avertissement : le score mesuré est ANGLAIS. */}
+        {hasScores && (
+          <div className="flex gap-2 border-b border-zinc-800 bg-amber-500/5 px-5 py-2.5">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-400" />
+            <p className="text-[11px] leading-relaxed text-amber-200/80">
+              Le score affiché est mesuré <strong>en anglais</strong> (moyenne ndcg@10 sur
+              NFCorpus, SciFact, ArguAna, SCIDOCS — les seules tâches réellement comparables
+              entre ces modèles). Il <strong>ne prédit pas</strong> la performance sur un corpus
+              français : un modèle « anglais uniquement » peut y figurer en tête tout en étant
+              mauvais sur tes fichiers FR. Fie-toi aussi aux <strong>langues déclarées</strong>.
+            </p>
+          </div>
+        )}
 
         {/* Filtres */}
         <div className="flex items-center gap-3 border-b border-zinc-800 px-5 py-2.5">
@@ -136,6 +212,17 @@ export default function ModelCatalog({
               className="w-full bg-transparent text-sm text-zinc-200 outline-none placeholder:text-zinc-600"
             />
           </div>
+          {hasScores && (
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as SortBy)}
+              className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 outline-none"
+              title="Le tri par score classe sur l'anglais uniquement"
+            >
+              <option value="relevance">Tri : pertinence (FR)</option>
+              <option value="score">Tri : score retrieval EN</option>
+            </select>
+          )}
           <label className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-400">
             <input
               type="checkbox"
@@ -145,6 +232,12 @@ export default function ModelCatalog({
             Installés seulement
           </label>
         </div>
+
+        {benchError && (
+          <p className="border-b border-zinc-800 px-5 py-2 text-[11px] text-rose-400">
+            Specs/scores MTEB indisponibles ({benchError}) — affichage des valeurs de repli.
+          </p>
+        )}
 
         {/* Liste */}
         <div className="flex-1 space-y-2 overflow-y-auto p-4">
@@ -157,6 +250,12 @@ export default function ModelCatalog({
             const installed = usable && isInstalled(id);
             const inUse = usable && currentModel === id;
             const busy = usable && !!downloading[id];
+            const b = m.mteb ? bench[m.mteb] : undefined;
+
+            // Specs live si disponibles, sinon repli sur le catalogue.
+            const dims = b?.embed_dim ?? m.dims;
+            const params = b?.n_parameters ? fmtParams(b.n_parameters) : m.params;
+            const score = b?.retrieval_en ?? null;
 
             return (
               <div
@@ -174,15 +273,33 @@ export default function ModelCatalog({
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-semibold text-zinc-100">{m.name}</span>
                       <Stars n={m.quality} />
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-[10px] ${
-                          m.languages === "multilingue"
-                            ? "bg-emerald-500/15 text-emerald-300"
-                            : "bg-zinc-800 text-zinc-400"
-                        }`}
-                      >
-                        {m.languages}
-                      </span>
+                      {/* Langues : en direct SEULEMENT si le modèle les déclare vraiment.
+                          Sinon (métadonnées incomplètes), on retombe sur l'info curatée —
+                          affirmer « pas de FR » sur une donnée absente serait faux. */}
+                      {b && b.languages.length > 0 ? (
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] ${
+                            b.french
+                              ? "bg-emerald-500/15 text-emerald-300"
+                              : "bg-zinc-800 text-zinc-400"
+                          }`}
+                          title={`${b.languages.length} langues déclarées (source MTEB)`}
+                        >
+                          {b.french
+                            ? `FR ✓ · ${b.languages.length} langues`
+                            : `${b.languages.length} langue(s) — pas de FR`}
+                        </span>
+                      ) : (
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] ${
+                            m.languages === "multilingue"
+                              ? "bg-emerald-500/15 text-emerald-300"
+                              : "bg-zinc-800 text-zinc-400"
+                          }`}
+                        >
+                          {m.languages}
+                        </span>
+                      )}
                       {inUse && (
                         <span className="rounded bg-blue-500/20 px-1.5 py-0.5 text-[10px] text-blue-300">
                           utilisé
@@ -191,20 +308,44 @@ export default function ModelCatalog({
                     </div>
 
                     <p className="mt-1 text-[12px] text-zinc-300">{m.goodFor}</p>
-                    <p className="mt-0.5 text-[11px] text-zinc-500">📊 {m.benchmark}</p>
+
+                    {/* Score mesuré (anglais) — donnée live. */}
+                    {hasScores && (
+                      <p className="mt-0.5 text-[11px]">
+                        {score != null ? (
+                          <span className="text-zinc-300">
+                            📊 Retrieval <strong>EN</strong> :{" "}
+                            <span className="font-semibold text-blue-300">{fmtScore(score)}</span>{" "}
+                            <span className="text-zinc-500">
+                              (ndcg@10, {b?.retrieval_tasks} tâche
+                              {(b?.retrieval_tasks ?? 0) > 1 ? "s" : ""}, source MTEB)
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-zinc-600">
+                            📊 Score MTEB indisponible {loadingBench ? "(chargement…)" : ""}
+                          </span>
+                        )}
+                      </p>
+                    )}
 
                     <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px] text-zinc-500">
-                      <span>{m.params}</span>
-                      {m.dims && <span>{m.dims} dims</span>}
+                      <span>{params}</span>
+                      {dims && <span>{dims} dims</span>}
+                      {b?.max_tokens && <span>{Math.round(b.max_tokens)} tokens</span>}
                       <span className="flex items-center gap-1">
-                        {availabilityOf(m).map((b) => (
+                        {availabilityOf(m).map((bk) => (
                           <Badge
-                            key={b}
-                            label={b}
+                            key={bk}
+                            label={bk}
                             active={
-                              (b === "Local" && backend === "local") ||
-                              (b === "Ollama" && backend === "server" && serverKind !== "lmstudio") ||
-                              (b === "LM Studio" && backend === "server" && serverKind === "lmstudio")
+                              (bk === "Local" && backend === "local") ||
+                              (bk === "Ollama" &&
+                                backend === "server" &&
+                                serverKind !== "lmstudio") ||
+                              (bk === "LM Studio" &&
+                                backend === "server" &&
+                                serverKind === "lmstudio")
                             }
                           />
                         ))}
@@ -217,16 +358,13 @@ export default function ModelCatalog({
                         {availabilityOf(m).join(", ")}.
                       </p>
                     )}
-                    {usable && (
-                      <p className="mt-1.5 font-mono text-[10px] text-zinc-600">{id}</p>
-                    )}
+                    {usable && <p className="mt-1.5 font-mono text-[10px] text-zinc-600">{id}</p>}
                   </div>
 
-                  {/* Actions */}
                   {usable && (
                     <div className="flex shrink-0 flex-col gap-1.5">
                       <button
-                        onClick={() => onUse(id, m.dims)}
+                        onClick={() => onUse(id, dims)}
                         disabled={inUse}
                         className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-40"
                       >
@@ -260,10 +398,11 @@ export default function ModelCatalog({
 
         <div className="border-t border-zinc-800 px-5 py-2.5">
           <p className="text-[11px] text-zinc-600">
-            Les notes ★ sont <strong>indicatives</strong> : elles reflètent le classement sur les
-            benchmarks de référence (MTEB multilingue pour les embeddings, MMLU / LMArena pour les
-            LLM, MMMU pour la vision). Les scores exacts évoluent — consulte les leaderboards
-            officiels pour le détail. Changer de modèle d'embedding impose une réindexation.
+            Dimensions, taille, contexte et langues sont lus <strong>en direct</strong> depuis les
+            métadonnées MTEB (cache 7 jours) — les dimensions appliquées à l'indexation sont donc
+            toujours justes. Les notes ★ restent un <strong>avis curaté</strong> tenant compte du
+            français, là où le score mesuré ne couvre que l'anglais. Changer de modèle d'embedding
+            impose une réindexation.
           </p>
         </div>
       </div>

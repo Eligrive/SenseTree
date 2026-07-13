@@ -52,6 +52,20 @@ export interface LocalModelStatus {
   downloaded: boolean;
 }
 
+/// Specs et score de référence d'un modèle, tirés en direct de MTEB.
+export interface ModelBenchmark {
+  mteb_id: string;
+  embed_dim: number | null;
+  n_parameters: number | null;
+  max_tokens: number | null;
+  memory_mb: number | null;
+  languages: string[];
+  french: boolean;
+  /// Moyenne ndcg@10 sur des tâches de retrieval ANGLAIS (seules comparables).
+  retrieval_en: number | null;
+  retrieval_tasks: number;
+}
+
 export interface HealthReport {
   embedding_ok: boolean;
   embedding_detail: string;

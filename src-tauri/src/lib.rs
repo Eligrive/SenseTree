@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod benchmarks;
 pub mod chunker;
 pub mod classifier;
 pub mod config;
@@ -236,6 +237,20 @@ fn list_local_models(state: State<'_, Arc<AppState>>) -> Vec<LocalModelStatus> {
             dimensions,
         })
         .collect()
+}
+
+/// Specs et scores de référence des modèles (MTEB), avec cache local 7 jours.
+/// `ids` = identifiants MTEB (`Org__Modele`) fournis par le catalogue du frontend.
+#[tauri::command]
+async fn model_benchmarks(
+    state: State<'_, Arc<AppState>>,
+    ids: Vec<String>,
+    refresh: bool,
+) -> Result<Vec<benchmarks::ModelBenchmark>, String> {
+    let st = state.inner().clone();
+    benchmarks::load(&st.data_dir, ids, refresh)
+        .await
+        .map_err(|e| format!("récupération des benchmarks : {e}"))
 }
 
 /// Télécharge un modèle d'embedding local (le charge une fois pour peupler le cache).
@@ -605,6 +620,7 @@ pub fn run() {
             list_installed_models,
             list_local_models,
             download_local_model,
+            model_benchmarks,
             pull_model,
             reindex_all,
             explorer::list_directory,
