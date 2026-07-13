@@ -222,16 +222,27 @@ export default function ModelCatalog({
       })
       .filter((r) => !onlyUsable || (r.installed && !!r.id));
 
-    const scoreOf = (r: Row) =>
-      r.bench?.scores.find((s) => s.board === primaryBoard)?.mean ?? null;
+    const primaryOf = (r: Row) => r.bench?.scores.find((s) => s.board === primaryBoard);
 
     return out.sort((a, b) => {
-      const sa = scoreOf(a);
-      const sb = scoreOf(b);
-      if (sa != null && sb != null) return sb - sa;
-      if (sa != null) return -1; // les non évalués en dernier, jamais assimilés à zéro
-      if (sb != null) return 1;
-      return a.hf.localeCompare(b.hf);
+      const pa = primaryOf(a);
+      const pb = primaryOf(b);
+      const sa = pa?.mean ?? null;
+      const sb = pb?.mean ?? null;
+
+      // Non évalués toujours en dernier — jamais assimilés à un mauvais score.
+      if (sa == null && sb == null) return a.hf.localeCompare(b.hf);
+      if (sa == null) return 1;
+      if (sb == null) return -1;
+
+      // On suit le RANG OFFICIEL du leaderboard, et non la moyenne : MTEB classe par
+      // comptage de Borda (agrégation des rangs tâche par tâche), qui n'est
+      // reproductible ni depuis `meanTask` ni depuis `meanTaskType` — le rang 4 a
+      // ainsi une moyenne supérieure au rang 3. Trier sur la moyenne tout en
+      // affichant le rang Borda donnait un ordre incohérent.
+      const ra = pa?.rank ?? Number.MAX_SAFE_INTEGER;
+      const rb = pb?.rank ?? Number.MAX_SAFE_INTEGER;
+      return ra - rb;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task, backend, serverKind, query, onlyUsable, sizeLimit, primaryBoard, bench, installedServer, localDownloaded]);
