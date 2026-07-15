@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod benchmarks;
+pub mod catalog;
 pub mod chunker;
 pub mod classifier;
 pub mod config;
@@ -260,6 +261,40 @@ async fn list_benchmark_boards() -> Result<Vec<benchmarks::BoardInfo>, String> {
     benchmarks::list_boards()
         .await
         .map_err(|e| format!("liste des classements : {e}"))
+}
+
+/// Benchmarks VISION live (OpenCompass OpenVLM : MMMU, MMBench, OCRBench…).
+#[tauri::command]
+async fn vision_benchmarks(
+    state: State<'_, Arc<AppState>>,
+    refresh: bool,
+) -> Result<Vec<benchmarks::ModelBenchmark>, String> {
+    let st = state.inner().clone();
+    catalog::vision(&st.data_dir, refresh)
+        .await
+        .map_err(|e| format!("benchmarks vision : {e}"))
+}
+
+/// Benchmarks REASONING live (OpenCompass Academic : IFEval, MMLU-Pro, GPQA…).
+#[tauri::command]
+async fn reasoning_benchmarks(
+    state: State<'_, Arc<AppState>>,
+    refresh: bool,
+) -> Result<Vec<benchmarks::ModelBenchmark>, String> {
+    let st = state.inner().clone();
+    catalog::reasoning(&st.data_dir, refresh)
+        .await
+        .map_err(|e| format!("benchmarks reasoning : {e}"))
+}
+
+#[tauri::command]
+fn list_vision_boards() -> Vec<benchmarks::BoardInfo> {
+    catalog::vision_boards()
+}
+
+#[tauri::command]
+fn list_reasoning_boards() -> Vec<benchmarks::BoardInfo> {
+    catalog::reasoning_boards()
 }
 
 /// Scores et specs des modèles depuis l'API OFFICIELLE du leaderboard MTEB, sur les
@@ -645,6 +680,10 @@ pub fn run() {
             download_local_model,
             model_benchmarks,
             list_benchmark_boards,
+            vision_benchmarks,
+            reasoning_benchmarks,
+            list_vision_boards,
+            list_reasoning_boards,
             resolve_installs,
             pull_model,
             reindex_all,

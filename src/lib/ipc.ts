@@ -45,6 +45,12 @@ export const resolveInstalls = (names: string[]) =>
   invoke<InstallInfo[]>("resolve_installs", { names });
 export const modelBenchmarks = (boards: string[], refresh = false) =>
   invoke<ModelBenchmark[]>("model_benchmarks", { boards, refresh });
+export const listVisionBoards = () => invoke<BoardInfo[]>("list_vision_boards");
+export const listReasoningBoards = () => invoke<BoardInfo[]>("list_reasoning_boards");
+export const visionBenchmarks = (refresh = false) =>
+  invoke<ModelBenchmark[]>("vision_benchmarks", { refresh });
+export const reasoningBenchmarks = (refresh = false) =>
+  invoke<ModelBenchmark[]>("reasoning_benchmarks", { refresh });
 export const pullModel = (baseUrl: string, model: string) =>
   invoke<string>("pull_model", { baseUrl, model });
 export const reindexAll = () => invoke<void>("reindex_all");

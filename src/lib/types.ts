@@ -79,9 +79,10 @@ export interface BoardScore {
   total: number | null;
 }
 
-/// Specs et scores d'un modèle, via l'API officielle du leaderboard MTEB.
+/// Specs et scores d'un modèle (embedding MTEB, ou vision/reasoning OpenCompass).
 export interface ModelBenchmark {
-  name: string; // nom Hugging Face (ex. "Qwen/Qwen3-Embedding-0.6B")
+  name: string; // nom d'affichage
+  hf: string | null; // dépôt Hugging Face (clé de résolution GGUF)
   url: string | null;
   embed_dim: number | null;
   params_b: number | null;

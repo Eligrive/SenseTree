@@ -50,8 +50,12 @@ pub struct BoardScore {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelBenchmark {
-    /// Nom Hugging Face, ex. `Qwen/Qwen3-Embedding-0.6B`.
+    /// Nom d'affichage, ex. `Qwen/Qwen3-Embedding-0.6B` (embedding) ou `Qwen2.5-VL-7B`.
     pub name: String,
+    /// Identifiant Hugging Face pour la résolution GGUF (souvent = `name` en embedding,
+    /// extrait des métadonnées en vision/reasoning). None si inconnu.
+    #[serde(default)]
+    pub hf: Option<String>,
     pub url: Option<String>,
     /// Dimension du vecteur — doit correspondre à la config d'indexation.
     pub embed_dim: Option<usize>,
@@ -254,6 +258,7 @@ pub async fn load(data_dir: &Path, boards: Vec<String>, refresh: bool) -> Result
         let Some(cb) = cache.boards.get(board) else { continue };
         for m in &cb.models {
             let e = by_model.entry(m.name.clone()).or_insert_with(|| ModelBenchmark {
+                hf: Some(m.name.clone()),
                 name: m.name.clone(),
                 url: m.url.clone(),
                 embed_dim: None,

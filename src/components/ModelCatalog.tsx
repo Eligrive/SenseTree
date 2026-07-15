@@ -21,19 +21,45 @@ import {
   type Task,
 } from "../lib/models";
 import type { BoardInfo, BoardScore, InstallInfo, ModelBenchmark } from "../lib/types";
-import { listBenchmarkBoards, modelBenchmarks, resolveInstalls } from "../lib/ipc";
+import {
+  listBenchmarkBoards,
+  listReasoningBoards,
+  listVisionBoards,
+  modelBenchmarks,
+  reasoningBenchmarks,
+  resolveInstalls,
+  visionBenchmarks,
+} from "../lib/ipc";
 
-/// Classements retenus (persistés) : chacun a ses langues, rien n'est figé.
-const LS_KEY = "sensetree.boards";
-const DEFAULT_BOARDS = ["MTEB(Multilingual, v2)"];
+/// Source de données selon la tâche : embedding (MTEB, par board), vision et
+/// reasoning (OpenCompass, tout en un JSON). Tout est ramené au même format.
+function listBoardsFor(t: Task): Promise<BoardInfo[]> {
+  if (t === "vision") return listVisionBoards();
+  if (t === "reasoning") return listReasoningBoards();
+  return listBenchmarkBoards();
+}
+function fetchBenchFor(t: Task, boards: string[], refresh: boolean): Promise<ModelBenchmark[]> {
+  if (t === "vision") return visionBenchmarks(refresh);
+  if (t === "reasoning") return reasoningBenchmarks(refresh);
+  return modelBenchmarks(boards, refresh);
+}
+const DEFAULT_BOARD: Record<Task, string[]> = {
+  embedding: ["MTEB(Multilingual, v2)"],
+  vision: ["Général"],
+  reasoning: ["Général"],
+};
 
-function loadBoards(): string[] {
+/// Classements/benchmarks retenus (persistés PAR TÂCHE : langues d'embedding,
+/// benchmarks de vision ou de reasoning — rien n'est figé).
+const boardLsKey = (t: Task) => `sensetree.boards.${t}`;
+
+function loadBoards(task: Task): string[] {
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = localStorage.getItem(boardLsKey(task));
     const v = raw ? (JSON.parse(raw) as string[]) : null;
-    return Array.isArray(v) && v.length > 0 ? v : DEFAULT_BOARDS;
+    return Array.isArray(v) && v.length > 0 ? v : DEFAULT_BOARD[task];
   } catch {
-    return DEFAULT_BOARDS;
+    return DEFAULT_BOARD[task];
   }
 }
 
@@ -113,7 +139,7 @@ export default function ModelCatalog({
   const [query, setQuery] = useState("");
   const [onlyUsable, setOnlyUsable] = useState(false);
   const [sizeLimit, setSizeLimit] = useState(0);
-  const [boards, setBoards] = useState<string[]>(loadBoards);
+  const [boards, setBoards] = useState<string[]>(() => loadBoards(task));
   const [available, setAvailable] = useState<BoardInfo[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [sortBoard, setSortBoard] = useState<string>("");
@@ -124,24 +150,24 @@ export default function ModelCatalog({
   // Noms d'installation résolus automatiquement (via les GGUF réels sur HF).
   const [installs, setInstalls] = useState<Record<string, InstallInfo>>({});
 
-  // MTEB ne couvre que les embeddings : les LLM de chat/vision gardent la liste curatée.
-  const hasScores = task === "embedding";
+  // Les trois tâches ont désormais un leaderboard live (MTEB / OpenVLM / Compass).
+  const hasScores = true;
   const boardKey = boards.join("|");
   const primaryBoard = sortBoard || boards[0] || "";
 
   useEffect(() => {
-    if (open && hasScores) listBenchmarkBoards().then(setAvailable).catch(() => setAvailable([]));
-  }, [open, hasScores]);
+    if (open) listBoardsFor(task).then(setAvailable).catch(() => setAvailable([]));
+  }, [open, task]);
 
   useEffect(() => {
-    localStorage.setItem(LS_KEY, JSON.stringify(boards));
-  }, [boardKey]);
+    localStorage.setItem(boardLsKey(task), JSON.stringify(boards));
+  }, [task, boardKey]);
 
   const fetchBench = (refresh: boolean) => {
-    if (!hasScores || boards.length === 0) return;
+    if (task === "embedding" && boards.length === 0) return;
     setLoadingBench(true);
     setBenchError(null);
-    modelBenchmarks(boards, refresh)
+    fetchBenchFor(task, boards, refresh)
       .then((list) => setBench(Object.fromEntries(list.map((b) => [b.name, b]))))
       .catch((e) => setBenchError(String(e)))
       .finally(() => setLoadingBench(false));
@@ -203,40 +229,32 @@ export default function ModelCatalog({
 
   const rows: Row[] = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const list = Object.values(bench);
 
-    // Chat / vision : pas de leaderboard MTEB → on reste sur la liste curatée.
-    if (!hasScores) {
+    // Repli : si le leaderboard est injoignable, on montre au moins la liste curatée.
+    if (list.length === 0) {
       return CATALOG.filter((c) => c.task === task)
         .filter((c) => (q ? (c.name + c.goodFor).toLowerCase().includes(q) : true))
         .sort((a, b) => b.quality - a.quality)
         .map((c): Row => {
           const id = idForBackend(c, backend, serverKind);
-          return {
-            hf: c.name,
-            curated: c,
-            id,
-            source: "curated",
-            installed: !!id && isInstalled(id),
-          };
+          return { hf: c.name, curated: c, id, source: "curated", installed: !!id && isInstalled(id) };
         });
     }
 
-    // Embeddings : la LISTE vient du leaderboard (donc les nouveaux modèles arrivent seuls).
+    // La LISTE vient du leaderboard (les nouveaux modèles arrivent seuls). La clé de
+    // résolution GGUF est le dépôt HF (`hf`), pas forcément le nom affiché.
     const max = SIZE_LIMITS[sizeLimit].max;
-    const out: Row[] = Object.values(bench)
+    const out: Row[] = list
       .filter((b) => (q ? b.name.toLowerCase().includes(q) : true))
       .filter((b) => (b.params_b == null ? true : b.params_b <= max))
       .map((b): Row => {
-        const cur = curatedByHf.get(b.name);
-        const { id, source } = resolveId(b.name, cur);
-        return {
-          hf: b.name,
-          bench: b,
-          curated: cur,
-          id,
-          source,
-          installed: !!id && isInstalled(id),
-        };
+        const key = b.hf ?? b.name;
+        // L'overlay curaté (note ★, conseil, nom Ollama officiel) n'existe que pour
+        // l'embedding (mappé par id MTEB). Vision/reasoning : données live seules.
+        const cur = task === "embedding" ? curatedByHf.get(b.name) : undefined;
+        const { id, source } = resolveId(key, cur);
+        return { hf: key, bench: b, curated: cur, id, source, installed: !!id && isInstalled(id) };
       })
       .filter((r) => !onlyUsable || (r.installed && !!r.id));
 
@@ -303,6 +321,14 @@ export default function ModelCatalog({
 
   const shown = rows.slice(0, limit);
 
+  const sourceLabel =
+    task === "embedding"
+      ? "leaderboard MTEB"
+      : task === "vision"
+        ? "leaderboard OpenVLM (OpenCompass)"
+        : "leaderboard OpenCompass Academic";
+  const boardsWord = task === "embedding" ? "Classements" : "Benchmarks";
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-6">
       <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl">
@@ -312,17 +338,8 @@ export default function ModelCatalog({
               Catalogue de modèles — {TASK_LABEL[task]}
             </h2>
             <p className="text-[11px] text-zinc-500">
-              {hasScores ? (
-                <>
-                  {rows.length} modèles du leaderboard MTEB · cible :{" "}
-                  <span className="text-zinc-300">{backendLabel}</span>
-                </>
-              ) : (
-                <>
-                  Liste curatée (MTEB ne couvre pas les LLM) · cible :{" "}
-                  <span className="text-zinc-300">{backendLabel}</span>
-                </>
-              )}
+              {rows.length} modèles · {sourceLabel} · cible :{" "}
+              <span className="text-zinc-300">{backendLabel}</span>
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -347,7 +364,7 @@ export default function ModelCatalog({
         {hasScores && (
           <div className="border-b border-zinc-800 px-5 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[11px] text-zinc-500">Classements :</span>
+              <span className="text-[11px] text-zinc-500">{boardsWord} :</span>
               {boards.map((b) => (
                 <span
                   key={b}
@@ -363,7 +380,11 @@ export default function ModelCatalog({
                 onClick={() => setPickerOpen((v) => !v)}
                 className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-300 hover:bg-zinc-700"
               >
-                {pickerOpen ? "Fermer" : "+ Choisir les langues"}
+                {pickerOpen
+                  ? "Fermer"
+                  : task === "embedding"
+                    ? "+ Choisir les langues"
+                    : "+ Choisir les benchmarks"}
               </button>
             </div>
 
@@ -395,17 +416,18 @@ export default function ModelCatalog({
           </div>
         )}
 
-        {hasScores && (
-          <div className="flex gap-2 border-b border-zinc-800 bg-amber-500/5 px-5 py-2">
-            <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-400" />
-            <p className="text-[11px] leading-relaxed text-amber-200/80">
-              Un bon score dans une langue <strong>ne prédit pas</strong> les autres (les modèles
-              anglophones chutent à ~20 en coréen contre ~67 pour un multilingue). « non évalué » ≠
-              mauvais. Et un modèle du classement <strong>n'est pas forcément installable</strong> :
-              les noms non vérifiés sont signalés.
-            </p>
-          </div>
-        )}
+        <div className="flex gap-2 border-b border-zinc-800 bg-amber-500/5 px-5 py-2">
+          <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-400" />
+          <p className="text-[11px] leading-relaxed text-amber-200/80">
+            {task === "embedding"
+              ? "Un bon score dans une langue ne prédit pas les autres (les modèles anglophones chutent à ~20 en coréen contre ~67 pour un multilingue)."
+              : task === "vision"
+                ? "Beaucoup de VLM ne s'installent pas en GGUF (Ollama a besoin du mmproj multimodal) : privilégie llava, moondream, llama3.2-vision, qwen2.5-vl, minicpm-v."
+                : "Les meilleurs du classement sont souvent des modèles fermés (o3, GPT) non installables. Filtre par taille et regarde les modèles ouverts (Qwen, Llama, Mistral, DeepSeek, Gemma)."}{" "}
+            « non évalué » ≠ mauvais, et un modèle du classement{" "}
+            <strong>n'est pas forcément installable</strong> — c'est signalé.
+          </p>
+        </div>
 
         {/* Filtres */}
         <div className="flex items-center gap-2 border-b border-zinc-800 px-5 py-2.5">
