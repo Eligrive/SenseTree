@@ -386,6 +386,24 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
               onChange={(e) => patchChat(key, { base_url: e.target.value })}
               placeholder="http://localhost:11434/v1"
             />
+            <div className="mt-1 flex gap-1.5">
+              {[
+                { label: "Ollama", url: "http://localhost:11434/v1" },
+                { label: "LM Studio", url: "http://localhost:1234/v1" },
+              ].map((s) => (
+                <button
+                  key={s.label}
+                  onClick={() => patchChat(key, { base_url: s.url })}
+                  className={`rounded-md px-2 py-0.5 text-[10px] ${
+                    cfg[key].base_url === s.url
+                      ? "bg-blue-500/20 text-blue-300"
+                      : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
           </Field>
           <Field label="Modèle">
             <div className="flex items-start gap-1.5">
