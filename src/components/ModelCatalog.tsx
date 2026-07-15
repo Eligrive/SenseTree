@@ -140,6 +140,8 @@ export default function ModelCatalog({
 }: Props) {
   const [query, setQuery] = useState("");
   const [onlyUsable, setOnlyUsable] = useState(false);
+  const [onlyOpen, setOnlyOpen] = useState(false);
+  const [onlyDownloadable, setOnlyDownloadable] = useState(false);
   const [sizeLimit, setSizeLimit] = useState(0);
   const [boards, setBoards] = useState<string[]>(() => loadBoards(task));
   const [available, setAvailable] = useState<BoardInfo[]>([]);
@@ -261,6 +263,12 @@ export default function ModelCatalog({
           : resolveId(key, cur);
         return { hf: key, bench: b, curated: cur, id, source, installed: !!id && isInstalled(id) };
       })
+      // Filtres (on ne CACHE rien par défaut : les modèles fermés restent visibles).
+      //   open-source  : basé sur le drapeau FIABLE de la source (vision) ; pour le
+      //                  reasoning on ne prétend rien → ils passent tous ce filtre.
+      //   téléchargeable : un identifiant d'install a été résolu (GGUF/curaté/installé).
+      .filter((r) => !onlyOpen || !r.bench?.closed)
+      .filter((r) => !onlyDownloadable || !!r.id)
       .filter((r) => !onlyUsable || (r.installed && !!r.id));
 
     const primaryOf = (r: Row) => r.bench?.scores.find((s) => s.board === primaryBoard);
@@ -286,7 +294,7 @@ export default function ModelCatalog({
       return ra - rb;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task, backend, serverKind, query, onlyUsable, sizeLimit, primaryBoard, bench, installs, installedServer, localDownloaded]);
+  }, [task, backend, serverKind, query, onlyUsable, onlyOpen, onlyDownloadable, sizeLimit, primaryBoard, bench, installs, installedServer, localDownloaded]);
 
   // Résolution automatique des noms d'installation pour les modèles AFFICHÉS qui
   // n'ont pas de nom vérifié (mode serveur uniquement). Bornée à la page visible,
@@ -472,6 +480,28 @@ export default function ModelCatalog({
               </select>
             </>
           )}
+          <label
+            className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-400"
+            title="Un identifiant d'installation (GGUF Ollama/LM Studio, ou nom officiel) a été trouvé"
+          >
+            <input
+              type="checkbox"
+              checked={onlyDownloadable}
+              onChange={(e) => setOnlyDownloadable(e.target.checked)}
+            />
+            Téléchargeable
+          </label>
+          <label
+            className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-400"
+            title={
+              task === "vision"
+                ? "D'après le drapeau open-source de la source"
+                : "Fiable en vision ; pour reasoning/embedding, tout est considéré ouvert (pas de liste de noms)"
+            }
+          >
+            <input type="checkbox" checked={onlyOpen} onChange={(e) => setOnlyOpen(e.target.checked)} />
+            Open-source
+          </label>
           <label className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-400">
             <input
               type="checkbox"
@@ -484,7 +514,7 @@ export default function ModelCatalog({
 
         {benchError && (
           <p className="border-b border-zinc-800 px-5 py-2 text-[11px] text-rose-400">
-            Leaderboard MTEB indisponible ({benchError}).
+            {sourceLabel} indisponible ({benchError}).
           </p>
         )}
 

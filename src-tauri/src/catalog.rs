@@ -183,19 +183,6 @@ fn add_general(models: &mut [ModelBenchmark]) {
     }
 }
 
-/// Familles de modèles FERMÉS / API-only (non téléchargeables). Sert au reasoning,
-/// où la source ne fournit pas de drapeau open-source fiable (la vision, si).
-fn is_closed_llm(name: &str) -> bool {
-    let n = name.to_lowercase();
-    const CLOSED: &[&str] = &[
-        "gemini", "gpt-", "gpt4", "gpt-4", "chatgpt", "o1-", "o1_", "o3-", "o3_", "o4-", "claude",
-        "grok", "doubao", "hunyuan", "ernie", "step-", "abab", "glm-4.5", "glm-4.6", "sensechat",
-        "moonshot", "kimi", "qwen-max", "qwen-plus", "qwen-turbo", "mistral-large", "mistral-medium",
-        "yi-large", "palm", "spark", "baichuan4", "minimax",
-    ];
-    CLOSED.iter().any(|c| n.contains(c))
-}
-
 fn parse_params(s: &str) -> Option<f64> {
     // "8.29B" / "7B" / "1.8b" → 8.29 / 7 / 1.8
     let low = s.to_lowercase();
@@ -319,11 +306,12 @@ async fn fetch_reasoning() -> Result<Vec<ModelBenchmark>> {
 
             let e = per_model.entry(model.clone()).or_insert_with(|| {
                 let (display, hf) = clean_llm_name(model);
-                let closed = is_closed_llm(&display);
+                // Pas de liste de noms « fermés » (fragile, et un modèle peut s'ouvrir
+                // un jour) : l'installabilité est décidée par la présence RÉELLE d'un
+                // GGUF sur Hugging Face. Sans GGUF → « non installable », sans étiquette.
                 ModelBenchmark {
-                    // Fermé (Gemini, GPT…) → pas de clé HF, donc pas de résolution GGUF.
-                    hf: if closed { None } else { Some(hf) },
-                    closed,
+                    hf: Some(hf),
+                    closed: false,
                     params_b: parse_params_from_name(&display),
                     name: display,
                     url: None,
