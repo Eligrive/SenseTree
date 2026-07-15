@@ -64,18 +64,30 @@ function loadBoards(task: Task): string[] {
   }
 }
 
+/// Un serveur connu (Ollama / LM Studio) et ses modèles installés.
+export interface ServerInfo {
+  url: string;
+  kind: ServerKind;
+  models: string[];
+}
+
 interface Props {
   open: boolean;
   onClose: () => void;
   task: Task;
   backend: Backend;
+  /// Type du serveur ACTUELLEMENT configuré pour cette section.
   serverKind: ServerKind;
-  installedServer: string[];
+  /// Serveurs sondés (Ollama + LM Studio) pour savoir où chaque modèle est installé.
+  servers: ServerInfo[];
   localDownloaded: Record<string, boolean>;
   currentModel: string;
-  onUse: (id: string, dims?: number) => void;
-  onDownload: (id: string) => void;
+  /// `serverUrl` = endpoint où le modèle est installé (bascule auto). Absent = inchangé.
+  onUse: (id: string, dims?: number, serverUrl?: string) => void;
+  onDownload: (id: string, targetUrl?: string) => void;
   downloading: Record<string, boolean>;
+  /// Progression de téléchargement, par nom de modèle.
+  progress: Record<string, { percent: number; status: string }>;
 }
 
 const TASK_LABEL: Record<Task, string> = {
@@ -113,6 +125,8 @@ interface Row {
   id?: string;
   source: IdSource;
   installed: boolean;
+  /// Endpoint où le modèle est installé/résolu (pour basculer à la sélection).
+  targetUrl?: string;
 }
 
 function Stars({ n }: { n: number }) {
@@ -131,12 +145,13 @@ export default function ModelCatalog({
   task,
   backend,
   serverKind,
-  installedServer,
+  servers,
   localDownloaded,
   currentModel,
   onUse,
   onDownload,
   downloading,
+  progress,
 }: Props) {
   const [query, setQuery] = useState("");
   const [onlyUsable, setOnlyUsable] = useState(false);
@@ -184,42 +199,59 @@ export default function ModelCatalog({
 
   const labelOf = (b: string) => available.find((x) => x.name === b)?.display_name ?? b;
 
-  const isInstalled = (id: string) =>
-    backend === "local"
-      ? !!localDownloaded[id]
-      : installedServer.some((m) => m === id || m.split(":")[0] === id.split(":")[0]);
+  // Serveur correspondant au type configuré pour cette section (endpoint par défaut).
+  const currentServer = servers.find((s) => s.kind === serverKind) ?? servers[0];
 
-  /// Résout l'identifiant utilisable pour le backend courant.
-  /// C'est LE point dur : aucune API ne relie un modèle du leaderboard au catalogue
-  /// d'Ollama. On privilégie donc, dans l'ordre : nom vérifié (curaté) → modèle déjà
-  /// installé → nom déduit du nom HF, explicitement marqué comme non vérifié.
-  const resolveId = (hf: string, cur?: CatalogModel): { id?: string; source: IdSource } => {
+  // Où un identifiant d'install est-il RÉELLEMENT présent (Ollama vs LM Studio) ?
+  const serverHosting = (id?: string): ServerInfo | undefined => {
+    if (!id) return undefined;
+    const low = id.toLowerCase();
+    const base = low.split(":")[0];
+    return servers.find((s) =>
+      s.models.some((m) => {
+        const ml = m.toLowerCase();
+        return ml === low || ml.split(":")[0] === base || ml.includes(base) || low.includes(ml.split(":")[0]);
+      })
+    );
+  };
+
+  const isInstalled = (id: string) =>
+    backend === "local" ? !!localDownloaded[id] : !!serverHosting(id);
+
+  /// Résout l'identifiant + l'endpoint cible pour le backend courant, dans l'ordre :
+  /// nom vérifié → déjà installé (sur n'importe quel serveur) → GGUF résolu → deviné.
+  const resolveId = (
+    hf: string,
+    cur?: CatalogModel
+  ): { id?: string; source: IdSource; targetUrl?: string } => {
     if (backend === "local") {
-      // Le local (fastembed) est un ensemble FIXE : pas de déduction possible.
       return { id: cur?.local, source: "curated" };
     }
-    // 1. Nom vérifié à la main (le plus propre, ex. Ollama officiel `bge-m3`).
+    // 1. Nom vérifié à la main (ex. Ollama officiel `bge-m3`).
     const verified = serverKind === "lmstudio" ? cur?.lmstudio : cur?.ollama;
-    if (verified) return { id: verified, source: "curated" };
-
-    // 2. Déjà installé sur le serveur.
-    const short = (hf.split("/")[1] ?? hf).toLowerCase();
-    const hit = installedServer.find(
-      (m) => m.toLowerCase() === short || m.toLowerCase().split(":")[0] === short
-    );
-    if (hit) return { id: hit, source: "installed" };
-
-    // 3. Résolu via un dépôt GGUF RÉEL sur Hugging Face (vérifié, plus « à deviner »).
+    if (verified) {
+      return { id: verified, source: "curated", targetUrl: (serverHosting(verified) ?? currentServer)?.url };
+    }
+    // 2. Déjà installé sur l'UN des serveurs (Ollama ou LM Studio) → on cible celui-là.
+    const short = (hf.split("/").pop() ?? hf).toLowerCase();
+    for (const s of servers) {
+      const hit = s.models.find(
+        (m) =>
+          m.toLowerCase() === short ||
+          m.toLowerCase().split(":")[0] === short.split(":")[0] ||
+          m.toLowerCase().includes(short)
+      );
+      if (hit) return { id: hit, source: "installed", targetUrl: s.url };
+    }
+    // 3. Résolu via un dépôt GGUF RÉEL sur Hugging Face.
     const info = installs[hf];
     if (info) {
       const rid = serverKind === "lmstudio" ? info.lmstudio : info.ollama;
-      if (rid) return { id: rid, source: "gguf" };
-      // Résolu mais aucun GGUF trouvé → réellement indisponible sur ce backend.
+      if (rid) return { id: rid, source: "gguf", targetUrl: (serverHosting(rid) ?? currentServer)?.url };
       return { id: undefined, source: "gguf" };
     }
-
-    // 4. Dernier recours : nom déduit, non vérifié (en attendant la résolution).
-    return { id: serverKind === "lmstudio" ? hf : short, source: "guess" };
+    // 4. Dernier recours : nom déduit (en attendant la résolution).
+    return { id: serverKind === "lmstudio" ? hf : short, source: "guess", targetUrl: currentServer?.url };
   };
 
   const curatedByHf = useMemo(() => {
@@ -242,7 +274,14 @@ export default function ModelCatalog({
         .sort((a, b) => b.quality - a.quality)
         .map((c): Row => {
           const id = idForBackend(c, backend, serverKind);
-          return { hf: c.name, curated: c, id, source: "curated", installed: !!id && isInstalled(id) };
+          return {
+            hf: c.name,
+            curated: c,
+            id,
+            source: "curated",
+            installed: !!id && isInstalled(id),
+            targetUrl: id ? (serverHosting(id) ?? currentServer)?.url : undefined,
+          };
         });
     }
 
@@ -258,10 +297,18 @@ export default function ModelCatalog({
         // l'embedding (mappé par id MTEB). Vision/reasoning : données live seules.
         const cur = task === "embedding" ? curatedByHf.get(b.name) : undefined;
         // Modèle fermé (Gemini, GPT…) : jamais installable localement.
-        const { id, source } = b.closed
-          ? { id: undefined, source: "closed" as IdSource }
+        const r = b.closed
+          ? { id: undefined, source: "closed" as IdSource, targetUrl: undefined }
           : resolveId(key, cur);
-        return { hf: key, bench: b, curated: cur, id, source, installed: !!id && isInstalled(id) };
+        return {
+          hf: key,
+          bench: b,
+          curated: cur,
+          id: r.id,
+          source: r.source,
+          targetUrl: r.targetUrl,
+          installed: !!r.id && isInstalled(r.id),
+        };
       })
       // Filtres (on ne CACHE rien par défaut : les modèles fermés restent visibles).
       //   open-source  : basé sur le drapeau FIABLE de la source (vision) ; pour le
@@ -294,7 +341,7 @@ export default function ModelCatalog({
       return ra - rb;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task, backend, serverKind, query, onlyUsable, onlyOpen, onlyDownloadable, sizeLimit, primaryBoard, bench, installs, installedServer, localDownloaded]);
+  }, [task, backend, serverKind, query, onlyUsable, onlyOpen, onlyDownloadable, sizeLimit, primaryBoard, bench, installs, servers, localDownloaded]);
 
   // Résolution automatique des noms d'installation pour les modèles AFFICHÉS qui
   // n'ont pas de nom vérifié (mode serveur uniquement). Bornée à la page visible,
@@ -661,9 +708,9 @@ export default function ModelCatalog({
                   </div>
 
                   {r.id && (
-                    <div className="flex shrink-0 flex-col gap-1.5">
+                    <div className="flex w-40 shrink-0 flex-col gap-1.5">
                       <button
-                        onClick={() => onUse(r.id!, dims)}
+                        onClick={() => onUse(r.id!, dims, r.targetUrl)}
                         disabled={inUse}
                         className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-40"
                       >
@@ -673,14 +720,26 @@ export default function ModelCatalog({
                         <span className="flex items-center justify-center gap-1 text-[11px] text-emerald-400">
                           <Check size={12} /> installé
                         </span>
+                      ) : busy ? (
+                        // Progression du téléchargement, directement dans le catalogue.
+                        <div className="space-y-0.5">
+                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                            <div
+                              className="h-full rounded-full bg-blue-500 transition-all"
+                              style={{ width: `${progress[r.id]?.percent ?? 0}%` }}
+                            />
+                          </div>
+                          <span className="block truncate text-center text-[10px] text-zinc-500">
+                            {progress[r.id]?.status ?? "démarrage…"} {progress[r.id]?.percent ?? 0}%
+                          </span>
+                        </div>
                       ) : (
                         <button
-                          onClick={() => onDownload(r.id!)}
+                          onClick={() => onDownload(r.id!, r.targetUrl)}
                           disabled={busy}
                           className="flex items-center justify-center gap-1 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
                         >
-                          {busy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
-                          Télécharger
+                          <Download size={12} /> Télécharger
                         </button>
                       )}
                     </div>

@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import type { AppConfig, ChatConfig, LocalModelStatus, PromptsConfig } from "../lib/types";
-import type { Backend, Task } from "../lib/models";
+import type { Backend, ServerKind, Task } from "../lib/models";
 import { serverKind } from "../lib/models";
 import ModelCatalog from "./ModelCatalog";
 import {
@@ -88,6 +88,13 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 const inputCls =
   "w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-200 outline-none focus:border-blue-500";
+
+const OLLAMA_URL = "http://localhost:11434/v1";
+const LMSTUDIO_URL = "http://localhost:1234/v1";
+const SERVER_PRESETS = [
+  { label: "Ollama", url: OLLAMA_URL },
+  { label: "LM Studio", url: LMSTUDIO_URL },
+];
 
 const CUSTOM = "__custom__";
 
@@ -224,6 +231,16 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
     }
   }, [cfg?.reasoning.base_url, cfg?.vision.base_url, cfg?.embedding.base_url, cfg?.embedding.mode]);
 
+  // Quand le catalogue est ouvert, on sonde les DEUX serveurs standard (Ollama +
+  // LM Studio) pour savoir où chaque modèle est réellement installé → la sélection
+  // pourra basculer automatiquement sur le bon endpoint.
+  useEffect(() => {
+    if (!catalogTask) return;
+    refreshModels(OLLAMA_URL, "");
+    refreshModels(LMSTUDIO_URL, "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalogTask]);
+
   if (!open || !cfg) return null;
 
   const refreshModels = (baseUrl: string, apiKey: string) => {
@@ -295,26 +312,44 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
     localModels.map((m) => [m.id, m.downloaded])
   );
 
-  const catalogUse = (id: string, dims?: number) => {
+  // Serveurs connus (Ollama + LM Studio) avec leurs modèles installés → sert au
+  // catalogue pour savoir où un modèle vit et basculer l'endpoint à la sélection.
+  const catalogServers = [
+    { url: OLLAMA_URL, kind: "ollama" as ServerKind, models: installed[OLLAMA_URL] ?? [] },
+    { url: LMSTUDIO_URL, kind: "lmstudio" as ServerKind, models: installed[LMSTUDIO_URL] ?? [] },
+  ];
+
+  const catalogUse = (id: string, dims?: number, serverUrl?: string) => {
     if (catalogTask === "embedding") {
       setCfg({
         ...cfg,
-        embedding: { ...cfg.embedding, model: id, dimensions: dims ?? cfg.embedding.dimensions },
+        embedding: {
+          ...cfg.embedding,
+          model: id,
+          dimensions: dims ?? cfg.embedding.dimensions,
+          // Modèle serveur choisi → on bascule en mode serveur sur le bon endpoint.
+          ...(serverUrl ? { mode: "openai" as const, base_url: serverUrl } : {}),
+        },
       });
     } else if (chatKey) {
-      patchChat(chatKey, { model: id });
+      patchChat(chatKey, { model: id, ...(serverUrl ? { base_url: serverUrl } : {}) });
     }
   };
 
-  const catalogDownload = async (id: string) => {
+  const catalogDownload = async (id: string, targetUrl?: string) => {
     setDlBusy((b) => ({ ...b, [id]: true }));
     try {
       if (catalogBackend === "local") {
         await downloadLocalModel(id);
         await refreshLocalModels();
       } else {
-        await pullModel(catalogUrl, id);
-        refreshModels(catalogUrl, catalogApiKey);
+        const url = targetUrl ?? catalogUrl;
+        await pullModel(url, id);
+        // Rafraîchit les deux serveurs → le modèle apparaît dans les listes déroulantes.
+        refreshModels(OLLAMA_URL, "");
+        refreshModels(LMSTUDIO_URL, "");
+        // Ollama enregistre parfois avec un léger délai : second passage.
+        setTimeout(() => refreshModels(url, catalogApiKey), 1500);
       }
     } catch (e) {
       setTestMsg((m) => ({ ...m, save: `⚠️ ${String(e)}` }));
@@ -387,10 +422,7 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
               placeholder="http://localhost:11434/v1"
             />
             <div className="mt-1 flex gap-1.5">
-              {[
-                { label: "Ollama", url: "http://localhost:11434/v1" },
-                { label: "LM Studio", url: "http://localhost:1234/v1" },
-              ].map((s) => (
+              {SERVER_PRESETS.map((s) => (
                 <button
                   key={s.label}
                   onClick={() => patchChat(key, { base_url: s.url })}
@@ -666,10 +698,7 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                     }
                   />
                   <div className="mt-1 flex gap-1.5">
-                    {[
-                      { label: "Ollama", url: "http://localhost:11434/v1" },
-                      { label: "LM Studio", url: "http://localhost:1234/v1" },
-                    ].map((s) => (
+                    {SERVER_PRESETS.map((s) => (
                       <button
                         key={s.label}
                         onClick={() =>
@@ -888,12 +917,13 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
           task={catalogTask}
           backend={catalogBackend}
           serverKind={serverKind(catalogUrl)}
-          installedServer={installed[catalogUrl] ?? []}
+          servers={catalogServers}
           localDownloaded={localDownloaded}
           currentModel={catalogCurrent}
           onUse={catalogUse}
           onDownload={catalogDownload}
           downloading={dlBusy}
+          progress={pullProgress}
         />
       )}
     </div>
