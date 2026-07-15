@@ -83,6 +83,7 @@ export interface BoardScore {
 export interface ModelBenchmark {
   name: string; // nom d'affichage
   hf: string | null; // dépôt Hugging Face (clé de résolution GGUF)
+  closed: boolean; // modèle fermé / API-only (non installable localement)
   url: string | null;
   embed_dim: number | null;
   params_b: number | null;

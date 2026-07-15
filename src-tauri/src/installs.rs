@@ -149,9 +149,20 @@ async fn try_fetch(http: &reqwest::Client, hf: &str) -> Result<InstallInfo> {
 
     // On ne retient qu'un dépôt dont le nom contient VRAIMENT le modèle (évite les
     // faux positifs de la recherche floue), le plus téléchargé en premier.
+    //
+    // Garde anti-dérivés : un dépôt « X-Distill », « X-merge », « abliterated »… est
+    // un AUTRE modèle qui ne fait qu'imiter/modifier X. On le rejette, SAUF si le
+    // modèle recherché est lui-même un tel dérivé (ex. `deepseek-r1-distill-qwen`).
+    // Sans ça, `gemini-2.5-pro` matchait `Qwen3-8B-Gemini-2.5-Pro-Distill-GGUF`.
+    const DERIVATIVE: &[&str] = &["distill", "merge", "abliterat", "uncensored", "-ft-", "finetune"];
+    let base_is_derivative = DERIVATIVE.iter().any(|d| base.contains(d));
     let best = repos
         .into_iter()
-        .filter(|r| r.id.to_lowercase().contains(&base))
+        .filter(|r| {
+            let id = r.id.to_lowercase();
+            id.contains(&base)
+                && (base_is_derivative || !DERIVATIVE.iter().any(|d| id.contains(d)))
+        })
         .max_by_key(|r| r.downloads);
 
     let Some(best) = best else {

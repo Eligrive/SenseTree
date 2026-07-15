@@ -5,6 +5,7 @@ import {
   Download,
   ExternalLink,
   Loader2,
+  Lock,
   RefreshCw,
   Search,
   Star,
@@ -100,6 +101,7 @@ type IdSource =
   | "curated" // nom vérifié à la main
   | "installed" // déjà présent sur le serveur
   | "gguf" // résolu via un dépôt GGUF réel sur Hugging Face (vérifié)
+  | "closed" // modèle fermé / API-only : non installable localement
   | "guess"; // déduit du nom, non vérifié
 
 /// Ligne unifiée : un modèle du classement, enrichi de nos infos curatées.
@@ -253,7 +255,10 @@ export default function ModelCatalog({
         // L'overlay curaté (note ★, conseil, nom Ollama officiel) n'existe que pour
         // l'embedding (mappé par id MTEB). Vision/reasoning : données live seules.
         const cur = task === "embedding" ? curatedByHf.get(b.name) : undefined;
-        const { id, source } = resolveId(key, cur);
+        // Modèle fermé (Gemini, GPT…) : jamais installable localement.
+        const { id, source } = b.closed
+          ? { id: undefined, source: "closed" as IdSource }
+          : resolveId(key, cur);
         return { hf: key, bench: b, curated: cur, id, source, installed: !!id && isInstalled(id) };
       })
       .filter((r) => !onlyUsable || (r.installed && !!r.id));
@@ -606,6 +611,11 @@ export default function ModelCatalog({
                             <Loader2 size={9} className="animate-spin" /> recherche du nom…
                           </span>
                         )}
+                      </p>
+                    ) : r.source === "closed" ? (
+                      <p className="mt-1.5 flex items-center gap-1 text-[11px] text-zinc-500">
+                        <Lock size={10} /> Modèle fermé (cloud) — non installable localement, API
+                        payante uniquement.
                       </p>
                     ) : r.source === "gguf" ? (
                       <p className="mt-1.5 text-[11px] text-amber-400/80">

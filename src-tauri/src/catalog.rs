@@ -183,6 +183,19 @@ fn add_general(models: &mut [ModelBenchmark]) {
     }
 }
 
+/// Familles de modèles FERMÉS / API-only (non téléchargeables). Sert au reasoning,
+/// où la source ne fournit pas de drapeau open-source fiable (la vision, si).
+fn is_closed_llm(name: &str) -> bool {
+    let n = name.to_lowercase();
+    const CLOSED: &[&str] = &[
+        "gemini", "gpt-", "gpt4", "gpt-4", "chatgpt", "o1-", "o1_", "o3-", "o3_", "o4-", "claude",
+        "grok", "doubao", "hunyuan", "ernie", "step-", "abab", "glm-4.5", "glm-4.6", "sensechat",
+        "moonshot", "kimi", "qwen-max", "qwen-plus", "qwen-turbo", "mistral-large", "mistral-medium",
+        "yi-large", "palm", "spark", "baichuan4", "minimax",
+    ];
+    CLOSED.iter().any(|c| n.contains(c))
+}
+
 fn parse_params(s: &str) -> Option<f64> {
     // "8.29B" / "7B" / "1.8b" → 8.29 / 7 / 1.8
     let low = s.to_lowercase();
@@ -217,13 +230,23 @@ async fn fetch_vision() -> Result<Vec<ModelBenchmark>> {
             .and_then(|m| m.get("Parameters"))
             .and_then(|p| p.as_str())
             .and_then(parse_params);
+        // La vision fournit un drapeau open-source FIABLE.
+        let closed = meta
+            .and_then(|m| m.get("OpenSource"))
+            .and_then(|x| x.as_str())
+            .map(|s| !s.eq_ignore_ascii_case("yes"))
+            .unwrap_or(false);
         // META.Method = "Nom https://huggingface.co/Org/Repo" → on extrait le dépôt HF.
         let method = meta.and_then(|m| m.get("Method")).and_then(|x| x.as_str()).unwrap_or("");
-        let hf = method
-            .split_whitespace()
-            .find(|t| t.contains("huggingface.co/"))
-            .and_then(|u| u.split("huggingface.co/").nth(1))
-            .map(|s| s.trim_end_matches('/').to_string());
+        let hf = if closed {
+            None
+        } else {
+            method
+                .split_whitespace()
+                .find(|t| t.contains("huggingface.co/"))
+                .and_then(|u| u.split("huggingface.co/").nth(1))
+                .map(|s| s.trim_end_matches('/').to_string())
+        };
         let url = method
             .split_whitespace()
             .find(|t| t.starts_with("http"))
@@ -250,6 +273,7 @@ async fn fetch_vision() -> Result<Vec<ModelBenchmark>> {
         models.push(ModelBenchmark {
             name,
             hf,
+            closed,
             url,
             embed_dim: None,
             params_b,
@@ -295,8 +319,11 @@ async fn fetch_reasoning() -> Result<Vec<ModelBenchmark>> {
 
             let e = per_model.entry(model.clone()).or_insert_with(|| {
                 let (display, hf) = clean_llm_name(model);
+                let closed = is_closed_llm(&display);
                 ModelBenchmark {
-                    hf: Some(hf),
+                    // Fermé (Gemini, GPT…) → pas de clé HF, donc pas de résolution GGUF.
+                    hf: if closed { None } else { Some(hf) },
+                    closed,
                     params_b: parse_params_from_name(&display),
                     name: display,
                     url: None,

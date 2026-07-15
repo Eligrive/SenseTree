@@ -53,9 +53,12 @@ pub struct ModelBenchmark {
     /// Nom d'affichage, ex. `Qwen/Qwen3-Embedding-0.6B` (embedding) ou `Qwen2.5-VL-7B`.
     pub name: String,
     /// Identifiant Hugging Face pour la résolution GGUF (souvent = `name` en embedding,
-    /// extrait des métadonnées en vision/reasoning). None si inconnu.
+    /// extrait des métadonnées en vision/reasoning). None si inconnu ou fermé.
     #[serde(default)]
     pub hf: Option<String>,
+    /// Modèle fermé / API-only (Gemini, GPT, Claude…) : non installable localement.
+    #[serde(default)]
+    pub closed: bool,
     pub url: Option<String>,
     /// Dimension du vecteur — doit correspondre à la config d'indexation.
     pub embed_dim: Option<usize>,
@@ -259,6 +262,7 @@ pub async fn load(data_dir: &Path, boards: Vec<String>, refresh: bool) -> Result
         for m in &cb.models {
             let e = by_model.entry(m.name.clone()).or_insert_with(|| ModelBenchmark {
                 hf: Some(m.name.clone()),
+                closed: false,
                 name: m.name.clone(),
                 url: m.url.clone(),
                 embed_dim: None,
