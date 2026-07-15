@@ -52,6 +52,15 @@ export interface LocalModelStatus {
   downloaded: boolean;
 }
 
+/// Nom d'installation résolu (via les GGUF réels sur Hugging Face).
+export interface InstallInfo {
+  hf: string;
+  gguf_repo: string | null;
+  quant: string | null;
+  ollama: string | null; // ex. "hf.co/SuperPauly/…-gguf:Q8_0"
+  lmstudio: string | null; // dépôt à charger dans LM Studio
+}
+
 /// Un classement MTEB disponible (global multilingue, ou par langue).
 export interface BoardInfo {
   name: string; // ex. "MTEB(fra, v1)"

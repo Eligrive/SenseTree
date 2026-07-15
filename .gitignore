@@ -69,3 +69,5 @@ data/vectors/
 devrun.log
 devrun.err.log
 devrun.pid
+pull_harrier.log*
+pull.pid

@@ -16,6 +16,7 @@ import type {
   DirectoryReport,
   HealthReport,
   IndexingStats,
+  InstallInfo,
   LocalModelStatus,
   ModelBenchmark,
   PathDetails,
@@ -40,6 +41,8 @@ export const listLocalModels = () => invoke<LocalModelStatus[]>("list_local_mode
 export const downloadLocalModel = (model: string) =>
   invoke<string>("download_local_model", { model });
 export const listBenchmarkBoards = () => invoke<BoardInfo[]>("list_benchmark_boards");
+export const resolveInstalls = (names: string[]) =>
+  invoke<InstallInfo[]>("resolve_installs", { names });
 export const modelBenchmarks = (boards: string[], refresh = false) =>
   invoke<ModelBenchmark[]>("model_benchmarks", { boards, refresh });
 export const pullModel = (baseUrl: string, model: string) =>

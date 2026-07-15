@@ -4,7 +4,6 @@ import {
   Check,
   Download,
   ExternalLink,
-  HelpCircle,
   Loader2,
   RefreshCw,
   Search,
@@ -21,8 +20,8 @@ import {
   type ServerKind,
   type Task,
 } from "../lib/models";
-import type { BoardInfo, BoardScore, ModelBenchmark } from "../lib/types";
-import { listBenchmarkBoards, modelBenchmarks } from "../lib/ipc";
+import type { BoardInfo, BoardScore, InstallInfo, ModelBenchmark } from "../lib/types";
+import { listBenchmarkBoards, modelBenchmarks, resolveInstalls } from "../lib/ipc";
 
 /// Classements retenus (persistés) : chacun a ses langues, rien n'est figé.
 const LS_KEY = "sensetree.boards";
@@ -70,6 +69,13 @@ const fmtScore = (x: number) => (x * 100).toFixed(1);
 const fmtParams = (b: number) =>
   b >= 1 ? `${b.toFixed(1).replace(".", ",")} B` : `${Math.round(b * 1000)} M`;
 
+/// Provenance de l'identifiant d'installation, pour être honnête sur sa fiabilité.
+type IdSource =
+  | "curated" // nom vérifié à la main
+  | "installed" // déjà présent sur le serveur
+  | "gguf" // résolu via un dépôt GGUF réel sur Hugging Face (vérifié)
+  | "guess"; // déduit du nom, non vérifié
+
 /// Ligne unifiée : un modèle du classement, enrichi de nos infos curatées.
 interface Row {
   hf: string;
@@ -77,8 +83,7 @@ interface Row {
   curated?: CatalogModel;
   /// Identifiant utilisable sur le backend courant (undefined = indisponible).
   id?: string;
-  /// Vrai si `id` est DÉDUIT du nom HF (non vérifié) — à signaler à l'utilisateur.
-  guessed: boolean;
+  source: IdSource;
   installed: boolean;
 }
 
@@ -116,6 +121,8 @@ export default function ModelCatalog({
   const [loadingBench, setLoadingBench] = useState(false);
   const [benchError, setBenchError] = useState<string | null>(null);
   const [limit, setLimit] = useState(40);
+  // Noms d'installation résolus automatiquement (via les GGUF réels sur HF).
+  const [installs, setInstalls] = useState<Record<string, InstallInfo>>({});
 
   // MTEB ne couvre que les embeddings : les LLM de chat/vision gardent la liste curatée.
   const hasScores = task === "embedding";
@@ -156,22 +163,33 @@ export default function ModelCatalog({
   /// C'est LE point dur : aucune API ne relie un modèle du leaderboard au catalogue
   /// d'Ollama. On privilégie donc, dans l'ordre : nom vérifié (curaté) → modèle déjà
   /// installé → nom déduit du nom HF, explicitement marqué comme non vérifié.
-  const resolveId = (hf: string, cur?: CatalogModel): { id?: string; guessed: boolean } => {
+  const resolveId = (hf: string, cur?: CatalogModel): { id?: string; source: IdSource } => {
     if (backend === "local") {
       // Le local (fastembed) est un ensemble FIXE : pas de déduction possible.
-      return { id: cur?.local, guessed: false };
+      return { id: cur?.local, source: "curated" };
     }
+    // 1. Nom vérifié à la main (le plus propre, ex. Ollama officiel `bge-m3`).
     const verified = serverKind === "lmstudio" ? cur?.lmstudio : cur?.ollama;
-    if (verified) return { id: verified, guessed: false };
+    if (verified) return { id: verified, source: "curated" };
 
+    // 2. Déjà installé sur le serveur.
     const short = (hf.split("/")[1] ?? hf).toLowerCase();
     const hit = installedServer.find(
       (m) => m.toLowerCase() === short || m.toLowerCase().split(":")[0] === short
     );
-    if (hit) return { id: hit, guessed: false };
+    if (hit) return { id: hit, source: "installed" };
 
-    // LM Studio installe depuis Hugging Face → le nom du dépôt est la bonne clé.
-    return { id: serverKind === "lmstudio" ? hf : short, guessed: true };
+    // 3. Résolu via un dépôt GGUF RÉEL sur Hugging Face (vérifié, plus « à deviner »).
+    const info = installs[hf];
+    if (info) {
+      const rid = serverKind === "lmstudio" ? info.lmstudio : info.ollama;
+      if (rid) return { id: rid, source: "gguf" };
+      // Résolu mais aucun GGUF trouvé → réellement indisponible sur ce backend.
+      return { id: undefined, source: "gguf" };
+    }
+
+    // 4. Dernier recours : nom déduit, non vérifié (en attendant la résolution).
+    return { id: serverKind === "lmstudio" ? hf : short, source: "guess" };
   };
 
   const curatedByHf = useMemo(() => {
@@ -191,13 +209,13 @@ export default function ModelCatalog({
       return CATALOG.filter((c) => c.task === task)
         .filter((c) => (q ? (c.name + c.goodFor).toLowerCase().includes(q) : true))
         .sort((a, b) => b.quality - a.quality)
-        .map((c) => {
+        .map((c): Row => {
           const id = idForBackend(c, backend, serverKind);
           return {
             hf: c.name,
             curated: c,
             id,
-            guessed: false,
+            source: "curated",
             installed: !!id && isInstalled(id),
           };
         });
@@ -208,15 +226,15 @@ export default function ModelCatalog({
     const out: Row[] = Object.values(bench)
       .filter((b) => (q ? b.name.toLowerCase().includes(q) : true))
       .filter((b) => (b.params_b == null ? true : b.params_b <= max))
-      .map((b) => {
+      .map((b): Row => {
         const cur = curatedByHf.get(b.name);
-        const { id, guessed } = resolveId(b.name, cur);
+        const { id, source } = resolveId(b.name, cur);
         return {
           hf: b.name,
           bench: b,
           curated: cur,
           id,
-          guessed,
+          source,
           installed: !!id && isInstalled(id),
         };
       })
@@ -245,7 +263,29 @@ export default function ModelCatalog({
       return ra - rb;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task, backend, serverKind, query, onlyUsable, sizeLimit, primaryBoard, bench, installedServer, localDownloaded]);
+  }, [task, backend, serverKind, query, onlyUsable, sizeLimit, primaryBoard, bench, installs, installedServer, localDownloaded]);
+
+  // Résolution automatique des noms d'installation pour les modèles AFFICHÉS qui
+  // n'ont pas de nom vérifié (mode serveur uniquement). Bornée à la page visible,
+  // et le cache backend évite de re-demander. Converge : une fois résolus, ils
+  // sortent du filtre `need`.
+  const shownForResolve = rows.slice(0, limit);
+  useEffect(() => {
+    if (backend !== "server" || !hasScores) return;
+    const need = shownForResolve
+      .filter((r) => r.source === "guess" && !(r.hf in installs))
+      .map((r) => r.hf);
+    if (need.length === 0) return;
+    resolveInstalls(need)
+      .then((list) =>
+        setInstalls((prev) => ({
+          ...prev,
+          ...Object.fromEntries(list.map((i) => [i.hf, i])),
+        }))
+      )
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownForResolve.map((r) => r.hf).join("|"), backend, serverKind, hasScores]);
 
   if (!open) return null;
 
@@ -528,18 +568,32 @@ export default function ModelCatalog({
                     {r.id ? (
                       <p className="mt-1.5 flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
                         {r.id}
-                        {r.guessed && (
+                        {r.source === "gguf" && (
                           <span
-                            className="flex items-center gap-0.5 rounded bg-amber-500/10 px-1 py-0.5 font-sans text-[10px] text-amber-400/90"
-                            title="Aucune API ne relie le leaderboard au catalogue Ollama : ce nom est déduit et peut être faux."
+                            className="flex items-center gap-0.5 rounded bg-emerald-500/10 px-1 py-0.5 font-sans text-[10px] text-emerald-400/90"
+                            title="Nom résolu automatiquement via un dépôt GGUF réel sur Hugging Face."
                           >
-                            <HelpCircle size={9} /> nom déduit — à vérifier
+                            <Check size={9} /> GGUF vérifié
+                          </span>
+                        )}
+                        {r.source === "guess" && (
+                          <span
+                            className="flex items-center gap-0.5 rounded bg-zinc-800 px-1 py-0.5 font-sans text-[10px] text-zinc-500"
+                            title="Recherche du dépôt GGUF sur Hugging Face…"
+                          >
+                            <Loader2 size={9} className="animate-spin" /> recherche du nom…
                           </span>
                         )}
                       </p>
-                    ) : (
+                    ) : r.source === "gguf" ? (
                       <p className="mt-1.5 text-[11px] text-amber-400/80">
-                        Pas de version « {backendLabel} » connue pour ce modèle.
+                        Aucun GGUF trouvé sur Hugging Face — pas installable en l'état sur «{" "}
+                        {backendLabel} ».
+                      </p>
+                    ) : (
+                      <p className="mt-1.5 flex items-center gap-1 text-[11px] text-zinc-600">
+                        <Loader2 size={10} className="animate-spin" /> recherche d'un moyen
+                        d'installation…
                       </p>
                     )}
                   </div>

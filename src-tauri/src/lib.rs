@@ -7,6 +7,7 @@ pub mod crawler;
 pub mod db;
 pub mod explorer;
 pub mod folders;
+pub mod installs;
 pub mod ort_setup;
 pub mod parser;
 pub mod providers;
@@ -237,6 +238,19 @@ fn list_local_models(state: State<'_, Arc<AppState>>) -> Vec<LocalModelStatus> {
             dimensions,
         })
         .collect()
+}
+
+/// Résout les noms d'installation (Ollama / LM Studio) d'une liste de modèles HF,
+/// via les dépôts GGUF réellement présents sur Hugging Face. Cache local 7 jours.
+#[tauri::command]
+async fn resolve_installs(
+    state: State<'_, Arc<AppState>>,
+    names: Vec<String>,
+) -> Result<Vec<installs::InstallInfo>, String> {
+    let st = state.inner().clone();
+    installs::resolve(&st.data_dir, names)
+        .await
+        .map_err(|e| format!("résolution des installations : {e}"))
 }
 
 /// Classements MTEB disponibles (global multilingue + par langue), pour que
@@ -631,6 +645,7 @@ pub fn run() {
             download_local_model,
             model_benchmarks,
             list_benchmark_boards,
+            resolve_installs,
             pull_model,
             reindex_all,
             explorer::list_directory,
