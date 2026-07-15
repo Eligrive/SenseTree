@@ -262,10 +262,21 @@ impl Database {
     /// et le worker reconstruiront tout. Les fichiers de l'utilisateur sont intacts.
     pub fn reset_index(&self) -> Result<()> {
         let conn = self.conn()?;
+        // On efface AUSSI les profils de dossiers (bloc/récursif) : une réindexation
+        // doit reclasser depuis zéro pour prendre en compte un nouveau réglage de
+        // tendance (curseur bloc/récursif) ou de prompt de classification.
         conn.execute_batch(
             "DELETE FROM indexed_files; DELETE FROM indexing_queue; \
-             DELETE FROM file_semantics; UPDATE file_catalog SET content_hash = NULL;",
+             DELETE FROM file_semantics; DELETE FROM folder_profiles; \
+             UPDATE file_catalog SET content_hash = NULL;",
         )?;
+        Ok(())
+    }
+
+    /// Oublie toutes les décisions bloc/récursif (sans toucher à l'index) : sert
+    /// quand l'utilisateur change le réglage de classification et veut le réappliquer.
+    pub fn clear_folder_profiles(&self) -> Result<()> {
+        self.conn()?.execute("DELETE FROM folder_profiles", [])?;
         Ok(())
     }
 

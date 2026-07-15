@@ -16,6 +16,7 @@ use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{Connection, DistanceType};
 use serde::Serialize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -39,7 +40,9 @@ pub struct SearchHit {
 
 pub struct VectorDb {
     conn: Connection,
-    dim: usize,
+    /// Dimension du modèle actif. Modifiable au runtime (changement de modèle
+    /// d'embedding) : la table est alors recréée à la bonne dimension.
+    dim: AtomicUsize,
 }
 
 impl VectorDb {
@@ -48,11 +51,17 @@ impl VectorDb {
             .execute()
             .await
             .context("ouverture de LanceDB")?;
-        Ok(VectorDb { conn, dim })
+        Ok(VectorDb { conn, dim: AtomicUsize::new(dim) })
     }
 
     pub fn dim(&self) -> usize {
-        self.dim
+        self.dim.load(Ordering::Relaxed)
+    }
+
+    /// Change la dimension attendue (après changement de modèle). L'appelant DOIT
+    /// vider la table ensuite (`clear`) : elle sera recréée à la nouvelle dimension.
+    pub fn set_dim(&self, dim: usize) {
+        self.dim.store(dim, Ordering::Relaxed);
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -66,7 +75,7 @@ impl VectorDb {
             Field::new("mtime", DataType::Int64, true),
             Field::new(
                 "vector",
-                DataType::FixedSizeList(item, self.dim as i32),
+                DataType::FixedSizeList(item, self.dim() as i32),
                 false,
             ),
         ]))
@@ -109,14 +118,15 @@ impl VectorDb {
         let mut texts = Vec::with_capacity(n);
         let mut hashes = Vec::with_capacity(n);
         let mut mtimes = Vec::with_capacity(n);
-        let mut flat: Vec<f32> = Vec::with_capacity(n * self.dim);
+        let dim = self.dim();
+        let mut flat: Vec<f32> = Vec::with_capacity(n * dim);
 
         for c in chunks {
-            if c.vector.len() != self.dim {
+            if c.vector.len() != dim {
                 return Err(anyhow!(
                     "dimension du vecteur ({}) incohérente avec la table ({})",
                     c.vector.len(),
-                    self.dim
+                    dim
                 ));
             }
             ids.push(Uuid::new_v4().to_string());
@@ -130,7 +140,7 @@ impl VectorDb {
 
         let item = Arc::new(Field::new("item", DataType::Float32, true));
         let values = Float32Array::from(flat);
-        let vectors = FixedSizeListArray::new(item, self.dim as i32, Arc::new(values), None);
+        let vectors = FixedSizeListArray::new(item, dim as i32, Arc::new(values), None);
 
         let batch = RecordBatch::try_new(
             self.schema(),

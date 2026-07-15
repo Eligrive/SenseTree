@@ -48,11 +48,36 @@ fn get_default_prompts() -> config::PromptsConfig {
 #[tauri::command]
 async fn set_config(state: State<'_, Arc<AppState>>, config: AppConfig) -> Result<(), String> {
     let st = state.inner().clone();
+    let old = st.config.snapshot();
     let roots = config.indexing.roots.clone();
-    st.config.replace(config).map_err(|e| e.to_string())?;
-    // Le modèle d'embedding peut avoir changé : on invalide le cache.
+
+    // Le modèle d'embedding change → l'espace vectoriel change → réindexation
+    // complète obligatoire (les anciens vecteurs sont incompatibles).
+    let reindex = old.embedding.model != config.embedding.model
+        || old.embedding.dimensions != config.embedding.dimensions;
+    let dims_changed = old.embedding.dimensions != config.embedding.dimensions;
+    // La tendance de classification ou le prompt change → reclasser les dossiers.
+    let reclassify = (old.indexing.block_bias - config.indexing.block_bias).abs() > f32::EPSILON
+        || old.prompts.folder_classify != config.prompts.folder_classify;
+
+    st.config.replace(config.clone()).map_err(|e| e.to_string())?;
     st.ai.invalidate_embedder().await;
-    // Re-scan des racines pour prendre en compte d'éventuels nouveaux dossiers.
+
+    if reindex {
+        // La base vectorielle est figée sur l'ancienne dimension : on la recrée.
+        if dims_changed {
+            st.vector.set_dim(config.embedding.dimensions);
+        }
+        st.vector.clear().await.ok();
+        // reset_index purge aussi les profils de dossiers → reclassement complet.
+        st.db.reset_index().map_err(|e| e.to_string())?;
+        tracing::info!("🔄 modèle d'embedding modifié → réindexation complète");
+    } else if reclassify {
+        st.db.clear_folder_profiles().map_err(|e| e.to_string())?;
+        tracing::info!("🧭 réglage de classification modifié → reclassement des dossiers");
+    }
+
+    // Re-scan des racines (le garde anti-concurrence évite les doublons).
     for root in roots {
         let sc = st.clone();
         std::thread::spawn(move || crawler::scan_directory(sc, &root));
@@ -520,9 +545,13 @@ async fn pull_model(
 #[tauri::command]
 async fn reindex_all(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let st = state.inner().clone();
+    let cfg = st.config.snapshot();
+    // Aligne la dimension de la base vectorielle sur le modèle actuel avant de vider.
+    st.vector.set_dim(cfg.embedding.dimensions);
+    st.ai.invalidate_embedder().await;
     st.db.reset_index().map_err(|e| e.to_string())?;
     st.vector.clear().await.map_err(|e| e.to_string())?;
-    for root in st.config.snapshot().indexing.roots {
+    for root in cfg.indexing.roots {
         let sc = st.clone();
         std::thread::spawn(move || crawler::scan_directory(sc, &root));
     }
@@ -644,6 +673,7 @@ pub fn run() {
                 vector: vector.clone(),
                 data_dir: app_data_dir.clone(),
                 paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                scanning: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             });
             app.manage(app_state.clone());
 

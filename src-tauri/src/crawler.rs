@@ -16,7 +16,30 @@ use crate::state::AppState;
 
 const CATALOG_FLUSH: usize = 256;
 
+/// Garde RAII : retire la racine du set des scans en cours, même en cas de panique.
+struct ScanGuard {
+    state: Arc<AppState>,
+    key: String,
+}
+impl Drop for ScanGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.state.scanning.lock() {
+            set.remove(&self.key);
+        }
+    }
+}
+
 pub fn scan_directory(state: Arc<AppState>, start_path: &str) {
+    // Un seul crawler à la fois par racine (les sauvegardes de Paramètres re-scannent).
+    let key = start_path.trim_end_matches(['/', '\\']).to_lowercase();
+    if let Ok(mut set) = state.scanning.lock() {
+        if !set.insert(key.clone()) {
+            tracing::info!("🕷️ scan déjà en cours sur {start_path} — ignoré.");
+            return;
+        }
+    }
+    let _guard = ScanGuard { state: state.clone(), key };
+
     let start_time = Instant::now();
     let scan_time = now_epoch();
     let db = &state.db;
