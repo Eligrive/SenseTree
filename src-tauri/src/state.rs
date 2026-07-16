@@ -1,6 +1,6 @@
 //! État applicatif partagé entre les threads de fond et les commandes IPC.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -22,7 +22,8 @@ pub struct AppState {
     pub data_dir: PathBuf,
     /// Pause globale de l'indexation (worker + classifieur) demandée par l'utilisateur.
     pub paused: Arc<AtomicBool>,
-    /// Racines en cours de scan (clé normalisée) : évite plusieurs crawlers concurrents
-    /// sur le même dossier (ex. sauvegardes répétées des Paramètres).
-    pub scanning: Arc<Mutex<HashSet<String>>>,
+    /// Racines en cours de scan (clé normalisée → « re-scan demandé »). Évite les
+    /// crawlers concurrents sur le même dossier ; si un scan est demandé pendant qu'un
+    /// autre tourne, on le PROGRAMME (flag `true`) au lieu de le perdre.
+    pub scanning: Arc<Mutex<HashMap<String, bool>>>,
 }

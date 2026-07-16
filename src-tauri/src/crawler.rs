@@ -16,30 +16,53 @@ use crate::state::AppState;
 
 const CATALOG_FLUSH: usize = 256;
 
-/// Garde RAII : retire la racine du set des scans en cours, même en cas de panique.
+/// Garde RAII : retire la racine du registre des scans, même en cas de panique.
 struct ScanGuard {
     state: Arc<AppState>,
     key: String,
 }
 impl Drop for ScanGuard {
     fn drop(&mut self) {
-        if let Ok(mut set) = self.state.scanning.lock() {
-            set.remove(&self.key);
+        if let Ok(mut m) = self.state.scanning.lock() {
+            m.remove(&self.key);
         }
     }
 }
 
 pub fn scan_directory(state: Arc<AppState>, start_path: &str) {
-    // Un seul crawler à la fois par racine (les sauvegardes de Paramètres re-scannent).
+    // Un seul crawler à la fois par racine. Si un scan est demandé alors qu'un autre
+    // tourne, on ne le PERD pas : on lève le flag « re-scan demandé », et le scan en
+    // cours en refera un tour à la fin (indispensable après une réindexation).
     let key = start_path.trim_end_matches(['/', '\\']).to_lowercase();
-    if let Ok(mut set) = state.scanning.lock() {
-        if !set.insert(key.clone()) {
-            tracing::info!("🕷️ scan déjà en cours sur {start_path} — ignoré.");
+    {
+        let mut m = match state.scanning.lock() {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        if m.contains_key(&key) {
+            m.insert(key.clone(), true);
+            tracing::info!("🕷️ scan déjà en cours sur {start_path} — re-scan programmé.");
             return;
         }
+        m.insert(key.clone(), false);
     }
-    let _guard = ScanGuard { state: state.clone(), key };
+    let _guard = ScanGuard { state: state.clone(), key: key.clone() };
 
+    loop {
+        run_scan(&state, start_path);
+        // Un re-scan a-t-il été demandé pendant ce passage ? Si oui, on recommence.
+        let rerun = match state.scanning.lock() {
+            Ok(mut m) => matches!(m.insert(key.clone(), false), Some(true)),
+            Err(_) => false,
+        };
+        if !rerun {
+            break;
+        }
+        tracing::info!("🕷️ re-scan de {start_path} (demandé pendant le précédent).");
+    }
+}
+
+fn run_scan(state: &AppState, start_path: &str) {
     let start_time = Instant::now();
     let scan_time = now_epoch();
     let db = &state.db;
@@ -105,7 +128,7 @@ pub fn scan_directory(state: Arc<AppState>, start_path: &str) {
                 continue;
             }
             // Décision récursif vs bloc (conservative : bloc seulement si sûr / IA).
-            match folders::resolve_mode(&state, path) {
+            match folders::resolve_mode(state, path) {
                 Decision::Block => {
                     let _ = db.enqueue_path(&path_str, Some("pending_extraction"), 6);
                     blocks += 1;

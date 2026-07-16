@@ -673,7 +673,7 @@ pub fn run() {
                 vector: vector.clone(),
                 data_dir: app_data_dir.clone(),
                 paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                scanning: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+                scanning: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             });
             app.manage(app_state.clone());
 
