@@ -22,7 +22,7 @@ use zip::ZipArchive;
 
 use crate::chunker::Chunker;
 use crate::parser::{FileType, Parser};
-use crate::providers::{ChatMessage, EmbeddingProvider};
+use crate::providers::{ChatMessage, EmbeddingProvider, VisionError};
 use crate::state::AppState;
 use crate::vectordb::ChunkVector;
 
@@ -90,7 +90,7 @@ async fn worker_loop(state: Arc<AppState>) {
         };
 
         for task in tasks {
-            match process_task(&state, embedder.as_ref(), &task.path).await {
+            match process_task(&state, embedder.as_ref(), &task.path, task.retry_count).await {
                 Ok(()) => {
                     let _ = state.db.update_task_status(task.id, "completed");
                 }
@@ -109,6 +109,7 @@ async fn process_task(
     state: &AppState,
     embedder: &dyn EmbeddingProvider,
     path: &str,
+    retry_count: i64,
 ) -> anyhow::Result<()> {
     let p = Path::new(path);
 
@@ -143,7 +144,7 @@ async fn process_task(
 
     match file_type {
         FileType::Ignored => Ok(()),
-        FileType::Image => index_image(state, embedder, path, mtime).await,
+        FileType::Image => index_image(state, embedder, path, mtime, retry_count).await,
         FileType::RequiresAIRouting => index_unknown(state, embedder, path, mtime).await,
         FileType::Text | FileType::Document => index_textual(state, embedder, path, mtime).await,
     }
@@ -346,6 +347,7 @@ async fn index_image(
     embedder: &dyn EmbeddingProvider,
     path: &str,
     mtime: i64,
+    retry_count: i64,
 ) -> anyhow::Result<()> {
     let cfg = state.config.snapshot();
     if !cfg.vision.enabled {
@@ -390,8 +392,28 @@ async fn index_image(
 
     let caption = match state.ai.vision_client().describe_image(&b64, &mime, prompt).await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("vision indisponible pour {path} ({e}), repli contextuel");
+        // Échec définitif (image/format/modèle) : inutile d'insister, repli contextuel.
+        Err(VisionError::Permanent(e)) => {
+            tracing::warn!("vision impossible pour {path} ({e}), repli contextuel");
+            return index_context_only(state, embedder, path, mtime, "image").await;
+        }
+        // Échec passager (timeout, swap de modèle, serveur occupé) : on renvoie une
+        // erreur pour que le worker re-mette l'image en file — tant qu'il reste des
+        // tentatives. À la dernière seulement, repli contextuel pour ne pas laisser
+        // l'image sans aucun sens plutôt que de l'abandonner (failed_permanent).
+        Err(VisionError::Transient(e)) => {
+            if retry_count + 1 < MAX_RETRIES {
+                return Err(anyhow::anyhow!(
+                    "vision indisponible (tentative {}/{}) : {}",
+                    retry_count + 1,
+                    MAX_RETRIES,
+                    e
+                ));
+            }
+            tracing::warn!(
+                "vision toujours indisponible pour {path} après {} tentatives ({e}), repli contextuel",
+                MAX_RETRIES
+            );
             return index_context_only(state, embedder, path, mtime, "image").await;
         }
     };

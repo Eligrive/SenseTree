@@ -145,12 +145,12 @@ export default function App() {
   }, []);
 
   const togglePause = useCallback(() => {
-    setPaused((prev) => {
-      const next = !prev;
-      setIndexingPaused(next).catch(() => {});
-      return next;
-    });
-  }, []);
+    // L'effet de bord (invoke) doit rester HORS du updater de setState : React 19
+    // en StrictMode ré-exécute les updaters, ce qui dédoublerait l'appel backend.
+    const next = !paused;
+    setPaused(next);
+    setIndexingPaused(next).catch(() => {});
+  }, [paused]);
 
   // Ré-actualise la liste courante périodiquement pour refléter l'indexation en fond.
   useEffect(() => {

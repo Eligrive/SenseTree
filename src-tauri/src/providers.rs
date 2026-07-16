@@ -251,6 +251,30 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// Délai maximal d'un appel vision. Volontairement large : un modèle multimodal
+/// peut mettre plusieurs dizaines de secondes à se (re)charger en VRAM (démarrage à
+/// froid ou swap de modèle sur un GPU partagé). On préfère patienter plutôt qu'échouer.
+const VISION_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Nature d'un échec de la vision, pour décider s'il faut re-tenter ou abandonner.
+#[derive(Debug)]
+pub enum VisionError {
+    /// Passager (timeout, serveur occupé/en chargement, 5xx, réseau) → re-tentable.
+    Transient(anyhow::Error),
+    /// Définitif (image invalide, format refusé, modèle absent) → repli contextuel.
+    Permanent(anyhow::Error),
+}
+
+impl std::fmt::Display for VisionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VisionError::Transient(e) => write!(f, "{e} [passager]"),
+            VisionError::Permanent(e) => write!(f, "{e} [définitif]"),
+        }
+    }
+}
+impl std::error::Error for VisionError {}
+
 /// Client de chat compatible OpenAI, réutilisé pour le reasoning et la vision.
 pub struct OpenAiChatClient {
     http: reqwest::Client,
@@ -296,7 +320,15 @@ impl OpenAiChatClient {
     }
 
     /// Décrit une image (base64) via un modèle multimodal — l'« extraction du sens » visuelle.
-    pub async fn describe_image(&self, image_base64: &str, mime: &str, prompt: &str) -> Result<String> {
+    ///
+    /// L'erreur est typée (`VisionError`) pour que l'appelant distingue un échec
+    /// passager (à re-tenter) d'un échec définitif (repli contextuel immédiat).
+    pub async fn describe_image(
+        &self,
+        image_base64: &str,
+        mime: &str,
+        prompt: &str,
+    ) -> std::result::Result<String, VisionError> {
         let url = format!("{}/chat/completions", self.base_url);
         let data_url = format!("data:{mime};base64,{image_base64}");
         let body = json!({
@@ -311,17 +343,39 @@ impl OpenAiChatClient {
             "temperature": 0.1,
             "stream": false,
         });
-        let mut req = self.http.post(&url).json(&body);
+        let mut req = self.http.post(&url).json(&body).timeout(VISION_TIMEOUT);
         if !self.api_key.is_empty() {
             req = req.bearer_auth(&self.api_key);
         }
-        let resp = req.send().await.context("appel vision /chat/completions")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
+        // Erreur d'envoi (timeout, connexion, DNS) : on considère l'appel passager.
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| VisionError::Transient(anyhow!("appel vision /chat/completions: {e}")))?;
+
+        let status = resp.status();
+        if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("vision a renvoyé {status}: {text}"));
+            let err = anyhow!("vision a renvoyé {status}: {text}");
+            // 5xx / 408 / 429 = serveur occupé, en chargement, ou saturé → re-tentable.
+            // Autres 4xx = requête définitivement invalide (image, format, modèle absent).
+            return Err(
+                if status.is_server_error()
+                    || status == reqwest::StatusCode::REQUEST_TIMEOUT
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                {
+                    VisionError::Transient(err)
+                } else {
+                    VisionError::Permanent(err)
+                },
+            );
         }
-        parse_chat_content(resp.json().await.context("parsing de la réponse vision")?)
+
+        let value = resp
+            .json()
+            .await
+            .map_err(|e| VisionError::Transient(anyhow!("parsing de la réponse vision: {e}")))?;
+        parse_chat_content(value).map_err(VisionError::Permanent)
     }
 }
 
