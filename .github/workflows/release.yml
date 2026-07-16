@@ -29,6 +29,13 @@ jobs:
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      # LanceDB (lance-encoding) compile des .proto au build : protoc est requis et
+      # n'est pas préinstallé sur le runner windows-latest.
+      - name: install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
