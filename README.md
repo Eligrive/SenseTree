@@ -1,49 +1,107 @@
-🧠 SenseTree: Semantic File Explorer & Folder Optimizer
+# 🧠 SenseTree
 
-SenseTree is a "smart overlay" for your local file system. This project bridges the gap between classic hierarchical navigation (physical directories) and the power of local AI-driven semantic search, while acting as a proactive "gardener" for your hard drive.
+**A local-first, semantic overlay for your file system.**
+Semantic search, an AI chat that proposes (never executes) file operations, and a proactive "gardener" — all running on your machine, with the AI models *you* choose.
 
-🎯 The Problem
+<p>
+  <img alt="version" src="https://img.shields.io/badge/version-1.1.0-6d28d9">
+  <img alt="platform" src="https://img.shields.io/badge/platform-Windows-0078d6">
+  <img alt="stack" src="https://img.shields.io/badge/Tauri%20v2-Rust%20%2B%20React%2019-24c8db">
+  <img alt="privacy" src="https://img.shields.io/badge/privacy-100%25%20local-16a34a">
+</p>
 
-Today, finding a file requires remembering its exact location or precise name. Native search tools (Windows Search, Spotlight) are limited to lexical keyword matching. Furthermore, our folder structures quickly become chaotic over time (cluttered "Downloads" folders, duplicate files, overly deep directories, and scattered archives).
+---
 
-💡 The Solution
+## What is it?
 
-SenseTree is not a virtual file system disconnected from reality. It is a smart overlay that integrates directly with your existing OS file explorer. It understands the meaning of your files using local embeddings and helps you maintain a clean, logical folder architecture.
+Finding a file today means remembering *where* you put it or its *exact* name. Native search is lexical — it matches keywords, not meaning. And folder trees rot over time: overstuffed `Downloads`, duplicates, folders nested ten levels deep.
 
-✨ Key Features
+SenseTree is **not** a virtual file system disconnected from reality. It is a smart overlay on top of your *real* folders. It reads the **meaning** of your files with local embeddings, lets you search by concept, chat with a folder, and keeps your tree tidy — and **nothing ever leaves your machine**.
 
-🔍 Hybrid Semantic Search: Search by concept or idea (e.g., "website redesign quote"), while filtering by specific physical folders.
+## ✨ Features
 
-🌱 AI "Gardener" (Optimization): Audits your folder tree to detect anomalies (overly deep folders, semantic duplicates) and suggests logical sorting structures for cluttered directories.
+- **🔍 Semantic search** — Find files by idea ("website redesign quote", "trip to Korea"), scoped to any folder. Ranked results with snippets.
+- **🌳 Meaning tree** — Browse a semantic map of a folder instead of a flat list.
+- **💬 Chat assistant** — Ask questions about a folder, or ask it to reorganize files. Retrieval-augmented over your own index.
+- **🛡️ Dry-Run actions** — The AI *proposes*, you *decide*. Every move / rename / delete / mkdir is shown as an interactive **Before → After** plan. Nothing touches disk without your click, and apply is transactional with **rollback** on failure.
+- **🪴 Gardener** — Audits a directory for anomalies (semantic duplicates, empty folders, excessive depth, junk-drawer folders) and suggests fixes — as suggestions, never silent changes.
+- **🧩 Model-agnostic AI** — Three independently configurable model slots (embedding / reasoning / vision). Each can run on the **built-in local engine** (fastembed / ONNX) *or* any **OpenAI-compatible HTTP server** (Ollama, LM Studio, a home server on your LAN, or an external API).
+- **📚 Live model catalogs** — Pick embedding / reasoning / vision models from **live leaderboards** (MTEB, OpenCompass), with one-click download and automatic resolution of the Ollama / LM Studio install name.
+- **🧱 Smart folder handling** — A configurable *block vs. recursive* classifier decides whether to index a folder file-by-file or treat it as a single opaque unit (venv, `node_modules`, DAW sample packs…), keeping your index clean and fast.
+- **🔒 100% local & private** — Runs entirely offline. Embeddings are generated internally; LLM reasoning/vision go only to the endpoints you configure. No telemetry, no cloud.
 
-🛡️ "Dry-Run" Mode (Absolute Safety): The AI proposes, you decide. Any structural modification (renaming, moving, deleting) is displayed in an interactive "Before/After" diff dashboard. No changes are executed on your disk without your explicit validation.
+## 🖥️ Install (Windows)
 
-💬 Contextual Chat Assistant: Chat directly with a specific folder to summarize its contents, find gaps, or ask the AI to draft complex file-organization steps.
+Grab the latest installer from the [**Releases**](https://github.com/Eligrive/SenseTree/releases) page:
 
-🔒 100% Local & Private: Runs entirely offline. Generates vector embeddings internally and interfaces with your local LLMs (via Ollama, LM Studio, etc.). No data ever leaves your machine.
+| File | Use it if… |
+|------|-----------|
+| `sensetree_x.y.z_x64-setup.exe` (**recommended**) | You're a normal user. Lightweight NSIS wizard, installs per-user (no admin needed). |
+| `sensetree_x.y.z_x64_en-US.msi` | You deploy to many machines (GPO / Intune / SCCM), silent install. |
 
-🏗️ Technical Architecture
+Both install SenseTree as a **normal Windows app** (Start menu entry, uninstallable from *Apps & Features*). Your data lives in `%APPDATA%\com.virgi.sensetree` and survives upgrades. See the [Installation guide](https://github.com/Eligrive/SenseTree/wiki/Installation) for details.
 
-Frontend / UI: Tauri v2 (Rust + React/TypeScript) for native performance and a modern desktop interface.
+> To run the semantic/AI features you'll want a local model runner — [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) — or you can use the built-in local embedding engine with no extra install. See [Models & Providers](https://github.com/Eligrive/SenseTree/wiki/Models-and-Providers).
 
-Core & OS Bridge: Rust 🦀 (Secure disk access, real-time directory watchdog using notify, async IPC).
+## 🚀 Quick start
 
-Vector Database: LanceDB or Qdrant (embedded mode for an ultra-low memory footprint).
+1. **Launch** SenseTree.
+2. **Add a folder** to index in the sidebar (e.g. `Documents`).
+3. Open **Settings → Providers** and point the embedding / reasoning / vision slots at your local engine or Ollama/LM Studio. (Embedding works out-of-the-box, fully local.)
+4. Let indexing run — watch progress in the header.
+5. **Search** by meaning, **browse** the meaning tree, or **chat** with a folder and review any proposed reorganization as a Dry-Run diff.
 
-AI Engine & Embeddings: Native local execution via Candle/ONNX (multilingual-e5-small or BGE-m3) with fallback support for local network APIs (OpenAI standard) for LLM reasoning.
+Full walkthrough: [Getting Started](https://github.com/Eligrive/SenseTree/wiki/Getting-Started).
 
-🚀 Next Steps (Roadmap)
+## 🏗️ Architecture (at a glance)
 
-[ ] Initialize the Tauri v2 project and configure React/Tailwind.
+```
+┌─────────────────────────────────────────────────────────────┐
+│  React 19 + TypeScript + Tailwind v4   (Explorer · Search ·  │
+│                                         Chat · Settings)     │
+└───────────────▲─────────────────────────────────────────────┘
+                │ Tauri IPC (typed commands)
+┌───────────────┴─────────────────────────────────────────────┐
+│  Rust core (Tauri v2)                                        │
+│   crawler ─▶ worker ─▶ providers (embedding/reasoning/vision)│
+│   watchdog ─┘            │                                    │
+│   folders (block/recursive classifier)                       │
+│   ┌──────────────┐   ┌──────────────┐   ┌─────────────────┐  │
+│   │ SQLite (r2d2)│   │ LanceDB      │   │ fastembed/ONNX  │  │
+│   │ metadata     │   │ vectors      │   │  OR  OpenAI HTTP│  │
+│   └──────────────┘   └──────────────┘   └─────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
 
-[ ] Develop the Rust "Watchdog" module to monitor local disk events.
+**Stack:** Tauri v2 · Rust · React 19 · TypeScript · Tailwind v4 · LanceDB (vectors) · SQLite via r2d2 (metadata) · fastembed / ONNX Runtime (local embeddings) · `reqwest` (OpenAI-compatible clients) · `notify` (filesystem watchdog).
 
-[ ] Integrate SQLite (for metadata) and the embedded Vector Database.
+A module-by-module map is in the [Architecture](https://github.com/Eligrive/SenseTree/wiki/Architecture) wiki page.
 
-[ ] Build a Proof of Concept (POC) for the local embedding pipeline (text chunking).
+## 🛠️ Build from source
 
-[ ] Create the "Dry-Run" UI Vue (Diff view) to validate AI-suggested file actions.
+```bash
+# Prerequisites: Node.js (LTS), Rust (stable), and protoc (Protocol Buffers compiler,
+# required by LanceDB). On Windows: `choco install protoc` or `winget install protobuf`.
+npm install
+npm run tauri dev      # run in development
+npm run tauri build    # produce the installers in src-tauri/target/release/bundle
+```
 
-🤝 Contributing
+Releases are automated: push a tag `vX.Y.Z` and the GitHub Actions workflow builds and drafts a release with the installers attached. See [Building from Source](https://github.com/Eligrive/SenseTree/wiki/Building-from-Source).
 
-The project is currently in the design and launch phase. All ideas regarding architecture, UX/UI, or local AI model selection are highly welcome!
+## 📖 Documentation
+
+The complete documentation lives in the [**Wiki**](https://github.com/Eligrive/SenseTree/wiki):
+
+- [Installation](https://github.com/Eligrive/SenseTree/wiki/Installation) · [Getting Started](https://github.com/Eligrive/SenseTree/wiki/Getting-Started) · [Configuration](https://github.com/Eligrive/SenseTree/wiki/Configuration)
+- [Models & Providers](https://github.com/Eligrive/SenseTree/wiki/Models-and-Providers) · [Indexing Pipeline](https://github.com/Eligrive/SenseTree/wiki/Indexing-Pipeline) · [Semantic Search](https://github.com/Eligrive/SenseTree/wiki/Semantic-Search)
+- [AI Chat & Dry-Run Actions](https://github.com/Eligrive/SenseTree/wiki/AI-Chat-and-Actions) · [Gardener](https://github.com/Eligrive/SenseTree/wiki/Gardener) · [Prompts](https://github.com/Eligrive/SenseTree/wiki/Prompts)
+- [Architecture](https://github.com/Eligrive/SenseTree/wiki/Architecture) · [Troubleshooting](https://github.com/Eligrive/SenseTree/wiki/Troubleshooting) · [FAQ](https://github.com/Eligrive/SenseTree/wiki/FAQ)
+
+## 🤝 Contributing
+
+Ideas on architecture, UX, or local-AI model selection are very welcome. Open an issue or a PR.
+
+## Status
+
+**v1.1.0** — working end-to-end semantic pipeline, model-agnostic AI, Dry-Run actions, live model catalogs. The next major milestone (v2) will explore proactive gardening and in-app auto-update.
