@@ -6,6 +6,7 @@ import {
   Loader2,
   CheckCircle2,
   Cpu,
+  ListTree,
   Pause,
   Play,
   Plus,
@@ -26,6 +27,7 @@ interface Props {
   embedding: { model: string; mode: string } | null;
   onOpenSettings: () => void;
   onAnalyze: () => void;
+  onOpenQueue: () => void;
 }
 
 function HealthDot({ ok, label, detail }: { ok: boolean; label: string; detail: string }) {
@@ -43,10 +45,12 @@ function IndexingProgress({
   stats,
   paused,
   onTogglePause,
+  onOpenQueue,
 }: {
   stats: IndexingStats | null;
   paused: boolean;
   onTogglePause: () => void;
+  onOpenQueue: () => void;
 }) {
   if (!stats || stats.total === 0) return null;
   const done = stats.completed + stats.failed;
@@ -69,6 +73,13 @@ function IndexingProgress({
         </span>
         <span className="flex items-center gap-1.5">
           <span className="text-zinc-400">{pct}%</span>
+          <button
+            onClick={onOpenQueue}
+            title="Voir la file d'indexation en détail"
+            className="text-zinc-400 hover:text-zinc-100"
+          >
+            <ListTree size={12} />
+          </button>
           {showToggle && (
             <button
               onClick={onTogglePause}
@@ -103,7 +114,13 @@ function IndexingProgress({
         <span>{stats.total.toLocaleString()} docs</span>
       </div>
       {stats.failed > 0 && (
-        <div className="text-[11px] text-rose-400">{stats.failed} en échec</div>
+        <button
+          onClick={onOpenQueue}
+          className="flex w-full items-center gap-1 text-left text-[11px] text-rose-400 hover:text-rose-300 hover:underline"
+          title="Voir et agir sur les fichiers en échec (relancer / ignorer)"
+        >
+          {stats.failed} en échec — voir
+        </button>
       )}
       {stats.pending_folders > 0 && (
         <div
@@ -130,6 +147,7 @@ export default function Sidebar({
   embedding,
   onOpenSettings,
   onAnalyze,
+  onOpenQueue,
 }: Props) {
   return (
     <aside className="flex h-full w-60 flex-col border-r border-zinc-800 bg-zinc-950/60">
@@ -190,7 +208,12 @@ export default function Sidebar({
       </div>
 
       <div className="mt-auto space-y-3 border-t border-zinc-800 p-3">
-        <IndexingProgress stats={stats} paused={paused} onTogglePause={onTogglePause} />
+        <IndexingProgress
+          stats={stats}
+          paused={paused}
+          onTogglePause={onTogglePause}
+          onOpenQueue={onOpenQueue}
+        />
 
         {embedding && (
           <button

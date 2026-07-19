@@ -77,8 +77,26 @@ async fn set_config(state: State<'_, Arc<AppState>>, config: AppConfig) -> Resul
         tracing::info!("🧭 réglage de classification modifié → reclassement des dossiers");
     }
 
-    // Re-scan des racines (le garde anti-concurrence évite les doublons).
-    for root in roots {
+    // Re-scan CIBLÉ : complet seulement si réindexation (embedding) ou reclassement
+    // (bias/prompt de classification) ; sinon on ne scanne QUE les racines nouvellement
+    // ajoutées. Sans ça, chaque sauvegarde de Paramètres (changement de modèle reasoning,
+    // de clé API, d'un prompt…) relançait un scan complet inutile de tous les dossiers.
+    let to_scan: Vec<String> = if reindex || reclassify {
+        roots
+    } else {
+        roots
+            .into_iter()
+            .filter(|r| {
+                let rn = r.trim_end_matches(['/', '\\']);
+                !old
+                    .indexing
+                    .roots
+                    .iter()
+                    .any(|o| o.trim_end_matches(['/', '\\']).eq_ignore_ascii_case(rn))
+            })
+            .collect()
+    };
+    for root in to_scan {
         let sc = st.clone();
         std::thread::spawn(move || crawler::scan_directory(sc, &root));
     }
@@ -568,6 +586,89 @@ fn indexing_stats(state: State<'_, Arc<AppState>>) -> Result<db::IndexingStats, 
     state.db.get_indexing_stats().map_err(|e| e.to_string())
 }
 
+/// Une entrée de la file enrichie du pipeline visé (embedding / vision / reasoning / context).
+#[derive(serde::Serialize)]
+struct QueueItemView {
+    path: String,
+    routes: Vec<String>,
+    kind: String,
+    status: String,
+    retry_count: i64,
+    last_error: Option<String>,
+}
+
+/// Vue complète de la file d'indexation : élément en cours + éléments à venir + compteurs.
+#[derive(serde::Serialize)]
+struct IndexingQueueView {
+    current: Option<state::CurrentActivity>,
+    pending: Vec<QueueItemView>,
+    stats: db::IndexingStats,
+}
+
+/// Relance l'indexation d'un chemin en échec (le remet en file, compteur remis à zéro).
+#[tauri::command]
+fn retry_indexing(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
+    state.db.requeue_path(&path).map_err(|e| e.to_string())
+}
+
+/// Ignore un chemin en échec : le retire de la file (il ne sera plus retenté).
+#[tauri::command]
+fn ignore_indexing(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
+    state.db.remove_from_queue(&path).map_err(|e| e.to_string())
+}
+
+/// Relance TOUTES les indexations en échec définitif. Renvoie le nombre relancé.
+#[tauri::command]
+fn retry_all_failed(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
+    state.db.requeue_failed().map_err(|e| e.to_string())
+}
+
+/// Édite manuellement le « sens » (résumé) d'un fichier depuis le panneau de détail.
+#[tauri::command]
+fn set_file_summary(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+    summary: String,
+) -> Result<(), String> {
+    state
+        .db
+        .set_file_summary(&path, &summary)
+        .map_err(|e| e.to_string())
+}
+
+/// File d'indexation temps réel : ce qui est traité maintenant, la suite, et vers quel pipeline.
+#[tauri::command]
+fn indexing_queue(
+    state: State<'_, Arc<AppState>>,
+    limit: Option<i64>,
+) -> Result<IndexingQueueView, String> {
+    let limit = limit.unwrap_or(60).clamp(1, 300);
+    let cfg = state.config.snapshot();
+    let pending = state
+        .db
+        .get_queue(limit)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|q| {
+            let (routes, kind) = worker::route_for(&cfg, &q.path);
+            QueueItemView {
+                path: q.path,
+                routes: routes.iter().map(|s| s.to_string()).collect(),
+                kind: kind.to_string(),
+                status: q.status,
+                retry_count: q.retry_count,
+                last_error: q.last_error,
+            }
+        })
+        .collect();
+    let stats = state.db.get_indexing_stats().map_err(|e| e.to_string())?;
+    Ok(IndexingQueueView {
+        current: state.activity_snapshot(),
+        pending,
+        stats,
+    })
+}
+
 /// Met en pause ou reprend l'indexation de fond (worker + classifieur).
 #[tauri::command]
 fn set_indexing_paused(state: State<'_, Arc<AppState>>, paused: bool) {
@@ -674,6 +775,7 @@ pub fn run() {
                 data_dir: app_data_dir.clone(),
                 paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 scanning: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+                activity: Arc::new(std::sync::Mutex::new(None)),
             });
             app.manage(app_state.clone());
 
@@ -695,6 +797,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_recent_activity,
             indexing_stats,
+            indexing_queue,
+            retry_indexing,
+            ignore_indexing,
+            retry_all_failed,
+            set_file_summary,
             set_indexing_paused,
             indexing_paused,
             open_path,

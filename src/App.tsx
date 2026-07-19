@@ -6,6 +6,7 @@ import Explorer from "./components/Explorer";
 import ChatPanel from "./components/ChatPanel";
 import SettingsModal from "./components/SettingsModal";
 import GardenerModal from "./components/GardenerModal";
+import IndexingQueueModal from "./components/IndexingQueueModal";
 import DetailDrawer from "./components/DetailDrawer";
 
 import type {
@@ -60,6 +61,7 @@ export default function App() {
 
   const [report, setReport] = useState<DirectoryReport | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
 
   const [details, setDetails] = useState<PathDetails | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -282,6 +284,7 @@ export default function App() {
         embedding={embedding}
         onOpenSettings={() => setSettingsOpen(true)}
         onAnalyze={analyze}
+        onOpenQueue={() => setQueueOpen(true)}
       />
 
       <main className="min-w-0 flex-1 overflow-hidden">
@@ -339,6 +342,7 @@ export default function App() {
                 loading={detailOpen && !details}
                 onClose={() => setDetailOpen(false)}
                 onOpenFile={openFile}
+                onSummarySaved={(path) => pathDetails(path).then(setDetails).catch(() => {})}
               />
             </div>
           </div>
@@ -360,6 +364,8 @@ export default function App() {
         loading={reportOpen && !report}
         onClose={() => setReportOpen(false)}
       />
+
+      <IndexingQueueModal open={queueOpen} onClose={() => setQueueOpen(false)} />
     </div>
   );
 }

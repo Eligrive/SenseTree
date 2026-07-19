@@ -144,6 +144,7 @@ export interface PathDetails {
   last_error: string | null;
   doc_type: string | null;
   summary: string | null;
+  extract: string | null;
   content_kind: string;
   folder_mode: string | null;
   in_block: boolean;
@@ -209,4 +210,27 @@ export interface IndexingStats {
   completed: number;
   failed: number;
   pending_folders: number;
+}
+
+/// Étapes du pipeline d'un élément de la file, dans l'ordre : sous-ensemble de
+/// { "vision", "reasoning", "embedding" }.
+export interface IndexActivity {
+  path: string;
+  routes: string[];
+  kind: string;
+}
+
+export interface QueueItem {
+  path: string;
+  routes: string[];
+  kind: string;
+  status: string;
+  retry_count: number;
+  last_error: string | null;
+}
+
+export interface IndexingQueueView {
+  current: IndexActivity | null;
+  pending: QueueItem[];
+  stats: IndexingStats;
 }

@@ -145,6 +145,8 @@ pub struct PathDetails {
     pub doc_type: Option<String>,
     /// Sens extrait / aperçu (ou description vision / OCR / contexte).
     pub summary: Option<String>,
+    /// Contenu textuel extrait du document (pour comparer au « sens » qualifié).
+    pub extract: Option<String>,
     /// Libellé lisible de la méthode d'extraction.
     pub content_kind: String,
     pub folder_mode: Option<String>,
@@ -190,12 +192,13 @@ pub async fn path_details(
         Some((s, e)) => (Some(s), e),
         None => (None, None),
     };
-    let (summary, doc_type) = match state.db.get_file_semantics(&path).map_err(|e| e.to_string())? {
-        Some((s, d)) => (
+    let (summary, doc_type, extract) = match state.db.get_file_semantics(&path).map_err(|e| e.to_string())? {
+        Some((s, d, x)) => (
             if s.is_empty() { None } else { Some(s) },
             if d.is_empty() { None } else { Some(d) },
+            x.filter(|v| !v.trim().is_empty()),
         ),
-        None => (None, None),
+        None => (None, None, None),
     };
     let hash = state.db.get_stored_hash(&path).map_err(|e| e.to_string())?;
     let folder_mode = if is_directory {
@@ -227,6 +230,7 @@ pub async fn path_details(
         last_error,
         doc_type,
         summary,
+        extract,
         content_kind,
         folder_mode,
         in_block,

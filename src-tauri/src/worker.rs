@@ -89,7 +89,15 @@ async fn worker_loop(state: Arc<AppState>) {
             }
         };
 
+        let cfg_route = state.config.snapshot();
         for task in tasks {
+            // Publie l'élément en cours + ses étapes de pipeline (affichage temps réel de la file).
+            let (routes, kind) = route_for(&cfg_route, &task.path);
+            state.set_activity(Some(crate::state::CurrentActivity {
+                path: task.path.clone(),
+                routes: routes.iter().map(|s| s.to_string()).collect(),
+                kind: kind.to_string(),
+            }));
             match process_task(&state, embedder.as_ref(), &task.path, task.retry_count).await {
                 Ok(()) => {
                     let _ = state.db.update_task_status(task.id, "completed");
@@ -101,6 +109,7 @@ async fn worker_loop(state: Arc<AppState>) {
                         .record_task_failure(task.id, &e.to_string(), MAX_RETRIES);
                 }
             }
+            state.set_activity(None);
         }
     }
 }
@@ -148,6 +157,67 @@ async fn process_task(
         FileType::RequiresAIRouting => index_unknown(state, embedder, path, mtime).await,
         FileType::Text | FileType::Document => index_textual(state, embedder, path, mtime).await,
     }
+}
+
+/// Étapes (pipeline) qu'un chemin en file va traverser, dans l'ordre : un sous-ensemble
+/// ordonné de {`vision`, `reasoning`, `embedding`}. Sert à l'affichage de la file.
+/// C'est une PRÉDICTION (ex. un texte très court saute la qualification reasoning ;
+/// un PDF non scanné n'utilise pas la vision). `kind` est un libellé court du type.
+pub fn route_for(cfg: &crate::config::AppConfig, path: &str) -> (Vec<&'static str>, &'static str) {
+    let p = Path::new(path);
+    let reasoning = cfg.reasoning.enabled;
+    let mut stages: Vec<&'static str> = Vec::new();
+    let kind: &'static str;
+
+    if p.is_dir() {
+        // Dossier-bloc : description LLM (reasoning) puis embedding.
+        kind = "dossier";
+        if reasoning {
+            stages.push("reasoning");
+        }
+    } else {
+        match Parser::determine_file_type(p) {
+            FileType::Image => {
+                // Image : légende vision, puis qualification reasoning, puis embedding.
+                kind = "image";
+                if cfg.vision.enabled {
+                    stages.push("vision");
+                }
+                if reasoning {
+                    stages.push("reasoning");
+                }
+            }
+            // Document / texte / inconnu / contexte : qualification/devinette reasoning
+            // puis embedding.
+            FileType::Text => {
+                kind = "texte";
+                if reasoning {
+                    stages.push("reasoning");
+                }
+            }
+            FileType::Document => {
+                kind = "document";
+                if reasoning {
+                    stages.push("reasoning");
+                }
+            }
+            FileType::RequiresAIRouting => {
+                // Type inconnu : passe d'abord par le ROUTAGE (heuristique + décision LLM
+                // sur ce qu'on peut en extraire), puis qualification reasoning, puis embedding.
+                kind = "inconnu";
+                stages.push("routing");
+                if reasoning {
+                    stages.push("reasoning");
+                }
+            }
+            FileType::Ignored => {
+                kind = "fichier";
+            }
+        }
+    }
+    // Toute indexation finit par produire un vecteur.
+    stages.push("embedding");
+    (stages, kind)
 }
 
 /// Indexation d'un fichier textuel (contenu réel).
@@ -219,19 +289,93 @@ async fn store_text_document(
     if chunks.is_empty() {
         return index_context_only(state, embedder, path, mtime, "vide").await;
     }
-    let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-    let vectors = embedder.embed_documents(texts).await?;
+
+    // « Sens » du document : une VRAIE qualification par le LLM (CE QUE C'EST + points-clés),
+    // pas un simple extrait. Repli sur un extrait si le reasoning est off/échoue/texte trop court.
+    let summary = qualify_or_excerpt(state, &cfg, path, doc_type, text).await;
+
+    // On préfixe le sens au 1er chunk pour qu'il soit AUSSI retrouvable par la recherche
+    // (ex. « carte d'identité » devient cherchable même si le mot n'est pas dans l'OCR).
+    let mut texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+    if let Some(first) = texts.first_mut() {
+        *first = format!("[{doc_type}] {summary}\n\n{first}");
+    }
+
+    let vectors = embedder.embed_documents(texts.clone()).await?;
     let chunk_vectors: Vec<ChunkVector> = chunks
         .into_iter()
-        .zip(vectors.into_iter())
-        .map(|(c, v)| ChunkVector { chunk_index: c.chunk_index as i32, text: c.text, vector: v })
+        .zip(texts.into_iter().zip(vectors.into_iter()))
+        .map(|(c, (t, v))| ChunkVector { chunk_index: c.chunk_index as i32, text: t, vector: v })
         .collect();
     state.vector.upsert_chunks(path, hash, mtime, chunk_vectors).await?;
     let _ = state.db.update_file_hash(path, hash);
-    let _ = state.db.upsert_file_summary(path, &summary_of(text), doc_type);
+    // On garde LES DEUX : la qualification (« sens ») ET le contenu extrait (borné), pour
+    // pouvoir les afficher côte à côte et comparer au document.
+    let extract: String = text.trim().chars().take(16_000).collect();
+    let _ = state
+        .db
+        .upsert_file_semantics(path, &summary, Some(&extract), doc_type);
     let _ = state.db.mark_indexed(path, mtime);
     tracing::info!("✅ indexé ({} car., {doc_type}) : {path}", text.len());
     Ok(())
+}
+
+/// Renvoie le « sens » d'un document : qualification LLM si possible, sinon extrait.
+async fn qualify_or_excerpt(
+    state: &AppState,
+    cfg: &crate::config::AppConfig,
+    path: &str,
+    doc_type: &str,
+    text: &str,
+) -> String {
+    let trimmed = text.trim();
+    // Un extrait trop court n'a pas besoin d'un appel LLM (et n'apporterait rien).
+    if cfg.reasoning.enabled && trimmed.chars().count() >= 120 {
+        if let Some(q) = llm_qualify_document(state, cfg, path, doc_type, trimmed).await {
+            return q;
+        }
+    }
+    summary_of(text)
+}
+
+/// Demande au modèle de reasoning de qualifier un document (nature + informations-clés).
+async fn llm_qualify_document(
+    state: &AppState,
+    cfg: &crate::config::AppConfig,
+    path: &str,
+    doc_type: &str,
+    text: &str,
+) -> Option<String> {
+    let p = Path::new(path);
+    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let parent = p.parent().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let excerpt: String = text.chars().take(4000).collect();
+
+    let system = crate::config::prompt_or(
+        &cfg.prompts.doc_qualify,
+        crate::config::default_prompts::DOC_QUALIFY,
+    );
+    let user = format!("Fichier: {name}\nDossier: {parent}\nType: {doc_type}\n\nContenu:\n{excerpt}");
+
+    let resp = state
+        .ai
+        .reasoning_client()
+        .chat(
+            vec![
+                ChatMessage { role: "system".into(), content: system.into() },
+                ChatMessage { role: "user".into(), content: user },
+            ],
+            false,
+        )
+        .await
+        .ok()?;
+
+    let trimmed = resp.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.chars().take(1200).collect())
+    }
 }
 
 /// Fichier au type inconnu : le LLM décide s'il peut en extraire du contenu,
@@ -418,7 +562,16 @@ async fn index_image(
         }
     };
 
-    let semantic_text = format!("{} | {}", caption.trim(), context_descriptor(path, "image"));
+    // Même logique que les documents : la légende vision est le « contenu extrait »,
+    // qu'on fait QUALIFIER par le reasoning pour obtenir le « sens » (CE QUE C'EST).
+    // Repli sur la légende (tronquée) si reasoning off / échec / légende trop courte.
+    let summary = qualify_or_excerpt(state, &cfg, path, "image", &caption).await;
+
+    let semantic_text = format!(
+        "{summary}\n\n{} | {}",
+        caption.trim(),
+        context_descriptor(path, "image")
+    );
     let vector = embedder.embed_documents(vec![semantic_text.clone()]).await?;
     let chunk = ChunkVector {
         chunk_index: 0,
@@ -427,7 +580,10 @@ async fn index_image(
     };
     state.vector.upsert_chunks(path, &hash, mtime, vec![chunk]).await?;
     let _ = state.db.update_file_hash(path, &hash);
-    let _ = state.db.upsert_file_summary(path, &summary_of(&caption), "image");
+    // On garde les DEUX : la qualification (« sens ») et la légende brute (« contenu extrait »).
+    let _ = state
+        .db
+        .upsert_file_semantics(path, &summary, Some(caption.trim()), "image");
     let _ = state.db.mark_indexed(path, mtime);
 
     tracing::info!("🖼️ image décrite et indexée : {path}");
@@ -443,22 +599,80 @@ async fn index_context_only(
     mtime: i64,
     kind: &str,
 ) -> anyhow::Result<()> {
-    let text = context_descriptor(path, kind);
+    let descriptor = context_descriptor(path, kind);
     let hash = format!("ctx:{:x}", Sha256::digest(format!("{path}:{mtime}").as_bytes()));
+    let cfg = state.config.snapshot();
+
+    // Devinette de la nature du fichier par le reasoning, à partir du chemin, des
+    // métadonnées et du voisinage (déjà inclus dans le descripteur). Repli sur le
+    // descripteur brut (comportement historique) si reasoning off/échec.
+    let (summary, extract) = match llm_guess_context(state, &cfg, path, &descriptor).await {
+        Some(guess) => (guess, Some(descriptor.clone())),
+        None => (descriptor.clone(), None),
+    };
+    // On embed la devinette + le contexte factuel (nom, voisinage) pour la recherche.
+    let text = match &extract {
+        Some(d) => format!("{summary}\n{d}"),
+        None => summary.clone(),
+    };
 
     let vector = embedder.embed_documents(vec![text.clone()]).await?;
     let chunk = ChunkVector {
         chunk_index: 0,
-        text: text.clone(),
+        text,
         vector: vector.into_iter().next().unwrap_or_default(),
     };
     state.vector.upsert_chunks(path, &hash, mtime, vec![chunk]).await?;
     let _ = state.db.update_file_hash(path, &hash);
-    let _ = state.db.upsert_file_summary(path, &text, kind);
+    let _ = state
+        .db
+        .upsert_file_semantics(path, &summary, extract.as_deref(), kind);
     let _ = state.db.mark_indexed(path, mtime);
 
     tracing::info!("🧩 indexé par contexte ({kind}) : {path}");
     Ok(())
+}
+
+/// Devine la nature d'un fichier illisible (contexte seul) via le reasoning, à partir
+/// du chemin, des métadonnées et du voisinage. `None` si reasoning off ou pas de réponse.
+async fn llm_guess_context(
+    state: &AppState,
+    cfg: &crate::config::AppConfig,
+    path: &str,
+    descriptor: &str,
+) -> Option<String> {
+    if !cfg.reasoning.enabled {
+        return None;
+    }
+    let size_str = fs::metadata(path)
+        .map(|m| format!(" Taille: {} octets.", m.len()))
+        .unwrap_or_default();
+
+    let system = crate::config::prompt_or(
+        &cfg.prompts.context_guess,
+        crate::config::default_prompts::CONTEXT_GUESS,
+    );
+    let user = format!("{descriptor}{size_str}");
+
+    let resp = state
+        .ai
+        .reasoning_client()
+        .chat(
+            vec![
+                ChatMessage { role: "system".into(), content: system.into() },
+                ChatMessage { role: "user".into(), content: user },
+            ],
+            false,
+        )
+        .await
+        .ok()?;
+
+    let trimmed = resp.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.chars().take(600).collect())
+    }
 }
 
 /// Indexe un dossier comme une seule unité sémantique (nom + contenu résumé),
@@ -512,7 +726,12 @@ async fn index_folder_block(
     };
     state.vector.upsert_chunks(path, &hash, mtime, vec![chunk]).await?;
     let _ = state.db.update_file_hash(path, &hash);
-    let _ = state.db.upsert_file_summary(path, &summary, "folder-block");
+    // Sens = description LLM (qualification) ; contenu extrait = le listing du dossier
+    // (types + exemples), pour comparer. Si pas de description distincte, pas d'extract redondant.
+    let extract = description.as_ref().map(|_| facts.as_str());
+    let _ = state
+        .db
+        .upsert_file_semantics(path, &summary, extract, "folder-block");
     let _ = state.db.mark_indexed(path, mtime);
 
     tracing::info!("📦 dossier indexé en bloc : {path}");

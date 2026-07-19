@@ -92,6 +92,15 @@ pub struct IndexingStats {
     pub pending_folders: i64,
 }
 
+/// Une entrée de la file d'indexation (pour le panneau de file en temps réel).
+#[derive(Debug, Serialize)]
+pub struct QueueEntry {
+    pub path: String,
+    pub status: String,
+    pub retry_count: i64,
+    pub last_error: Option<String>,
+}
+
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -191,6 +200,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS file_semantics (
                 path TEXT PRIMARY KEY,
                 summary TEXT,
+                extract TEXT,
                 doc_type TEXT,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -209,6 +219,7 @@ impl Database {
         // Migrations additives tolérantes (bases créées avant l'ajout des colonnes).
         Self::add_column_if_missing(&conn, "indexing_queue", "retry_count", "INTEGER NOT NULL DEFAULT 0");
         Self::add_column_if_missing(&conn, "indexing_queue", "last_error", "TEXT");
+        Self::add_column_if_missing(&conn, "file_semantics", "extract", "TEXT");
 
         // Réconciliation versionnée (auto-guérison).
         //
@@ -495,10 +506,33 @@ impl Database {
         Ok(())
     }
 
+    /// Force la remise en file d'un chemin (relance manuelle depuis le panneau) :
+    /// contrairement à `enqueue_path`, réinitialise MÊME un échec définitif.
+    pub fn requeue_path(&self, path: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE indexing_queue SET status = 'pending_extraction', retry_count = 0, \
+             last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE path = ?1",
+            params![path],
+        )?;
+        Ok(())
+    }
+
     pub fn remove_from_queue(&self, path: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM indexing_queue WHERE path = ?1", params![path])?;
         Ok(())
+    }
+
+    /// Remet toutes les tâches en échec définitif dans la file (relance globale). Renvoie le nombre relancé.
+    pub fn requeue_failed(&self) -> Result<usize> {
+        let conn = self.conn()?;
+        let n = conn.execute(
+            "UPDATE indexing_queue SET status = 'pending_extraction', retry_count = 0, last_error = NULL \
+             WHERE status = 'failed_permanent'",
+            [],
+        )?;
+        Ok(n)
     }
 
     /// Récupère un lot de tâches d'extraction en attente (avec leur compteur de tentatives).
@@ -562,17 +596,47 @@ impl Database {
     // =====================================================================
 
     pub fn upsert_file_summary(&self, path: &str, summary: &str, doc_type: &str) -> Result<()> {
+        self.upsert_file_semantics(path, summary, None, doc_type)
+    }
+
+    /// Comme `upsert_file_summary`, mais stocke aussi le CONTENU EXTRAIT (`extract`),
+    /// pour pouvoir l'afficher à côté de la qualification (« sens ») et le comparer au document.
+    pub fn upsert_file_semantics(
+        &self,
+        path: &str,
+        summary: &str,
+        extract: Option<&str>,
+        doc_type: &str,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            r#"
+            INSERT INTO file_semantics (path, summary, extract, doc_type, updated_at)
+            VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)
+            ON CONFLICT(path) DO UPDATE SET
+                summary = excluded.summary,
+                extract = excluded.extract,
+                doc_type = excluded.doc_type,
+                updated_at = CURRENT_TIMESTAMP
+            "#,
+            params![path, summary, extract, doc_type],
+        )?;
+        Ok(())
+    }
+
+    /// Édition manuelle du « sens » d'un fichier (crée l'entrée si absente, sinon
+    /// remplace juste le texte en conservant le type). Marque le type 'manuel' à la création.
+    pub fn set_file_summary(&self, path: &str, summary: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
             r#"
             INSERT INTO file_semantics (path, summary, doc_type, updated_at)
-            VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP)
+            VALUES (?1, ?2, 'manuel', CURRENT_TIMESTAMP)
             ON CONFLICT(path) DO UPDATE SET
                 summary = excluded.summary,
-                doc_type = excluded.doc_type,
                 updated_at = CURRENT_TIMESTAMP
             "#,
-            params![path, summary, doc_type],
+            params![path, summary],
         )?;
         Ok(())
     }
@@ -644,14 +708,17 @@ impl Database {
     }
 
     /// Détails d'indexation d'un chemin (pour le panneau de détail).
-    pub fn get_file_semantics(&self, path: &str) -> Result<Option<(String, String)>> {
+    pub fn get_file_semantics(
+        &self,
+        path: &str,
+    ) -> Result<Option<(String, String, Option<String>)>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT COALESCE(summary,''), COALESCE(doc_type,'') FROM file_semantics WHERE path = ?1",
+            "SELECT COALESCE(summary,''), COALESCE(doc_type,''), extract FROM file_semantics WHERE path = ?1",
         )?;
         let mut rows = stmt.query(params![path])?;
         if let Some(row) = rows.next()? {
-            Ok(Some((row.get(0)?, row.get(1)?)))
+            Ok(Some((row.get(0)?, row.get(1)?, row.get(2)?)))
         } else {
             Ok(None)
         }
@@ -809,14 +876,24 @@ impl Database {
 
     pub fn needs_indexing(&self, path: &str, current_mtime: i64) -> Result<bool> {
         let conn = self.conn()?;
-        let mut stmt =
-            conn.prepare("SELECT last_modified FROM indexed_files WHERE path = ?1")?;
-        let mut rows = stmt.query(params![path])?;
-        if let Some(row) = rows.next()? {
-            let stored_mtime: i64 = row.get(0)?;
-            Ok(current_mtime > stored_mtime)
-        } else {
-            Ok(true)
+        // On récupère en une requête le mtime déjà indexé ET le statut en file.
+        let (stored_mtime, status): (Option<i64>, Option<String>) = conn.query_row(
+            "SELECT (SELECT last_modified FROM indexed_files WHERE path = ?1), \
+                    (SELECT status FROM indexing_queue WHERE path = ?1)",
+            params![path],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        // Échec DÉFINITIF : on ne le re-tente PAS automatiquement (le crawler le laisse
+        // en échec, visible et actionnable dans le panneau ; la relance est manuelle).
+        // Une vraie modification du fichier passera, elle, par le watchdog.
+        if status.as_deref() == Some("failed_permanent") {
+            return Ok(false);
+        }
+
+        match stored_mtime {
+            Some(m) => Ok(current_mtime > m),
+            None => Ok(true),
         }
     }
 
@@ -909,6 +986,34 @@ impl Database {
             )
             .unwrap_or(0);
         Ok(stats)
+    }
+
+    /// Liste les entrées de la file pour le panneau (en attente d'abord dans l'ordre
+    /// de traitement, échecs à la fin).
+    pub fn get_queue(&self, limit: i64) -> Result<Vec<QueueEntry>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT path, status, retry_count, last_error
+            FROM indexing_queue
+            WHERE status IN ('pending', 'pending_extraction', 'failed_permanent')
+            ORDER BY (status = 'failed_permanent') ASC, priority DESC, enqueued_at ASC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = stmt.query_map(params![limit], |row| {
+            Ok(QueueEntry {
+                path: row.get(0)?,
+                status: row.get(1)?,
+                retry_count: row.get(2)?,
+                last_error: row.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// Renvoie un lot de dossiers en attente de classification (mode 'pending').

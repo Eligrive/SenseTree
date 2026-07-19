@@ -18,16 +18,12 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
-/// Score de pertinence ABSOLU dans [0,1] : non pertinent → 0, très pertinent → 1.
-/// (Pas de normalisation relative : dans un dossier 100 % pertinent, tout doit
-/// rester haut.) La bande utile est calée sur là où tombent les non-pertinents
-/// pour ces modèles (~0.78) et le haut de similarité (~0.90).
+/// Score de similarité BRUT (cosinus), simplement borné à [0,1].
+/// On ne remappe PAS depuis une bande arbitraire : la distribution des scores
+/// varie fortement d'un modèle d'embedding à l'autre, donc toute bande fixe
+/// (type 0.40→1) fausserait les pourcentages. On affiche le cosinus tel quel.
 fn relevance(cosine: f32) -> f32 {
-    // Non pertinent (~0.40) → 0 ; on va jusqu'à 1.0 pour laisser les outliers très
-    // similaires atteindre 100 % (clamp pour tout ce qui sort de la bande).
-    const LOW: f32 = 0.40;
-    const HIGH: f32 = 1.0;
-    ((cosine - LOW) / (HIGH - LOW)).clamp(0.0, 1.0)
+    cosine.clamp(0.0, 1.0)
 }
 
 #[tauri::command]

@@ -33,11 +33,35 @@ impl Parser {
         }
         // 1. Le Bouclier CPU : On bloque le bruit de masse instantanément
         let path_str = path.to_string_lossy().to_lowercase();
-        if path_str.contains("node_modules") 
-            || path_str.contains(".venv") 
-            || path_str.contains("\\target\\") 
+        if path_str.contains("node_modules")
+            || path_str.contains(".venv")
+            || path_str.contains("\\target\\")
             || path_str.contains(".git") {
             return FileType::Ignored;
+        }
+
+        // 1.5 Routage par EXTENSION pour les types bien connus — PRIORITAIRE, car plus
+        // fiable que les magic bytes : `infer` classe parfois un .docx (qui est un ZIP)
+        // comme simple archive, ce qui l'enverrait à tort dans le routage « binaire ».
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        match ext.as_str() {
+            // Documents réellement extractibles (voir worker::extract_text).
+            "pdf" | "docx" => return FileType::Document,
+            // Images raster gérées par la vision.
+            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" => return FileType::Image,
+            // Texte / code / données lisibles → extraction directe.
+            "txt" | "md" | "markdown" | "rst" | "csv" | "tsv" | "log" | "json" | "toml"
+            | "yaml" | "yml" | "xml" | "html" | "htm" | "css" | "scss" | "ini" | "cfg"
+            | "conf" | "env" | "tex" | "bib" | "rs" | "py" | "js" | "jsx" | "ts" | "tsx"
+            | "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "java" | "kt" | "kts" | "go"
+            | "rb" | "php" | "sh" | "bash" | "zsh" | "ps1" | "bat" | "sql" | "r" | "swift"
+            | "scala" | "lua" | "pl" | "pm" | "vue" | "svelte" | "dart" | "clj" | "hs"
+            | "ml" | "gradle" | "properties" => return FileType::Text,
+            _ => {}
         }
 
         // 2. Détection rapide via Magic Bytes avec la crate "infer"

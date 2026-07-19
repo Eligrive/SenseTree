@@ -5,10 +5,22 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
+
 use crate::config::ConfigStore;
 use crate::db::Database;
 use crate::providers::AiEngine;
 use crate::vectordb::VectorDb;
+
+/// Élément actuellement traité par le worker d'indexation (pour l'affichage temps réel
+/// de la file). `routes` = étapes du pipeline dans l'ordre (sous-ensemble de
+/// {`vision`, `reasoning`, `embedding`}).
+#[derive(Debug, Clone, Serialize)]
+pub struct CurrentActivity {
+    pub path: String,
+    pub routes: Vec<String>,
+    pub kind: String,
+}
 
 /// Regroupe les composants long-vivants (DB relationnelle, config, moteur IA,
 /// base vectorielle). Partagé via `Arc` au crawler, au watchdog, au worker et
@@ -26,4 +38,20 @@ pub struct AppState {
     /// crawlers concurrents sur le même dossier ; si un scan est demandé pendant qu'un
     /// autre tourne, on le PROGRAMME (flag `true`) au lieu de le perdre.
     pub scanning: Arc<Mutex<HashMap<String, bool>>>,
+    /// Élément que le worker traite à l'instant (pour l'affichage temps réel de la file).
+    pub activity: Arc<Mutex<Option<CurrentActivity>>>,
+}
+
+impl AppState {
+    /// Publie (ou efface avec `None`) l'élément en cours de traitement par le worker.
+    pub fn set_activity(&self, act: Option<CurrentActivity>) {
+        if let Ok(mut g) = self.activity.lock() {
+            *g = act;
+        }
+    }
+
+    /// Instantané de l'élément en cours de traitement (pour la commande IPC).
+    pub fn activity_snapshot(&self) -> Option<CurrentActivity> {
+        self.activity.lock().ok().and_then(|g| g.clone())
+    }
 }

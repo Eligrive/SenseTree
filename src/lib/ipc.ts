@@ -15,6 +15,7 @@ import type {
   DirEntryInfo,
   DirectoryReport,
   HealthReport,
+  IndexingQueueView,
   IndexingStats,
   InstallInfo,
   LocalModelStatus,
@@ -66,7 +67,14 @@ export const removeIndexedFolder = (path: string) =>
   invoke<string[]>("remove_indexed_folder", { path });
 export const openPath = (path: string) => invoke<void>("open_path", { path });
 export const pathDetails = (path: string) => invoke<PathDetails>("path_details", { path });
+export const setFileSummary = (path: string, summary: string) =>
+  invoke<void>("set_file_summary", { path, summary });
 export const indexingStats = () => invoke<IndexingStats>("indexing_stats");
+export const indexingQueue = (limit?: number) =>
+  invoke<IndexingQueueView>("indexing_queue", { limit });
+export const retryIndexing = (path: string) => invoke<void>("retry_indexing", { path });
+export const ignoreIndexing = (path: string) => invoke<void>("ignore_indexing", { path });
+export const retryAllFailed = () => invoke<number>("retry_all_failed");
 export const indexingPaused = () => invoke<boolean>("indexing_paused");
 export const setIndexingPaused = (paused: boolean) =>
   invoke<void>("set_indexing_paused", { paused });

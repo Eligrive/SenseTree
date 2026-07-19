@@ -137,6 +137,12 @@ pub struct PromptsConfig {
     /// Extraction de sens d'un fichier de type inconnu (texte/binaire).
     #[serde(default)]
     pub file_extract: String,
+    /// Qualification d'un document (dire CE QUE C'EST + points-clés), pour le « sens » affiché.
+    #[serde(default)]
+    pub doc_qualify: String,
+    /// Devinette de la nature d'un fichier illisible (contexte seul), d'après le chemin + voisinage.
+    #[serde(default)]
+    pub context_guess: String,
     /// Légende d'une image (vision).
     #[serde(default)]
     pub vision_caption: String,
@@ -180,6 +186,21 @@ pub mod default_prompts {
         moteur de recherche. Si c'est du binaire opaque SANS contenu exploitable, réponds \
         EXACTEMENT et uniquement : NO_CONTENT.";
 
+    pub const DOC_QUALIFY: &str = "On te donne le nom et un extrait du contenu d'un document. \
+        En 2 à 4 phrases, QUALIFIE-le : dis d'abord CE QUE C'EST (sa nature : facture, carte \
+        d'identité, contrat, cours, article, relevé bancaire, CV, correspondance…), à qui ou à \
+        quoi il se rapporte, puis ses informations-clés (dates, montants, sujet, personnes, \
+        organisme). Sois concret et factuel. Pas de préambule ni de formule d'introduction : \
+        réponds directement par la description.";
+
+    pub const CONTEXT_GUESS: &str = "On te donne le chemin d'un fichier qu'on ne peut PAS ouvrir \
+        (binaire/opaque), ses métadonnées, et la liste des fichiers voisins de son dossier. \
+        DEVINE en 1 à 2 phrases CE QUE C'EST le plus probablement — sa nature ou son rôle (image \
+        disque de machine virtuelle, archive, exécutable, cache, base de données, projet d'un \
+        logiciel, sauvegarde…) — en t'appuyant sur le nom, l'extension, l'emplacement et le \
+        voisinage. Reste factuel ; si c'est incertain, formule-le comme une hypothèse \
+        (« probablement… »). Pas de préambule : réponds directement.";
+
     pub const VISION_CAPTION: &str = "Décris le contenu de cette image en une à deux phrases, \
         en identifiant les objets, le texte visible et le thème, \
         pour faciliter son classement dans une arborescence de fichiers.";
@@ -214,6 +235,8 @@ impl PromptsConfig {
             folder_classify: default_prompts::FOLDER_CLASSIFY.to_string(),
             folder_describe: default_prompts::FOLDER_DESCRIBE.to_string(),
             file_extract: default_prompts::FILE_EXTRACT.to_string(),
+            doc_qualify: default_prompts::DOC_QUALIFY.to_string(),
+            context_guess: default_prompts::CONTEXT_GUESS.to_string(),
             vision_caption: default_prompts::VISION_CAPTION.to_string(),
             vision_ocr: default_prompts::VISION_OCR.to_string(),
             chat_system: default_prompts::CHAT_SYSTEM.to_string(),
