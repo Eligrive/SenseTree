@@ -232,5 +232,7 @@ export interface QueueItem {
 export interface IndexingQueueView {
   current: IndexActivity | null;
   pending: QueueItem[];
+  /// Échecs définitifs, fournis à part (toujours visibles même avec une file énorme).
+  failed: QueueItem[];
   stats: IndexingStats;
 }

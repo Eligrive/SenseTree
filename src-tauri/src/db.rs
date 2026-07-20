@@ -996,16 +996,47 @@ impl Database {
         Ok(stats)
     }
 
-    /// Liste les entrées de la file pour le panneau (en attente d'abord dans l'ordre
-    /// de traitement, échecs à la fin).
+    /// Prochaines entrées À TRAITER (hors échecs), dans l'ordre de traitement.
+    ///
+    /// Les échecs sont volontairement exclus et récupérés par `get_failed` : mélangés
+    /// ici, ils étaient rejetés hors de la fenêtre `LIMIT` dès que la file était
+    /// longue (des milliers d'éléments) et n'apparaissaient donc JAMAIS dans l'UI.
     pub fn get_queue(&self, limit: i64) -> Result<Vec<QueueEntry>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             r#"
             SELECT path, status, retry_count, last_error
             FROM indexing_queue
-            WHERE status IN ('pending', 'pending_extraction', 'failed_permanent')
-            ORDER BY (status = 'failed_permanent') ASC, priority DESC, enqueued_at ASC
+            WHERE status IN ('pending', 'pending_extraction')
+            ORDER BY priority DESC, enqueued_at ASC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = stmt.query_map(params![limit], |row| {
+            Ok(QueueEntry {
+                path: row.get(0)?,
+                status: row.get(1)?,
+                retry_count: row.get(2)?,
+                last_error: row.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Entrées en ÉCHEC DÉFINITIF, requêtées à part de la file d'attente pour être
+    /// toujours visibles/actionnables, même avec des milliers d'éléments en file.
+    pub fn get_failed(&self, limit: i64) -> Result<Vec<QueueEntry>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT path, status, retry_count, last_error
+            FROM indexing_queue
+            WHERE status = 'failed_permanent'
+            ORDER BY updated_at DESC
             LIMIT ?1
             "#,
         )?;

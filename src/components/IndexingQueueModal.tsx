@@ -83,9 +83,10 @@ export default function IndexingQueueModal({
 
   const stats = data?.stats;
   const current = data?.current ?? null;
-  const pending = data?.pending ?? [];
-  const failed = pending.filter((q) => q.status === "failed_permanent");
-  const upcoming = pending.filter((q) => q.status !== "failed_permanent");
+  // Les échecs viennent d'une requête dédiée : sinon, noyés dans la file, ils
+  // sortaient de la fenêtre LIMIT et n'apparaissaient jamais.
+  const upcoming = data?.pending ?? [];
+  const failed = data?.failed ?? [];
 
   return (
     <div

@@ -602,6 +602,9 @@ struct QueueItemView {
 struct IndexingQueueView {
     current: Option<state::CurrentActivity>,
     pending: Vec<QueueItemView>,
+    /// Échecs définitifs, listés À PART : noyés dans `pending`, ils sortaient de la
+    /// fenêtre `LIMIT` dès que la file était longue et n'étaient jamais affichés.
+    failed: Vec<QueueItemView>,
     stats: db::IndexingStats,
 }
 
@@ -644,27 +647,39 @@ fn indexing_queue(
 ) -> Result<IndexingQueueView, String> {
     let limit = limit.unwrap_or(60).clamp(1, 300);
     let cfg = state.config.snapshot();
-    let pending = state
+    let to_view = |q: db::QueueEntry| {
+        let (routes, kind) = worker::route_for(&cfg, &q.path);
+        QueueItemView {
+            path: q.path,
+            routes: routes.iter().map(|s| s.to_string()).collect(),
+            kind: kind.to_string(),
+            status: q.status,
+            retry_count: q.retry_count,
+            last_error: q.last_error,
+        }
+    };
+
+    let pending: Vec<QueueItemView> = state
         .db
         .get_queue(limit)
         .map_err(|e| e.to_string())?
         .into_iter()
-        .map(|q| {
-            let (routes, kind) = worker::route_for(&cfg, &q.path);
-            QueueItemView {
-                path: q.path,
-                routes: routes.iter().map(|s| s.to_string()).collect(),
-                kind: kind.to_string(),
-                status: q.status,
-                retry_count: q.retry_count,
-                last_error: q.last_error,
-            }
-        })
+        .map(to_view)
         .collect();
+    // Requête séparée : les échecs restent visibles quelle que soit la taille de la file.
+    let failed: Vec<QueueItemView> = state
+        .db
+        .get_failed(100)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(to_view)
+        .collect();
+
     let stats = state.db.get_indexing_stats().map_err(|e| e.to_string())?;
     Ok(IndexingQueueView {
         current: state.activity_snapshot(),
         pending,
+        failed,
         stats,
     })
 }
