@@ -839,6 +839,32 @@ pub fn run() {
             actions::analyze_directory,
             actions::chat_with_assistant,
         ])
-        .run(tauri::generate_context!())
-        .expect("erreur lors du lancement de l'application Tauri");
+        .build(tauri::generate_context!())
+        .expect("erreur lors du lancement de l'application Tauri")
+        .run(|app_handle, event| {
+            // Fermeture de l'application : on libère explicitement les ressources.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
+                    let st = state.inner().clone();
+                    tauri::async_runtime::block_on(shutdown(&st));
+                }
+            }
+        });
+}
+
+/// Arrêt propre : stoppe les traitements de fond, décharge le modèle d'embedding
+/// local (session ONNX + ses threads), demande aux serveurs de modèles de libérer
+/// la mémoire (Ollama garderait sinon plusieurs Go chargés après notre fermeture),
+/// puis compacte le WAL SQLite.
+async fn shutdown(st: &Arc<AppState>) {
+    tracing::info!("🛑 fermeture : libération des ressources…");
+    // 1. Faire cesser worker / crawler / classifieur (ils testent ce drapeau).
+    st.paused.store(true, std::sync::atomic::Ordering::Relaxed);
+    // 2. Modèle d'embedding local : détruit la session ORT et ses threads.
+    st.ai.invalidate_embedder().await;
+    // 3. Modèles hébergés (Ollama…) : ils survivent à notre processus sans ça.
+    st.ai.unload_remote_models().await;
+    // 4. Base : on rapatrie le WAL dans le fichier principal.
+    st.db.checkpoint();
+    tracing::info!("✅ ressources libérées.");
 }

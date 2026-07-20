@@ -78,7 +78,7 @@ fn handle_batch(state: &AppState, events: Vec<notify_debouncer_mini::DebouncedEv
             if folders::hard_ignore(&path_buf.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()) {
                 continue;
             }
-            if folders::resolve_mode(state, &path_buf) == Decision::Block {
+            if folders::resolve_mode_fast(state, &path_buf) == Decision::Block {
                 let _ = db.enqueue_path(&path_str, Some("pending_extraction"), 6);
             }
             // (Recursive → ses fichiers arriveront via leurs propres événements ;
@@ -96,7 +96,7 @@ fn handle_batch(state: &AppState, events: Vec<notify_debouncer_mini::DebouncedEv
             if folders::hard_ignore(&parent_name) {
                 continue;
             }
-            match folders::resolve_mode(state, parent) {
+            match folders::resolve_mode_fast(state, parent) {
                 Decision::Block => {
                     // Fichier interne à un bloc : on rafraîchit le bloc, pas le fichier.
                     let _ = db.enqueue_path(&parent.to_string_lossy(), Some("pending_extraction"), 6);

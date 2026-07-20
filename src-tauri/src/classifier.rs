@@ -18,27 +18,34 @@ pub fn start_classifier(state: Arc<AppState>) {
     thread::spawn(move || {
         tracing::info!("🧭 Classifieur de dossiers en attente démarré.");
         loop {
-            thread::sleep(Duration::from_secs(20));
-
-            // Pause utilisateur : on ne classe rien tant que l'indexation est en pause.
-            if state.paused.load(std::sync::atomic::Ordering::Relaxed) {
-                continue;
-            }
-
-            // Inutile d'essayer si l'utilisateur a désactivé le reasoning.
-            if !state.config.snapshot().reasoning.enabled {
+            // Pause utilisateur, ou reasoning désactivé : rien à faire, on attend.
+            if state.paused.load(std::sync::atomic::Ordering::Relaxed)
+                || !state.config.snapshot().reasoning.enabled
+            {
+                thread::sleep(Duration::from_secs(20));
                 continue;
             }
 
             let pending = match state.db.get_pending_folders(8) {
                 Ok(p) => p,
-                Err(_) => continue,
+                Err(_) => {
+                    thread::sleep(Duration::from_secs(20));
+                    continue;
+                }
             };
             if pending.is_empty() {
+                thread::sleep(Duration::from_secs(20));
                 continue;
             }
 
+            // Le crawler REPORTE désormais tous les dossiers ambigus : c'est ici que se
+            // fait tout le travail de classification. On enchaîne donc les lots SANS
+            // pause tant qu'il reste du travail et que l'IA répond.
+            let mut ai_unavailable = false;
             for folder in pending {
+                if state.paused.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
                 let path = Path::new(&folder);
                 if !path.exists() {
                     continue;
@@ -55,12 +62,19 @@ pub fn start_classifier(state: Arc<AppState>) {
                         thread::spawn(move || crawler::scan_directory(sc, &f));
                     }
                     Decision::Defer => {
-                        // IA toujours indisponible : on stoppe ce tour pour ne pas
-                        // marteler, on réessaiera au prochain cycle.
+                        // IA indisponible : on stoppe ce tour pour ne pas marteler.
+                        ai_unavailable = true;
                         break;
                     }
                 }
             }
+
+            // IA injoignable → longue temporisation (ne pas marteler). Sinon, courte
+            // respiration entre deux lots : assez rapide pour résorber la file de
+            // classification, mais sans spawner des dizaines de scans d'un coup.
+            // (La protection contre les RAFALES de fichiers, elle, est le debouncer
+            //  de 2 s du watchdog — pas ce thread.)
+            thread::sleep(Duration::from_secs(if ai_unavailable { 20 } else { 2 }));
         }
     });
 }

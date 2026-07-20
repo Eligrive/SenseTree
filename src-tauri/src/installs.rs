@@ -137,6 +137,31 @@ async fn fetch_one(http: &reqwest::Client, hf: &str) -> InstallInfo {
     }
 }
 
+/// Vrai si `needle` apparaît dans `hay` comme un TOKEN entier — c'est-à-dire délimité
+/// par des caractères non alphanumériques (`-`, `_`, `/`, `.`) ou par les bords de la
+/// chaîne — et non au milieu d'un mot.
+///
+/// Sans cette contrainte, un nom de modèle court comme `r-4b` matchait
+/// `qwen3-rerankeR-4B-gguf` (un reranker !), proposé à tort comme GGUF d'un VLM.
+fn contains_token(hay: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let bytes = hay.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = hay[from..].find(needle) {
+        let start = from + pos;
+        let end = start + needle.len();
+        let left_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+        let right_ok = end >= bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if left_ok && right_ok {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
 async fn try_fetch(http: &reqwest::Client, hf: &str) -> Result<InstallInfo> {
     // Nom de base du modèle (sans l'organisation) pour la recherche.
     let base = hf.rsplit('/').next().unwrap_or(hf).to_lowercase();
@@ -160,7 +185,9 @@ async fn try_fetch(http: &reqwest::Client, hf: &str) -> Result<InstallInfo> {
         .into_iter()
         .filter(|r| {
             let id = r.id.to_lowercase();
-            id.contains(&base)
+            // Le nom doit apparaître comme un TOKEN entier, pas au milieu d'un mot :
+            // sinon « r-4b » (modèle vision) matche « qwen3-rerankeR-4B-gguf ».
+            contains_token(&id, &base)
                 && (base_is_derivative || !DERIVATIVE.iter().any(|d| id.contains(d)))
         })
         .max_by_key(|r| r.downloads);

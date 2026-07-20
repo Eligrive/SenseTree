@@ -231,15 +231,39 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
     }
   }, [cfg?.reasoning.base_url, cfg?.vision.base_url, cfg?.embedding.base_url, cfg?.embedding.mode]);
 
-  // Quand le catalogue est ouvert, on sonde les DEUX serveurs standard (Ollama +
-  // LM Studio) pour savoir où chaque modèle est réellement installé → la sélection
-  // pourra basculer automatiquement sur le bon endpoint.
+  // Endpoint RÉELLEMENT configuré pour la tâche du catalogue (souvent un serveur
+  // distant). Calculé ici, avant l'effet, pour pouvoir le sonder lui aussi.
+  const catalogEndpointUrl =
+    catalogTask === "embedding"
+      ? cfg?.embedding.base_url ?? ""
+      : catalogTask === "reasoning"
+        ? cfg?.reasoning.base_url ?? ""
+        : catalogTask === "vision"
+          ? cfg?.vision.base_url ?? ""
+          : "";
+  const catalogEndpointKey =
+    catalogTask === "embedding"
+      ? cfg?.embedding.api_key ?? ""
+      : catalogTask === "reasoning"
+        ? cfg?.reasoning.api_key ?? ""
+        : catalogTask === "vision"
+          ? cfg?.vision.api_key ?? ""
+          : "";
+  const endpointIsPreset =
+    catalogEndpointUrl === OLLAMA_URL || catalogEndpointUrl === LMSTUDIO_URL;
+
+  // Quand le catalogue est ouvert, on sonde les deux serveurs standard (Ollama +
+  // LM Studio) ET l'endpoint configuré — sans ce dernier, les modèles installés sur
+  // un serveur distant n'apparaissaient jamais comme « installés ».
   useEffect(() => {
     if (!catalogTask) return;
     refreshModels(OLLAMA_URL, "");
     refreshModels(LMSTUDIO_URL, "");
+    if (catalogEndpointUrl && !endpointIsPreset) {
+      refreshModels(catalogEndpointUrl, catalogEndpointKey);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [catalogTask]);
+  }, [catalogTask, catalogEndpointUrl, catalogEndpointKey, endpointIsPreset]);
 
   if (!open || !cfg) return null;
 
@@ -315,6 +339,18 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   // Serveurs connus (Ollama + LM Studio) avec leurs modèles installés → sert au
   // catalogue pour savoir où un modèle vit et basculer l'endpoint à la sélection.
   const catalogServers = [
+    // L'endpoint configuré passe EN PREMIER : c'est celui que l'utilisateur utilise
+    // réellement, donc il doit primer pour « déjà installé » et comme cible de
+    // téléchargement (sinon un modèle présent sur le serveur distant était ignoré).
+    ...(catalogEndpointUrl && !endpointIsPreset
+      ? [
+          {
+            url: catalogEndpointUrl,
+            kind: (catalogEndpointUrl.includes(":1234") ? "lmstudio" : "ollama") as ServerKind,
+            models: installed[catalogEndpointUrl] ?? [],
+          },
+        ]
+      : []),
     { url: OLLAMA_URL, kind: "ollama" as ServerKind, models: installed[OLLAMA_URL] ?? [] },
     { url: LMSTUDIO_URL, kind: "lmstudio" as ServerKind, models: installed[LMSTUDIO_URL] ?? [] },
   ];

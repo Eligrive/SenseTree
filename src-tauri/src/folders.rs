@@ -174,10 +174,22 @@ enum LlmOutcome {
     Unavailable,
 }
 
-/// Détermine (et met en cache) la décision pour un dossier. Synchrone : appelé
-/// depuis le crawler/watchdog/classifieur (threads dédiés) ; l'appel LLM éventuel
-/// est borné dans le temps via `block_on` + timeout.
+/// Détermine (et met en cache) la décision pour un dossier, en autorisant l'appel LLM
+/// bloquant si nécessaire. À réserver aux threads de FOND (classifieur) : un dossier
+/// ambigu peut coûter plusieurs dizaines de secondes.
 pub fn resolve_mode(state: &AppState, dir: &Path) -> Decision {
+    resolve_mode_inner(state, dir, true)
+}
+
+/// Variante NON BLOQUANTE, pour le crawler et le watchdog : si trancher exige le LLM,
+/// la décision est REPORTÉE (dossier « en attente ») au lieu de figer la marche.
+/// Le classifieur de fond tranchera et lancera le scan du dossier si besoin.
+/// Sans ça, l'indexation avançait d'un dossier toutes les ~25 s (timeout LLM).
+pub fn resolve_mode_fast(state: &AppState, dir: &Path) -> Decision {
+    resolve_mode_inner(state, dir, false)
+}
+
+fn resolve_mode_inner(state: &AppState, dir: &Path, allow_llm: bool) -> Decision {
     let dir_str = dir.to_string_lossy().to_string();
     let cfg = state.config.snapshot();
 
@@ -207,7 +219,7 @@ pub fn resolve_mode(state: &AppState, dir: &Path) -> Decision {
         .unwrap_or_default();
     let entries = read_dir_sample(dir, 120);
 
-    let (decision, source) = classify(state, &cfg, dir, &name, &entries);
+    let (decision, source) = classify(state, &cfg, dir, &name, &entries, allow_llm);
     match decision {
         Decision::Block => {
             let _ = state.db.set_folder_profile(&dir_str, "block", source);
@@ -229,6 +241,7 @@ fn classify(
     dir: &Path,
     name: &str,
     entries: &[EntryInfo],
+    allow_llm: bool,
 ) -> (Decision, &'static str) {
     let bias = cfg.indexing.block_bias;
     // 1. Dossier technique CERTAIN (venv, bundle, presets/samples DAW) → bloc,
@@ -249,8 +262,13 @@ fn classify(
     if !cfg.reasoning.enabled {
         return (Decision::Recursive, "heuristic");
     }
-    // 5. Tout le reste : le LLM tranche à partir du chemin + du contenu ; s'il est
-    //    indisponible, on REPORTE (le dossier reste « en attente »).
+    // 5. Tout le reste exige le LLM. Depuis le crawler/watchdog (`allow_llm = false`),
+    //    on NE BLOQUE PAS la marche : on reporte, et le classifieur de fond tranchera.
+    if !allow_llm {
+        return (Decision::Defer, "deferred");
+    }
+    // Sinon (classifieur de fond) : le LLM tranche à partir du chemin + du contenu ;
+    // s'il est indisponible, on REPORTE (le dossier reste « en attente »).
     match llm_classify(state, dir, entries, bias) {
         LlmOutcome::Decided(FolderMode::Block) => (Decision::Block, "llm"),
         LlmOutcome::Decided(FolderMode::Recursive) => (Decision::Recursive, "llm"),

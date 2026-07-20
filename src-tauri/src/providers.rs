@@ -490,6 +490,52 @@ impl AiEngine {
     /// Invalide le cache d'embedding (à appeler après un changement de config, ou
     /// pour libérer les ressources — la session ONNX Runtime et ses threads intra-op
     /// sont détruits dès que plus aucune référence ne subsiste).
+    /// Demande aux serveurs de modèles de DÉCHARGER les modèles utilisés par SenseTree.
+    ///
+    /// Indispensable à la fermeture : Ollama est un processus SÉPARÉ qui garde les
+    /// modèles en mémoire (`keep_alive`) bien après l'arrêt de l'app — plusieurs Go
+    /// de RAM/VRAM immobilisés pour rien. L'API native `/api/generate` avec
+    /// `keep_alive: 0` les libère immédiatement.
+    ///
+    /// Best-effort : un serveur qui ne connaît pas cette API (LM Studio, API externe)
+    /// renvoie une erreur qu'on ignore silencieusement.
+    pub async fn unload_remote_models(&self) {
+        let cfg = self.config.snapshot();
+        let mut targets: Vec<(String, String)> = Vec::new();
+        if matches!(cfg.embedding.mode, EmbeddingMode::Openai) {
+            targets.push((cfg.embedding.base_url.clone(), cfg.embedding.model.clone()));
+        }
+        if cfg.reasoning.enabled {
+            targets.push((cfg.reasoning.base_url.clone(), cfg.reasoning.model.clone()));
+        }
+        if cfg.vision.enabled {
+            targets.push((cfg.vision.base_url.clone(), cfg.vision.model.clone()));
+        }
+
+        for (base, model) in targets {
+            if model.trim().is_empty() || base.trim().is_empty() {
+                continue;
+            }
+            // `http://host:11434/v1` → racine de l'API native `http://host:11434`.
+            let root = base.trim_end_matches('/').trim_end_matches("/v1").trim_end_matches('/');
+            let body = json!({ "model": model, "keep_alive": 0 });
+            let res = self
+                .http
+                .post(format!("{root}/api/generate"))
+                .json(&body)
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await;
+            match res {
+                Ok(r) if r.status().is_success() => {
+                    tracing::info!("🧹 modèle déchargé du serveur : {model}")
+                }
+                Ok(r) => tracing::debug!("déchargement ignoré ({}) pour {model}", r.status()),
+                Err(e) => tracing::debug!("déchargement impossible pour {model}: {e}"),
+            }
+        }
+    }
+
     pub async fn invalidate_embedder(&self) {
         *self.embedder.lock().await = None;
     }

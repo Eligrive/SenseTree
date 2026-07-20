@@ -128,7 +128,10 @@ fn run_scan(state: &AppState, start_path: &str) {
                 continue;
             }
             // Décision récursif vs bloc (conservative : bloc seulement si sûr / IA).
-            match folders::resolve_mode(state, path) {
+            // NON BLOQUANT : un dossier qui exige le LLM est reporté (le classifieur
+            // de fond tranchera), pour que la marche ne soit jamais figée par une
+            // requête modèle de plusieurs dizaines de secondes.
+            match folders::resolve_mode_fast(state, path) {
                 Decision::Block => {
                     let _ = db.enqueue_path(&path_str, Some("pending_extraction"), 6);
                     blocks += 1;

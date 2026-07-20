@@ -524,6 +524,14 @@ impl Database {
         Ok(())
     }
 
+    /// Compacte le journal WAL dans le fichier principal (arrêt propre). Sans ça, la
+    /// base peut rester quasi vide avec toutes les données dans le `-wal`.
+    pub fn checkpoint(&self) {
+        if let Ok(conn) = self.conn() {
+            let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        }
+    }
+
     /// Remet toutes les tâches en échec définitif dans la file (relance globale). Renvoie le nombre relancé.
     pub fn requeue_failed(&self) -> Result<usize> {
         let conn = self.conn()?;

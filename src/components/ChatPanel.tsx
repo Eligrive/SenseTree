@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, FileText, Loader2, Send, Wand2 } from "lucide-react";
+import { Bot, FileText, Loader2, Send, Trash2, Wand2 } from "lucide-react";
 import type { ActionPlan, ChatSource, ChatTurn } from "../lib/types";
 import { applyActionPlan, chatWithAssistant, discardActionPlan } from "../lib/ipc";
 import ActionPlanCard from "./ActionPlanCard";
@@ -28,6 +28,19 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
   }, [messages, busy]);
 
   const push = (m: Msg) => setMessages((prev) => [...prev, m]);
+
+  /// Vide la conversation. Les plans d'action encore EN ATTENTE sont abandonnés
+  /// côté backend, pour ne pas laisser de brouillons orphelins dans le journal.
+  const clearChat = () => {
+    if (busy) return;
+    messages.forEach((m) => {
+      if (m.role === "plan" && m.status === "pending" && m.plan.transaction_id != null) {
+        discardActionPlan(m.plan.transaction_id).catch(() => {});
+      }
+    });
+    setMessages([]);
+    setInput("");
+  };
 
   const send = async (raw?: string) => {
     const text = (raw ?? input).trim();
@@ -83,6 +96,16 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
         <span className="ml-auto truncate text-[11px] text-zinc-500" title={currentPath ?? ""}>
           {currentPath ? currentPath.split(/[\\/]/).pop() : "—"}
         </span>
+        {messages.length > 0 && (
+          <button
+            onClick={clearChat}
+            disabled={busy}
+            title="Vider la conversation (les plans en attente sont abandonnés)"
+            className="shrink-0 rounded p-1 text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
+          >
+            <Trash2 size={15} />
+          </button>
+        )}
       </div>
 
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-4">
