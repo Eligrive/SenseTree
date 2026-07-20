@@ -49,7 +49,10 @@ pub fn scan_directory(state: Arc<AppState>, start_path: &str) {
     let _guard = ScanGuard { state: state.clone(), key: key.clone() };
 
     loop {
-        run_scan(&state, start_path);
+        // Époque capturée au démarrage de CE passage : si elle change (réindexation
+        // demandée), `run_scan` s'interrompt et on repart sur un passage neuf.
+        let epoch = state.scan_epoch.load(std::sync::atomic::Ordering::Relaxed);
+        run_scan(&state, start_path, epoch);
         // Un re-scan a-t-il été demandé pendant ce passage ? Si oui, on recommence.
         let rerun = match state.scanning.lock() {
             Ok(mut m) => matches!(m.insert(key.clone(), false), Some(true)),
@@ -62,7 +65,7 @@ pub fn scan_directory(state: Arc<AppState>, start_path: &str) {
     }
 }
 
-fn run_scan(state: &AppState, start_path: &str) {
+fn run_scan(state: &AppState, start_path: &str, epoch: usize) {
     let start_time = Instant::now();
     let scan_time = now_epoch();
     let db = &state.db;
@@ -75,9 +78,22 @@ fn run_scan(state: &AppState, start_path: &str) {
 
     let mut it = WalkDir::new(start_path).into_iter();
     loop {
+        // Annulation : une réindexation a été demandée → on abandonne ce passage
+        // IMMÉDIATEMENT pour relâcher la racine (le re-scan programmé prendra le relais).
+        if state.scan_epoch.load(std::sync::atomic::Ordering::Relaxed) != epoch {
+            tracing::info!("🕷️ scan de {start_path} annulé (réindexation demandée).");
+            return;
+        }
+
         // Pause utilisateur : on suspend le scan (et ses classifications LLM) sans
-        // abandonner la progression — on reprend là où on s'était arrêté.
+        // abandonner la progression — on reprend là où on s'était arrêté. La boucle
+        // reste INTERRUPTIBLE : sans ça, un crawler en pause gardait sa racine
+        // verrouillée à vie et bloquait toute réindexation.
         while state.paused.load(std::sync::atomic::Ordering::Relaxed) {
+            if state.scan_epoch.load(std::sync::atomic::Ordering::Relaxed) != epoch {
+                tracing::info!("🕷️ scan de {start_path} annulé pendant la pause.");
+                return;
+            }
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
 

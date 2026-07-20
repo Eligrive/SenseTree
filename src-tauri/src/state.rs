@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -40,6 +40,11 @@ pub struct AppState {
     pub scanning: Arc<Mutex<HashMap<String, bool>>>,
     /// Élément que le worker traite à l'instant (pour l'affichage temps réel de la file).
     pub activity: Arc<Mutex<Option<CurrentActivity>>>,
+    /// « Époque » de scan : incrémentée à chaque réindexation demandée. Les scans en
+    /// cours comparent l'époque qu'ils ont capturée au démarrage et s'ARRÊTENT dès
+    /// qu'elle change — sinon un crawler bloqué (ex. en pause) gardait sa racine
+    /// verrouillée et toute réindexation restait sans effet jusqu'au redémarrage.
+    pub scan_epoch: Arc<AtomicUsize>,
 }
 
 impl AppState {

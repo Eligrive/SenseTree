@@ -63,6 +63,12 @@ async fn set_config(state: State<'_, Arc<AppState>>, config: AppConfig) -> Resul
     st.config.replace(config.clone()).map_err(|e| e.to_string())?;
     st.ai.invalidate_embedder().await;
 
+    // Réindexation ou reclassement : le scan en cours travaille sur un état qu'on
+    // vient d'effacer → on l'annule pour qu'il reparte proprement (voir scan_epoch).
+    if reindex || reclassify {
+        st.scan_epoch.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     if reindex {
         // La base vectorielle est figée sur l'ancienne dimension : on la recrée.
         if dims_changed {
@@ -564,6 +570,11 @@ async fn pull_model(
 async fn reindex_all(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let st = state.inner().clone();
     let cfg = st.config.snapshot();
+    // Réindexer = « repars MAINTENANT » : on annule les scans en cours (nouvelle
+    // époque) et on lève une éventuelle pause, sinon un crawler bloqué gardait la
+    // racine verrouillée et la demande restait sans effet jusqu'au redémarrage.
+    st.scan_epoch.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    st.paused.store(false, std::sync::atomic::Ordering::Relaxed);
     // Aligne la dimension de la base vectorielle sur le modèle actuel avant de vider.
     st.vector.set_dim(cfg.embedding.dimensions);
     st.ai.invalidate_embedder().await;
@@ -791,6 +802,7 @@ pub fn run() {
                 paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 scanning: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
                 activity: Arc::new(std::sync::Mutex::new(None)),
+                scan_epoch: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             });
             app.manage(app_state.clone());
 
