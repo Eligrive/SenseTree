@@ -747,7 +747,9 @@ impl Database {
 
     pub fn is_indexed(&self, path: &str) -> Result<bool> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT 1 FROM indexed_files WHERE path = ?1")?;
+        // `last_modified > 0` : réellement indexé, pas seulement « vu » par le crawler.
+        let mut stmt =
+            conn.prepare("SELECT 1 FROM indexed_files WHERE path = ?1 AND last_modified > 0")?;
         Ok(stmt.exists(params![path])?)
     }
 
@@ -770,8 +772,13 @@ impl Database {
     /// « indexé » de l'explorateur (fichiers et dossiers-blocs).
     pub fn indexed_paths_under(&self, parent: &str) -> Result<Vec<String>> {
         let conn = self.conn()?;
-        let mut stmt =
-            conn.prepare("SELECT path FROM indexed_files WHERE path LIKE ?1 ESCAPE '\\'")?;
+        // `last_modified > 0` : uniquement les fichiers RÉELLEMENT indexés (mark_indexed).
+        // Le crawler insère chaque fichier vu avec `last_modified = 0` (touch_seen) ;
+        // sans ce filtre, tout fichier juste croisé (mais encore en file) apparaissait
+        // « indexé ✓ » alors qu'il n'a pas encore de sens.
+        let mut stmt = conn.prepare(
+            "SELECT path FROM indexed_files WHERE path LIKE ?1 ESCAPE '\\' AND last_modified > 0",
+        )?;
         let rows = stmt.query_map(params![like_prefix(parent)], |row| row.get::<_, String>(0))?;
         let mut out = Vec::new();
         for r in rows {
