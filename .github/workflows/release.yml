@@ -36,10 +36,17 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Restaure le cache réchauffé sur `main` par le workflow warm-cache. `shared-key`
+      # fixe : indispensable pour que ce build (déclenché par un TAG) retrouve le cache
+      # de `main` — les caches d'un autre tag ne sont jamais visibles entre eux.
+      # `save-if: false` : ce build ne sauve rien (le cache est produit par warm-cache),
+      # ça évite ~1-2 min d'upload d'un cache de tag qui ne resservirait jamais.
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+          shared-key: 'tauri-release'
+          save-if: 'false'
 
       - name: install frontend dependencies
         run: npm ci
