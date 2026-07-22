@@ -375,3 +375,24 @@ impl ConfigStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{path_under_root, prompt_or};
+
+    #[test]
+    fn prompt_or_retombe_sur_le_defaut() {
+        assert_eq!(prompt_or("", "defaut"), "defaut");
+        assert_eq!(prompt_or("   ", "defaut"), "defaut");
+        assert_eq!(prompt_or("perso", "defaut"), "perso");
+    }
+
+    #[test]
+    fn path_under_root_windows_et_separateurs_mixtes() {
+        let roots = vec![r"C:\Users\virgi\Documents".to_string()];
+        assert!(path_under_root(&roots, r"C:\Users\virgi\Documents\a\b.pdf"));
+        assert!(path_under_root(&roots, "C:/Users/virgi/Documents"));
+        assert!(!path_under_root(&roots, r"C:\Users\virgi\Downloads\x"));
+        assert!(!path_under_root(&roots, r"C:\Users\virgi\DocumentsBIS\x"));
+    }
+}

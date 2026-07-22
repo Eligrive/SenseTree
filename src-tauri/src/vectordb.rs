@@ -309,3 +309,23 @@ fn snippet(text: &str) -> String {
         cleaned.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::like_escape_datafusion;
+
+    #[test]
+    fn echappe_les_metacaracteres_like() {
+        // On évite d'écrire des backslashes littéraux ici : char::from(92) = '\'.
+        let bs = char::from(92);
+        // Un antislash est doublé.
+        assert_eq!(
+            like_escape_datafusion(&format!("x{bs}y")),
+            format!("x{bs}{bs}y")
+        );
+        // % et _ (métacaractères LIKE) sont préfixés d'un antislash.
+        assert_eq!(like_escape_datafusion("a_b%c"), format!("a{bs}_b{bs}%c"));
+        // Sans métacaractère : inchangé.
+        assert_eq!(like_escape_datafusion("simple"), "simple");
+    }
+}

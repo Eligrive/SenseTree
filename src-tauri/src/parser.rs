@@ -48,20 +48,8 @@ impl Parser {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
-        match ext.as_str() {
-            // Documents réellement extractibles (voir worker::extract_text).
-            "pdf" | "docx" => return FileType::Document,
-            // Images raster gérées par la vision.
-            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" => return FileType::Image,
-            // Texte / code / données lisibles → extraction directe.
-            "txt" | "md" | "markdown" | "rst" | "csv" | "tsv" | "log" | "json" | "toml"
-            | "yaml" | "yml" | "xml" | "html" | "htm" | "css" | "scss" | "ini" | "cfg"
-            | "conf" | "env" | "tex" | "bib" | "rs" | "py" | "js" | "jsx" | "ts" | "tsx"
-            | "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "java" | "kt" | "kts" | "go"
-            | "rb" | "php" | "sh" | "bash" | "zsh" | "ps1" | "bat" | "sql" | "r" | "swift"
-            | "scala" | "lua" | "pl" | "pm" | "vue" | "svelte" | "dart" | "clj" | "hs"
-            | "ml" | "gradle" | "properties" => return FileType::Text,
-            _ => {}
+        if let Some(ft) = Self::route_by_extension(&ext) {
+            return ft;
         }
 
         // 2. Détection rapide via Magic Bytes avec la crate "infer"
@@ -98,6 +86,27 @@ impl Parser {
         FileType::RequiresAIRouting
     }
 
+    /// Routage par extension (minuscule) pour les types bien connus. Fonction PURE,
+    /// testable : `None` si l'extension n'est pas reconnue (on retombe alors sur les
+    /// magic bytes). `.docx`/`.pdf` doivent être des Documents même si `infer` voit un ZIP.
+    fn route_by_extension(ext: &str) -> Option<FileType> {
+        match ext {
+            // Documents réellement extractibles (voir worker::extract_text).
+            "pdf" | "docx" => Some(FileType::Document),
+            // Images raster gérées par la vision.
+            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" => Some(FileType::Image),
+            // Texte / code / données lisibles → extraction directe.
+            "txt" | "md" | "markdown" | "rst" | "csv" | "tsv" | "log" | "json" | "toml"
+            | "yaml" | "yml" | "xml" | "html" | "htm" | "css" | "scss" | "ini" | "cfg"
+            | "conf" | "env" | "tex" | "bib" | "rs" | "py" | "js" | "jsx" | "ts" | "tsx"
+            | "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "java" | "kt" | "kts" | "go"
+            | "rb" | "php" | "sh" | "bash" | "zsh" | "ps1" | "bat" | "sql" | "r" | "swift"
+            | "scala" | "lua" | "pl" | "pm" | "vue" | "svelte" | "dart" | "clj" | "hs"
+            | "ml" | "gradle" | "properties" => Some(FileType::Text),
+            _ => None,
+        }
+    }
+
     // Fonction rapide pour vérifier si un fichier inconnu est du texte lisible
     fn is_valid_utf8(path: &Path) -> bool {
         let mut file = match File::open(path) {
@@ -114,5 +123,33 @@ impl Parser {
         }
 
         std::str::from_utf8(&buffer[..bytes_read]).is_ok()
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn docx_et_pdf_sont_des_documents() {
+        // Régression : un .docx (qui est un ZIP) doit être un Document, pas du binaire.
+        assert_eq!(Parser::route_by_extension("docx"), Some(FileType::Document));
+        assert_eq!(Parser::route_by_extension("pdf"), Some(FileType::Document));
+    }
+
+    #[test]
+    fn images_et_texte_par_extension() {
+        assert_eq!(Parser::route_by_extension("png"), Some(FileType::Image));
+        assert_eq!(Parser::route_by_extension("jpeg"), Some(FileType::Image));
+        assert_eq!(Parser::route_by_extension("txt"), Some(FileType::Text));
+        assert_eq!(Parser::route_by_extension("rs"), Some(FileType::Text));
+        assert_eq!(Parser::route_by_extension("json"), Some(FileType::Text));
+    }
+
+    #[test]
+    fn extension_inconnue_retombe_sur_les_magic_bytes() {
+        assert_eq!(Parser::route_by_extension("xyz"), None);
+        assert_eq!(Parser::route_by_extension(""), None);
+        // xlsx/pptx ne sont PAS extractibles → laissés aux magic bytes (contexte).
+        assert_eq!(Parser::route_by_extension("xlsx"), None);
     }
 }

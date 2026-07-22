@@ -202,3 +202,15 @@ pub async fn semantic_tree(
 
     Ok(Some(builder.into_node()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::relevance;
+
+    #[test]
+    fn relevance_est_le_cosinus_borne() {
+        assert!((relevance(0.5) - 0.5).abs() < 1e-6); // brut, pas de remapping par bande
+        assert_eq!(relevance(-0.3), 0.0);             // négatif -> 0
+        assert_eq!(relevance(1.5), 1.0);              // > 1 -> 1
+    }
+}

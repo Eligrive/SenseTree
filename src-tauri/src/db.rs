@@ -1123,3 +1123,42 @@ impl Database {
         Ok(files)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_db() -> Database {
+        let p = std::env::temp_dir().join(format!("sensetree-test-{}.sqlite", uuid::Uuid::new_v4()));
+        Database::open(&p).expect("ouverture base temporaire")
+    }
+
+    #[test]
+    fn echec_definitif_persiste_visible_et_saute_par_le_crawler() {
+        let db = tmp_db();
+        db.enqueue_path("C:/a/f.pdf", Some("pending_extraction"), 5).unwrap();
+        let id = db
+            .get_pending_extraction_tasks(10)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.path.ends_with("f.pdf"))
+            .unwrap()
+            .id;
+        db.record_task_failure(id, "boom", 1).unwrap();
+
+        assert!(db.get_failed(10).unwrap().iter().any(|q| q.path.ends_with("f.pdf")));
+        assert!(!db.needs_indexing("C:/a/f.pdf", 999).unwrap());
+        assert_eq!(db.requeue_failed().unwrap(), 1);
+        assert!(db.get_failed(10).unwrap().is_empty());
+        assert!(db.needs_indexing("C:/a/f.pdf", 999).unwrap());
+    }
+
+    #[test]
+    fn tick_indexe_seulement_apres_mark_indexed() {
+        let db = tmp_db();
+        db.touch_seen("C:/a/g.txt", 100).unwrap();
+        assert!(!db.is_indexed("C:/a/g.txt").unwrap());
+        db.mark_indexed("C:/a/g.txt", 42).unwrap();
+        assert!(db.is_indexed("C:/a/g.txt").unwrap());
+    }
+}

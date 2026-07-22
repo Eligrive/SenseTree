@@ -350,3 +350,34 @@ fn llm_classify(state: &AppState, dir: &Path, entries: &[EntryInfo], bias: f32) 
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(ext: &str) -> EntryInfo {
+        EntryInfo { name: format!("f.{ext}"), is_dir: false, ext: Some(ext.to_string()) }
+    }
+
+    #[test]
+    fn heuristic_block_projet_daw() {
+        // Un .als (projet Ableton, STRONG_BLOCK_EXTS) => bloc certain, sans LLM.
+        assert!(heuristic_block("MonMorceau", &[file("als"), file("wav")]));
+        // Un dossier de vrais documents => pas un bloc.
+        assert!(!heuristic_block("Documents", &[file("pdf"), file("txt")]));
+    }
+
+    #[test]
+    fn opaque_dominant_suit_le_bias() {
+        // 7 binaires opaques + 1 riche = 87.5% opaque, 12.5% riche.
+        let mut e: Vec<EntryInfo> = (0..7).map(|_| file("dll")).collect();
+        e.push(file("pdf"));
+        assert!(opaque_dominant(&e, 1.0));  // seuil 0.55, tolérance riche 0.15 -> bloc
+        assert!(!opaque_dominant(&e, 0.0)); // seuil 0.90 -> pas bloc (conservateur)
+    }
+
+    #[test]
+    fn moins_de_quatre_fichiers_jamais_bloc_opaque() {
+        assert!(!opaque_dominant(&[file("dll"), file("dll"), file("dll")], 1.0));
+    }
+}

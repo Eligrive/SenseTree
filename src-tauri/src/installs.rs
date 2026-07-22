@@ -247,3 +247,21 @@ async fn try_fetch(http: &reqwest::Client, hf: &str) -> Result<InstallInfo> {
         ollama,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::contains_token;
+
+    #[test]
+    fn matching_par_token_uniquement() {
+        // Régression reranker : "r-4b" (modèle vision) ne doit PAS matcher un reranker.
+        assert!(!contains_token("qwen3-reranker-4b-gguf", "r-4b"));
+        // Mais bien comme token délimité.
+        assert!(contains_token("voodisss/r-4b-gguf", "r-4b"));
+        assert!(contains_token("r-4b", "r-4b"));
+        assert!(contains_token("org/harrier-oss-v1-0.6b-gguf", "harrier-oss-v1-0.6b"));
+        // Sous-chaîne au milieu d'un mot = refusée.
+        assert!(!contains_token("superqwen", "qwen"));
+        assert!(contains_token("super-qwen-x", "qwen"));
+    }
+}

@@ -1019,3 +1019,15 @@ fn extract_docx_text(path: &str) -> anyhow::Result<String> {
     }
     Ok(text)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::summary_of;
+
+    #[test]
+    fn summary_of_nettoie_et_tronque() {
+        assert_eq!(summary_of("  hello\nworld  "), "hello world");
+        assert_eq!(summary_of(&"a".repeat(500)).chars().count(), 300);
+        assert_eq!(summary_of(""), "");
+    }
+}
