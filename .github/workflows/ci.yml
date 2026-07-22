@@ -1,0 +1,60 @@
+name: 'ci'
+
+# Intégration continue : build + tests à chaque push sur main et à chaque PR.
+# Réchauffe aussi le cache de compilation Rust sur `main` (même `shared-key` que
+# release.yml) : les builds de release, déclenchés par des tags, restaurent ce cache
+# au lieu de tout recompiler (~1h40 -> ~10-15 min). Voir release.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Une exécution à la fois par branche ; un nouveau push annule la précédente.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'npm'
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Ne SAUVE le cache que sur main : les PR le restaurent sans le polluer.
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          shared-key: 'tauri-release'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: install frontend dependencies
+        run: npm ci
+
+      # Le script de build Tauri (generate_context!) lit ../dist : le frontend doit exister.
+      - name: build frontend
+        run: npm run build
+
+      # Tests en mode release : valide ET réchauffe le cache des dépendances release
+      # (celui que restaure release.yml). `--locked` échoue si Cargo.lock est obsolète.
+      - name: cargo test
+        run: cargo test --release --locked --manifest-path src-tauri/Cargo.toml
+
+      # Compile le binaire (achève de réchauffer le cache pour les releases).
+      - name: cargo build
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml
