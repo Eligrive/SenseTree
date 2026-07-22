@@ -8,6 +8,7 @@ import SettingsModal from "./components/SettingsModal";
 import GardenerModal from "./components/GardenerModal";
 import IndexingQueueModal from "./components/IndexingQueueModal";
 import DetailDrawer from "./components/DetailDrawer";
+import UpdateBanner from "./components/UpdateBanner";
 
 import type {
   DirEntryInfo,
@@ -270,7 +271,9 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-zinc-950 font-sans text-zinc-100">
+    <div className="flex h-screen w-full flex-col overflow-hidden bg-zinc-950 font-sans text-zinc-100">
+      <UpdateBanner />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
       <Sidebar
         roots={roots}
         currentRoot={currentRoot}
@@ -347,6 +350,8 @@ export default function App() {
             </div>
           </div>
         )}
+      </div>
+
       </div>
 
       <SettingsModal
