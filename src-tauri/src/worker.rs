@@ -291,8 +291,10 @@ async fn store_text_document(
     }
 
     // « Sens » du document : une VRAIE qualification par le LLM (CE QUE C'EST + points-clés),
-    // pas un simple extrait. Repli sur un extrait si le reasoning est off/échoue/texte trop court.
-    let summary = qualify_or_excerpt(state, &cfg, path, doc_type, text).await;
+    // pas un simple extrait. Conditionnée au toggle documents ; repli sur un extrait si off,
+    // reasoning indisponible, ou texte trop court.
+    let summary =
+        qualify_or_excerpt(state, &cfg, path, doc_type, text, cfg.indexing.qualify_documents).await;
 
     // On préfixe le sens au 1er chunk pour qu'il soit AUSSI retrouvable par la recherche
     // (ex. « carte d'identité » devient cherchable même si le mot n'est pas dans l'OCR).
@@ -320,17 +322,19 @@ async fn store_text_document(
     Ok(())
 }
 
-/// Renvoie le « sens » d'un document : qualification LLM si possible, sinon extrait.
+/// Renvoie le « sens » d'un document : qualification LLM si autorisée et possible,
+/// sinon un simple extrait. `allow` = toggle de qualification pour ce type de contenu.
 async fn qualify_or_excerpt(
     state: &AppState,
     cfg: &crate::config::AppConfig,
     path: &str,
     doc_type: &str,
     text: &str,
+    allow: bool,
 ) -> String {
     let trimmed = text.trim();
     // Un extrait trop court n'a pas besoin d'un appel LLM (et n'apporterait rien).
-    if cfg.reasoning.enabled && trimmed.chars().count() >= 120 {
+    if allow && cfg.reasoning.enabled && trimmed.chars().count() >= 120 {
         if let Some(q) = llm_qualify_document(state, cfg, path, doc_type, trimmed).await {
             return q;
         }
@@ -339,7 +343,7 @@ async fn qualify_or_excerpt(
 }
 
 /// Demande au modèle de reasoning de qualifier un document (nature + informations-clés).
-async fn llm_qualify_document(
+pub async fn llm_qualify_document(
     state: &AppState,
     cfg: &crate::config::AppConfig,
     path: &str,
@@ -564,8 +568,9 @@ async fn index_image(
 
     // Même logique que les documents : la légende vision est le « contenu extrait »,
     // qu'on fait QUALIFIER par le reasoning pour obtenir le « sens » (CE QUE C'EST).
-    // Repli sur la légende (tronquée) si reasoning off / échec / légende trop courte.
-    let summary = qualify_or_excerpt(state, &cfg, path, "image", &caption).await;
+    // Conditionnée au toggle images ; repli sur la légende si off / reasoning indispo.
+    let summary =
+        qualify_or_excerpt(state, &cfg, path, "image", &caption, cfg.indexing.qualify_images).await;
 
     let semantic_text = format!(
         "{summary}\n\n{} | {}",
@@ -603,11 +608,15 @@ async fn index_context_only(
     let hash = format!("ctx:{:x}", Sha256::digest(format!("{path}:{mtime}").as_bytes()));
     let cfg = state.config.snapshot();
 
-    // Devinette de la nature du fichier par le reasoning, à partir du chemin, des
-    // métadonnées et du voisinage (déjà inclus dans le descripteur). Repli sur le
-    // descripteur brut (comportement historique) si reasoning off/échec.
-    let (summary, extract) = match llm_guess_context(state, &cfg, path, &descriptor).await {
-        Some(guess) => (guess, Some(descriptor.clone())),
+    // Devinette de la nature du fichier par le reasoning (chemin + métadonnées + voisinage).
+    // Conditionnée au toggle contexte ; repli sur le descripteur brut si off/reasoning indispo.
+    let guess = if cfg.indexing.qualify_context {
+        llm_guess_context(state, &cfg, path, &descriptor).await
+    } else {
+        None
+    };
+    let (summary, extract) = match guess {
+        Some(g) => (g, Some(descriptor.clone())),
         None => (descriptor.clone(), None),
     };
     // On embed la devinette + le contexte factuel (nom, voisinage) pour la recherche.
@@ -817,7 +826,7 @@ fn context_descriptor(path: &str, kind: &str) -> String {
     }
 }
 
-fn summary_of(content: &str) -> String {
+pub fn summary_of(content: &str) -> String {
     let clean: String = content.replace('\n', " ");
     let clean = clean.trim();
     clean.chars().take(300).collect()

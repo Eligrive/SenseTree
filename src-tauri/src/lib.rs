@@ -637,6 +637,82 @@ fn retry_all_failed(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
     state.db.requeue_failed().map_err(|e| e.to_string())
 }
 
+/// Qualifie un fichier À LA DEMANDE (mode « paresseux ») : relit le contenu déjà
+/// extrait (`extract`) et fait produire au reasoning un « sens » qualifié, qu'on
+/// enregistre. Permet d'indexer vite (qualification désactivée) puis de qualifier
+/// les fichiers au cas par cas, sans tout réindexer.
+#[tauri::command]
+async fn qualify_file(state: State<'_, Arc<AppState>>, path: String) -> Result<String, String> {
+    let st = state.inner().clone();
+    let cfg = st.config.snapshot();
+    if !cfg.reasoning.enabled {
+        return Err("Le modèle de reasoning est désactivé.".into());
+    }
+    let (_, doc_type, extract) = st
+        .db
+        .get_file_semantics(&path)
+        .map_err(|e| e.to_string())?
+        .ok_or("Ce fichier n'a pas encore été indexé.")?;
+    let extract = extract
+        .filter(|e| !e.trim().is_empty())
+        .ok_or("Aucun contenu extrait à qualifier pour ce fichier.")?;
+    let doc_type = if doc_type.trim().is_empty() { "document".to_string() } else { doc_type };
+    let summary = worker::llm_qualify_document(&st, &cfg, &path, &doc_type, &extract)
+        .await
+        .ok_or("Le modèle n'a pas renvoyé de qualification.")?;
+    st.db.set_file_summary(&path, &summary).map_err(|e| e.to_string())?;
+    Ok(summary)
+}
+
+/// Qualifie TOUS les fichiers PAS ENCORE qualifiés d'un dossier (mode paresseux, en lot).
+/// Ne retraite que ceux dont le « sens » est encore un simple extrait ; s'exécute en
+/// tâche de fond et respecte la pause. Renvoie le nombre de fichiers à qualifier.
+#[tauri::command]
+async fn qualify_folder(state: State<'_, Arc<AppState>>, path: String) -> Result<usize, String> {
+    let st = state.inner().clone();
+    let cfg = st.config.snapshot();
+    if !cfg.reasoning.enabled {
+        return Err("Le modèle de reasoning est désactivé.".into());
+    }
+    // On ne garde que les fichiers dont le sens == extrait brut (donc pas encore
+    // qualifiés) : évite de re-solliciter l'IA sur ce qui est déjà décrit ou édité.
+    let todo: Vec<(String, String, String)> = st
+        .db
+        .qualifiable_under(&path)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|(_, _, summary, extract)| {
+            summary.trim() == worker::summary_of(extract).trim()
+        })
+        .map(|(p, dt, _, ex)| (p, dt, ex))
+        .collect();
+
+    let n = todo.len();
+    if n == 0 {
+        return Ok(0);
+    }
+
+    // Tâche de fond : un appel reasoning par fichier, séquentiel, interruptible par la pause.
+    tauri::async_runtime::spawn(async move {
+        tracing::info!("✨ qualification du dossier : {n} fichier(s) à traiter…");
+        let mut done = 0usize;
+        for (p, dt, ex) in todo {
+            if st.paused.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!("✨ qualification du dossier interrompue (pause).");
+                break;
+            }
+            let dt = if dt.trim().is_empty() { "document".to_string() } else { dt };
+            if let Some(sum) = worker::llm_qualify_document(&st, &cfg, &p, &dt, &ex).await {
+                let _ = st.db.set_file_summary(&p, &sum);
+                done += 1;
+            }
+        }
+        tracing::info!("✨ qualification du dossier terminée ({done} fichier(s) qualifié(s)).");
+    });
+
+    Ok(n)
+}
+
 /// Édite manuellement le « sens » (résumé) d'un fichier depuis le panneau de détail.
 #[tauri::command]
 fn set_file_summary(
@@ -829,6 +905,8 @@ pub fn run() {
             ignore_indexing,
             retry_all_failed,
             set_file_summary,
+            qualify_file,
+            qualify_folder,
             set_indexing_paused,
             indexing_paused,
             open_path,

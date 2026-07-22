@@ -863,6 +863,36 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
             </p>
           </section>
 
+          {/* Qualification IA du « sens » — pilote le coût reasoning par type de contenu */}
+          <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
+            <h3 className="text-sm font-semibold text-zinc-200">Qualification du sens (IA)</h3>
+            <p className="text-[11px] text-zinc-500">
+              Fait décrire par le modèle de reasoning CE QU'EST chaque fichier (« c'est une carte
+              d'identité… »). Désactiver un type accélère fortement l'indexation (moins d'appels au
+              serveur IA) — le sens retombe alors sur un simple extrait, que tu peux qualifier
+              ensuite <strong>à la demande</strong> depuis le panneau de détail d'un fichier.
+            </p>
+            {(
+              [
+                ["qualify_documents", "Documents (PDF, Word, texte, code)"],
+                ["qualify_images", "Images (en plus de la légende vision)"],
+                ["qualify_context", "Fichiers illisibles (devinette par contexte)"],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key} className="flex items-center gap-2 text-sm text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={cfg.indexing[key] ?? true}
+                  onChange={(e) =>
+                    setCfg({ ...cfg, indexing: { ...cfg.indexing, [key]: e.target.checked } })
+                  }
+                  className="accent-blue-500"
+                />
+                {label}
+              </label>
+            ))}
+          </section>
+
           {/* Prompts IA — édition avancée (repliable) */}
           <section className="rounded-xl border border-zinc-800 bg-zinc-900/30">
             <button

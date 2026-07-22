@@ -649,6 +649,27 @@ impl Database {
         Ok(())
     }
 
+    /// Fichiers indexés SOUS `folder` disposant d'un contenu extrait (donc qualifiables) :
+    /// `(path, doc_type, summary, extract)`. Sert à la qualification de tout un dossier.
+    pub fn qualifiable_under(&self, folder: &str) -> Result<Vec<(String, String, String, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT path, COALESCE(doc_type,''), COALESCE(summary,''), extract
+            FROM file_semantics
+            WHERE path LIKE ?1 ESCAPE '\' AND extract IS NOT NULL AND TRIM(extract) <> ''
+            "#,
+        )?;
+        let rows = stmt.query_map(params![like_prefix(folder)], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Résumés des fichiers situés directement sous `parent` (contexte pour les actions).
     pub fn summaries_for_parent(&self, parent: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn()?;

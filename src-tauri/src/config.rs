@@ -104,10 +104,23 @@ pub struct IndexingConfig {
     /// rétro-compatible avec les settings.json antérieurs.
     #[serde(default = "default_block_bias")]
     pub block_bias: f32,
+    /// Qualification LLM du « sens » par type de contenu. Coupe les appels reasoning
+    /// correspondants pendant l'indexation (gros gain de vitesse). `true` par défaut
+    /// pour rester rétro-compatible ; l'utilisateur peut désactiver ce qu'il veut.
+    #[serde(default = "default_true")]
+    pub qualify_documents: bool,
+    #[serde(default = "default_true")]
+    pub qualify_images: bool,
+    #[serde(default = "default_true")]
+    pub qualify_context: bool,
 }
 
 fn default_block_bias() -> f32 {
     0.5
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for IndexingConfig {
@@ -119,6 +132,9 @@ impl Default for IndexingConfig {
             batch_size: 32,
             max_file_mb: 50,
             block_bias: default_block_bias(),
+            qualify_documents: true,
+            qualify_images: true,
+            qualify_context: true,
         }
     }
 }

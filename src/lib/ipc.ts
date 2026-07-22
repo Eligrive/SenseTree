@@ -69,6 +69,8 @@ export const openPath = (path: string) => invoke<void>("open_path", { path });
 export const pathDetails = (path: string) => invoke<PathDetails>("path_details", { path });
 export const setFileSummary = (path: string, summary: string) =>
   invoke<void>("set_file_summary", { path, summary });
+export const qualifyFile = (path: string) => invoke<string>("qualify_file", { path });
+export const qualifyFolder = (path: string) => invoke<number>("qualify_folder", { path });
 export const indexingStats = () => invoke<IndexingStats>("indexing_stats");
 export const indexingQueue = (limit?: number) =>
   invoke<IndexingQueueView>("indexing_queue", { limit });

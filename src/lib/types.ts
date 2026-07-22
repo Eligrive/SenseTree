@@ -25,6 +25,9 @@ export interface IndexingConfig {
   batch_size: number;
   max_file_mb: number;
   block_bias: number; // 0 = très récursif, 1 = très bloc
+  qualify_documents: boolean;
+  qualify_images: boolean;
+  qualify_context: boolean;
 }
 
 export interface PromptsConfig {

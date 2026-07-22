@@ -1,7 +1,19 @@
 import { useState, type ReactNode } from "react";
-import { Boxes, Check, Clock, FileText, Folder, FolderTree, Pencil, Save, X } from "lucide-react";
+import {
+  Boxes,
+  Check,
+  Clock,
+  FileText,
+  Folder,
+  FolderTree,
+  Loader2,
+  Pencil,
+  Save,
+  Sparkles,
+  X,
+} from "lucide-react";
 import type { PathDetails } from "../lib/types";
-import { setFileSummary } from "../lib/ipc";
+import { qualifyFile, qualifyFolder, setFileSummary } from "../lib/ipc";
 import { formatBytes, formatDate } from "../lib/format";
 
 interface Props {
@@ -66,20 +78,61 @@ function FolderModeLabel({ mode }: { mode: string | null }) {
   );
 }
 
+/// Bouton « Qualifier tout le dossier » : lance en tâche de fond la qualification IA
+/// des fichiers du dossier encore non qualifiés (mode paresseux, en lot).
+function FolderQualifyButton({ path }: { path: string }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const run = () => {
+    setBusy(true);
+    setMsg(null);
+    qualifyFolder(path)
+      .then((n) =>
+        setMsg(
+          n > 0
+            ? `${n} fichier(s) en cours de qualification en arrière-plan… (les sens apparaîtront au fur et à mesure)`
+            : "Rien à qualifier ici (déjà qualifié, ou aucun contenu extrait)."
+        )
+      )
+      .catch((e) => setMsg(`⚠️ ${String(e)}`))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="mt-3">
+      <button
+        onClick={run}
+        disabled={busy}
+        className="flex w-full items-center justify-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/10 px-4 py-2 text-sm font-medium text-blue-300 transition hover:bg-blue-500/20 disabled:opacity-50"
+        title="Qualifier avec l'IA tous les fichiers du dossier encore non qualifiés"
+      >
+        {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+        Qualifier tout le dossier avec l'IA
+      </button>
+      {msg && <p className="mt-1.5 text-[11px] text-zinc-400">{msg}</p>}
+    </div>
+  );
+}
+
 /// Section « Sens extrait » : toujours affichée (pour comparer au document),
 /// avec le texte complet (scrollable) et l'édition manuelle du sens.
 function SenseSection({
   path,
   summary,
+  canQualify,
   onSaved,
 }: {
   path: string;
   summary: string | null;
+  canQualify: boolean;
   onSaved: (path: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(summary ?? "");
   const [saving, setSaving] = useState(false);
+  const [qualifying, setQualifying] = useState(false);
+  const [qualifyErr, setQualifyErr] = useState<string | null>(null);
 
   const save = () => {
     setSaving(true);
@@ -92,6 +145,16 @@ function SenseSection({
       .finally(() => setSaving(false));
   };
 
+  // Qualification à la demande : relance le reasoning sur le contenu déjà extrait.
+  const qualify = () => {
+    setQualifying(true);
+    setQualifyErr(null);
+    qualifyFile(path)
+      .then(() => onSaved(path))
+      .catch((e) => setQualifyErr(String(e)))
+      .finally(() => setQualifying(false));
+  };
+
   return (
     <div className="mt-3">
       <div className="mb-1.5 flex items-center justify-between">
@@ -99,18 +162,32 @@ function SenseSection({
           Sens extrait
         </p>
         {!editing && (
-          <button
-            onClick={() => {
-              setDraft(summary ?? "");
-              setEditing(true);
-            }}
-            className="flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-300"
-            title="Modifier le sens à la main"
-          >
-            <Pencil size={11} /> Modifier
-          </button>
+          <div className="flex items-center gap-2">
+            {canQualify && (
+              <button
+                onClick={qualify}
+                disabled={qualifying}
+                className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 disabled:opacity-50"
+                title="Faire décrire ce fichier par l'IA (reasoning) à partir de son contenu extrait"
+              >
+                {qualifying ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                {qualifying ? "Qualification…" : "Qualifier avec l'IA"}
+              </button>
+            )}
+            <button
+              onClick={() => {
+                setDraft(summary ?? "");
+                setEditing(true);
+              }}
+              className="flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-300"
+              title="Modifier le sens à la main"
+            >
+              <Pencil size={11} /> Modifier
+            </button>
+          </div>
         )}
       </div>
+      {qualifyErr && <p className="mb-1.5 text-[11px] text-rose-400">{qualifyErr}</p>}
 
       {editing ? (
         <div className="space-y-2">
@@ -220,6 +297,7 @@ export default function DetailDrawer({
                 key={details.path}
                 path={details.path}
                 summary={details.summary}
+                canQualify={!!details.extract && !details.is_directory}
                 onSaved={onSummarySaved}
               />
             )}
@@ -233,6 +311,10 @@ export default function DetailDrawer({
                   {details.extract}
                 </p>
               </div>
+            )}
+
+            {details.is_directory && (
+              <FolderQualifyButton key={details.path} path={details.path} />
             )}
 
             {!details.is_directory && (
