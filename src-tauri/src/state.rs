@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::config::ConfigStore;
 use crate::db::Database;
+use crate::gardener::GardenerReport;
 use crate::providers::AiEngine;
 use crate::vectordb::VectorDb;
 
@@ -45,6 +46,9 @@ pub struct AppState {
     /// qu'elle change — sinon un crawler bloqué (ex. en pause) gardait sa racine
     /// verrouillée et toute réindexation restait sans effet jusqu'au redémarrage.
     pub scan_epoch: Arc<AtomicUsize>,
+    /// Dernier bilan de santé structurel des racines (gardener proactif de fond,
+    /// lecture seule). Rafraîchi périodiquement ; servi tel quel à l'UI.
+    pub gardener: Arc<Mutex<GardenerReport>>,
 }
 
 impl AppState {

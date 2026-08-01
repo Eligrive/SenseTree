@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 import Sidebar from "./components/Sidebar";
@@ -13,6 +13,8 @@ import UpdateBanner from "./components/UpdateBanner";
 import type {
   DirEntryInfo,
   DirectoryReport,
+  FolderHealth,
+  GardenerReport,
   HealthReport,
   IndexingStats,
   PathDetails,
@@ -24,6 +26,7 @@ import {
   addIndexedFolder,
   aiHealth,
   analyzeDirectory,
+  gardenerHealth,
   getConfig,
   getRoots,
   indexingStats,
@@ -63,6 +66,12 @@ export default function App() {
   const [report, setReport] = useState<DirectoryReport | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
+
+  const [gardener, setGardener] = useState<GardenerReport | null>(null);
+  const folderHealth = useMemo<Record<string, FolderHealth>>(
+    () => Object.fromEntries((gardener?.folders ?? []).map((f) => [f.path, f])),
+    [gardener]
+  );
 
   const [details, setDetails] = useState<PathDetails | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -145,6 +154,14 @@ export default function App() {
   // État de pause (synchronisé au démarrage avec le backend).
   useEffect(() => {
     indexingPaused().then(setPaused).catch(() => {});
+  }, []);
+
+  // Bilan de santé structurel (gardener proactif de fond) : rafraîchi tranquillement.
+  useEffect(() => {
+    const poll = () => gardenerHealth().then(setGardener).catch(() => {});
+    poll();
+    const t = setInterval(poll, 20000);
+    return () => clearInterval(t);
   }, []);
 
   const togglePause = useCallback(() => {
@@ -261,13 +278,16 @@ export default function App() {
     });
   };
 
-  const analyze = () => {
-    if (!currentPath) return;
+  const analyzePath = useCallback((path: string) => {
     setReport(null);
     setReportOpen(true);
-    analyzeDirectory(currentPath)
+    analyzeDirectory(path)
       .then(setReport)
       .catch(() => setReportOpen(false));
+  }, []);
+
+  const analyze = () => {
+    if (currentPath) analyzePath(currentPath);
   };
 
   return (
@@ -287,7 +307,10 @@ export default function App() {
         embedding={embedding}
         onOpenSettings={() => setSettingsOpen(true)}
         onAnalyze={analyze}
+        onAnalyzeRoot={analyzePath}
         onOpenQueue={() => setQueueOpen(true)}
+        folderHealth={folderHealth}
+        anomalyCount={gardener?.anomaly_count ?? 0}
       />
 
       <main className="min-w-0 flex-1 overflow-hidden">

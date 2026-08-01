@@ -189,6 +189,29 @@ export interface DirectoryReport {
   suggestions: string[];
 }
 
+// --- Gardener proactif (diagnostic structurel de fond, lecture seule) ---
+export type HealthSeverity = "ok" | "info" | "warn";
+
+export interface FolderHealth {
+  path: string;
+  name: string;
+  file_count: number;
+  direct_files: number;
+  duplicate_files: number;
+  duplicate_groups: number;
+  empty_dirs: number;
+  max_depth: number;
+  cluttered: boolean;
+  severity: HealthSeverity;
+  headline: string;
+}
+
+export interface GardenerReport {
+  folders: FolderHealth[];
+  anomaly_count: number;
+  scanned_at: number;
+}
+
 export interface ChatTurn {
   role: "user" | "assistant" | "system";
   content: string;

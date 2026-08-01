@@ -12,7 +12,7 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import type { HealthReport, IndexingStats } from "../lib/types";
+import type { FolderHealth, HealthReport, HealthSeverity, IndexingStats } from "../lib/types";
 
 interface Props {
   roots: string[];
@@ -27,8 +27,20 @@ interface Props {
   embedding: { model: string; mode: string } | null;
   onOpenSettings: () => void;
   onAnalyze: () => void;
+  onAnalyzeRoot: (root: string) => void;
   onOpenQueue: () => void;
+  /// Bilan de santé par racine (gardener proactif), indexé par chemin.
+  folderHealth: Record<string, FolderHealth>;
+  anomalyCount: number;
 }
+
+const SEVERITY_COLOR: Record<HealthSeverity, string> = {
+  warn: "bg-rose-500",
+  info: "bg-amber-400",
+  ok: "bg-emerald-500",
+};
+
+const SEVERITY_RANK: Record<HealthSeverity, number> = { warn: 2, info: 1, ok: 0 };
 
 function HealthDot({ ok, label, detail }: { ok: boolean; label: string; detail: string }) {
   return (
@@ -147,8 +159,24 @@ export default function Sidebar({
   embedding,
   onOpenSettings,
   onAnalyze,
+  onAnalyzeRoot,
   onOpenQueue,
+  folderHealth,
+  anomalyCount,
 }: Props) {
+  const gardenerLoaded = Object.keys(folderHealth).length > 0;
+  const worstRoot = (): string | null => {
+    const list = Object.values(folderHealth);
+    if (list.length === 0) return null;
+    return list.reduce((a, b) =>
+      SEVERITY_RANK[b.severity] > SEVERITY_RANK[a.severity] ? b : a
+    ).path;
+  };
+  const analyzeWorst = () => {
+    const w = worstRoot();
+    if (w) onAnalyzeRoot(w);
+  };
+
   return (
     <aside className="flex h-full w-60 flex-col border-r border-zinc-800 bg-zinc-950/60">
       <div className="flex items-center gap-2 px-4 py-4">
@@ -180,6 +208,11 @@ export default function Sidebar({
           {roots.map((root) => {
             const active = root === currentRoot;
             const name = root.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || root;
+            const h = folderHealth[root];
+            const dotClass = h ? SEVERITY_COLOR[h.severity] : "bg-zinc-700";
+            const dotTitle = h
+              ? `${h.headline} — cliquer pour diagnostiquer`
+              : "Diagnostic en cours…";
             return (
               <li key={root} className="group flex items-center gap-1">
                 <button
@@ -193,6 +226,17 @@ export default function Sidebar({
                 >
                   <Folder size={15} className="shrink-0" />
                   <span className="truncate">{name}</span>
+                </button>
+                <button
+                  onClick={() => onAnalyzeRoot(root)}
+                  title={dotTitle}
+                  className="shrink-0 rounded p-1 hover:bg-zinc-800"
+                >
+                  <span
+                    className={`block h-2 w-2 rounded-full ${dotClass} ${
+                      h ? "" : "animate-pulse"
+                    }`}
+                  />
                 </button>
                 <button
                   onClick={() => onRemoveRoot(root)}
@@ -228,6 +272,25 @@ export default function Sidebar({
             </span>
           </button>
         )}
+
+        {gardenerLoaded &&
+          (anomalyCount > 0 ? (
+            <button
+              onClick={analyzeWorst}
+              title="Ouvrir le diagnostic du dossier le plus concerné"
+              className="flex w-full items-center gap-2 rounded-md bg-amber-500/10 px-2.5 py-1.5 text-left text-xs text-amber-300 transition hover:bg-amber-500/15"
+            >
+              <Sprout size={13} className="shrink-0" />
+              <span className="flex-1">
+                {anomalyCount} dossier{anomalyCount > 1 ? "s" : ""} à ranger
+              </span>
+              <span className="text-amber-400/70">→</span>
+            </button>
+          ) : (
+            <div className="flex w-full items-center gap-2 rounded-md bg-emerald-500/5 px-2.5 py-1.5 text-xs text-emerald-400/80">
+              <Sprout size={13} className="shrink-0" /> Tout est bien rangé
+            </div>
+          ))}
 
         <button
           onClick={onAnalyze}

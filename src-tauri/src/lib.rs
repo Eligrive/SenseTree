@@ -8,6 +8,7 @@ pub mod crawler;
 pub mod db;
 pub mod explorer;
 pub mod folders;
+pub mod gardener;
 pub mod installs;
 pub mod ort_setup;
 pub mod parser;
@@ -811,6 +812,17 @@ fn gpu_available() -> bool {
 // =========================================================================
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Dernier bilan de santé structurel des racines (gardener proactif de fond).
+/// Renvoie le rapport en cache — l'UI l'interroge périodiquement pour ses pastilles.
+#[tauri::command]
+fn gardener_health(state: State<'_, Arc<AppState>>) -> gardener::GardenerReport {
+    state
+        .gardener
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
 pub fn run() {
     // Logs structurés (remplace les println!). N'échoue pas si déjà initialisé.
     let _ = tracing_subscriber::fmt()
@@ -881,6 +893,7 @@ pub fn run() {
                 scanning: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
                 activity: Arc::new(std::sync::Mutex::new(None)),
                 scan_epoch: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                gardener: Arc::new(std::sync::Mutex::new(gardener::GardenerReport::default())),
             });
             app.manage(app_state.clone());
 
@@ -895,6 +908,7 @@ pub fn run() {
             watchdog::start_watching(app_state.clone(), roots);
             worker::start_worker(app_state.clone());
             classifier::start_classifier(app_state.clone());
+            gardener::start_gardener(app_state.clone());
 
             tracing::info!("✅ SenseTree prêt. DB={:?}", db_path);
             Ok(())
@@ -945,6 +959,7 @@ pub fn run() {
             actions::discard_action_plan,
             actions::analyze_directory,
             actions::chat_with_assistant,
+            gardener_health,
         ])
         .build(tauri::generate_context!())
         .expect("erreur lors du lancement de l'application Tauri")

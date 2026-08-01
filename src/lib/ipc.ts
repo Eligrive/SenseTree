@@ -14,6 +14,7 @@ import type {
   ChatTurn,
   DirEntryInfo,
   DirectoryReport,
+  GardenerReport,
   HealthReport,
   IndexingQueueView,
   IndexingStats,
@@ -98,5 +99,6 @@ export const discardActionPlan = (transactionId: number) =>
   invoke<void>("discard_action_plan", { transactionId });
 export const analyzeDirectory = (path: string) =>
   invoke<DirectoryReport>("analyze_directory", { path });
+export const gardenerHealth = () => invoke<GardenerReport>("gardener_health");
 export const chatWithAssistant = (messages: ChatTurn[], scope?: string) =>
   invoke<ChatResponse>("chat_with_assistant", { messages, scope });
