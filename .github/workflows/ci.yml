@@ -9,6 +9,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Réchauffement du cache : un run planifié tourne sur `refs/heads/main`, donc
+  # `save-if` s'active et RÉ-ENREGISTRE le cache Rust. GitHub évince tout cache non
+  # consulté depuis >7 jours ; 2x/semaine (lun. & jeu. 06:00 UTC) garde des écarts
+  # de 3-4 jours max, avec marge si un cron est retardé/sauté (charge Actions).
+  schedule:
+    - cron: '0 6 * * 1,4'
+  # Permet un réchauffement (ou un build de contrôle) à la demande depuis l'onglet Actions.
+  workflow_dispatch:
 
 # Une exécution à la fois par branche ; un nouveau push annule la précédente.
 concurrency:
