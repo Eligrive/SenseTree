@@ -63,6 +63,6 @@ jobs:
           tagName: v__VERSION__ # Automatically resolved from src-tauri/tauri.conf.json
           releaseName: 'SenseTree v__VERSION__'
           releaseBody: 'Review and download the latest installer below.'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
