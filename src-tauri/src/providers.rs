@@ -319,6 +319,24 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// Un appel d'outil demandé par le modèle (function-calling).
+#[derive(Debug, Clone)]
+pub struct ToolCallOut {
+    pub id: String,
+    pub name: String,
+    /// Arguments au format JSON (chaîne), à parser selon le schéma de l'outil.
+    pub arguments: String,
+}
+
+/// Résultat d'un tour d'agent : soit du texte final, soit des appels d'outils.
+#[derive(Debug, Default)]
+pub struct AgentTurn {
+    pub content: Option<String>,
+    pub tool_calls: Vec<ToolCallOut>,
+    /// Message assistant brut (réinjecté tel quel dans l'historique pour la suite).
+    pub raw_message: serde_json::Value,
+}
+
 /// Délai maximal d'un appel vision. Volontairement large : un modèle multimodal
 /// peut mettre plusieurs dizaines de secondes à se (re)charger en VRAM (démarrage à
 /// froid ou swap de modèle sur un GPU partagé). On préfère patienter plutôt qu'échouer.
@@ -385,6 +403,79 @@ impl OpenAiChatClient {
             return Err(anyhow!("/chat/completions a renvoyé {status}: {text}"));
         }
         parse_chat_content(resp.json().await.context("parsing de la réponse de chat")?)
+    }
+
+    /// Échange de chat avec OUTILS (function-calling natif). Renvoie soit du texte
+    /// final, soit une liste d'appels d'outils que l'appelant doit exécuter puis
+    /// réinjecter. Compatible OpenAI (`tools` + `tool_choice: auto`). Les modèles qui
+    /// ne savent pas tool-caller renvoient simplement du contenu → dégradation douce.
+    pub async fn chat_tools(
+        &self,
+        messages: &[serde_json::Value],
+        tools: &serde_json::Value,
+    ) -> Result<AgentTurn> {
+        let url = format!("{}/chat/completions", self.base_url);
+        let mut body = json!({
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.2,
+            "stream": false,
+        });
+        // On n'ajoute `tools` que s'il y en a (certains serveurs rejettent un tableau vide).
+        if tools.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+            body["tools"] = tools.clone();
+            body["tool_choice"] = json!("auto");
+        }
+        let mut req = self.http.post(&url).json(&body);
+        if !self.api_key.is_empty() {
+            req = req.bearer_auth(&self.api_key);
+        }
+        let resp = req.send().await.context("appel /chat/completions (agent)")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("/chat/completions a renvoyé {status}: {text}"));
+        }
+        let value: serde_json::Value = resp.json().await.context("parsing de la réponse agent")?;
+        let msg = value
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+
+        let content = msg
+            .get("content")
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty());
+
+        let mut tool_calls = Vec::new();
+        if let Some(tcs) = msg.get("tool_calls").and_then(|t| t.as_array()) {
+            for tc in tcs {
+                let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let func = tc.get("function");
+                let name = func
+                    .and_then(|f| f.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                // `arguments` est une CHAÎNE JSON (spec OpenAI) — parfois un objet selon
+                // le serveur : on gère les deux.
+                let arguments = func
+                    .and_then(|f| f.get("arguments"))
+                    .map(|a| match a {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    })
+                    .unwrap_or_else(|| "{}".to_string());
+                if !name.is_empty() {
+                    tool_calls.push(ToolCallOut { id, name, arguments });
+                }
+            }
+        }
+
+        Ok(AgentTurn { content, tool_calls, raw_message: msg })
     }
 
     /// Décrit une image (base64) via un modèle multimodal — l'« extraction du sens » visuelle.

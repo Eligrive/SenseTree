@@ -131,7 +131,18 @@ pub async fn semantic_search(
     limit: Option<usize>,
 ) -> Result<Vec<SearchResult>, String> {
     let state = state.inner().clone();
-    let limit = limit.unwrap_or(20).clamp(1, 100);
+    run_semantic_search(&state, &query, scope.as_deref(), limit.unwrap_or(20)).await
+}
+
+/// Cœur de la recherche hybride + reranking, réutilisable hors commande Tauri
+/// (l'agent l'appelle comme outil `search_files`, et le pré-RAG du chat s'en sert).
+pub(crate) async fn run_semantic_search(
+    state: &AppState,
+    query: &str,
+    scope: Option<&str>,
+    limit: usize,
+) -> Result<Vec<SearchResult>, String> {
+    let limit = limit.clamp(1, 100);
     let query = query.trim().to_string();
     if query.is_empty() {
         return Ok(Vec::new());
@@ -139,7 +150,7 @@ pub async fn semantic_search(
 
     // Bassin de candidats généreux avant reranking / dédoublonnage.
     let pool = (limit * 6).clamp(30, 160);
-    let cands = retrieve_candidates(&state, &query, scope.as_deref(), pool).await?;
+    let cands = retrieve_candidates(state, &query, scope, pool).await?;
     if cands.is_empty() {
         return Ok(Vec::new());
     }
