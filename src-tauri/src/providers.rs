@@ -40,10 +40,16 @@ fn resolve_local_model(name: &str) -> (fastembed::EmbeddingModel, usize, bool) {
         "multilingual-e5-large" => (M::MultilingualE5Large, 1024, true),
         "bge-small-en-v1.5" | "bge-small" => (M::BGESmallENV15, 384, false),
         "bge-base-en-v1.5" | "bge-base" => (M::BGEBaseENV15, 768, false),
+        "bge-large-en-v1.5" | "bge-large" => (M::BGELargeENV15, 1024, false),
         "all-minilm-l6-v2" | "all-minilm" => (M::AllMiniLML6V2, 384, false),
         // Également disponibles côté Ollama → même modèle en local (CPU) ou distant (GPU).
         "nomic-embed-text" | "nomic-embed-text-v1.5" => (M::NomicEmbedTextV15, 768, false),
         "mxbai-embed-large" | "mxbai-embed-large-v1" => (M::MxbaiEmbedLargeV1, 1024, false),
+        // GTE v1.5 (2024) : excellents rapports qualité/taille, contexte 8k.
+        "gte-base-en-v1.5" | "gte-base" => (M::GTEBaseENV15, 768, false),
+        "gte-large-en-v1.5" | "gte-large" => (M::GTELargeENV15, 1024, false),
+        // ModernBERT (fin 2024) : encodeur récent, contexte long.
+        "modernbert-embed-large" | "modernbert-large" => (M::ModernBertEmbedLarge, 1024, false),
         other => {
             tracing::warn!("modèle d'embedding local inconnu '{other}', repli sur multilingual-e5-small");
             (M::MultilingualE5Small, 384, true)
@@ -67,6 +73,10 @@ pub fn supported_local_models() -> Vec<(&'static str, usize)> {
         ("multilingual-e5-large", 1024),
         ("bge-small-en-v1.5", 384),
         ("bge-base-en-v1.5", 768),
+        ("bge-large-en-v1.5", 1024),
+        ("gte-base-en-v1.5", 768),
+        ("gte-large-en-v1.5", 1024),
+        ("modernbert-embed-large", 1024),
         ("all-minilm", 384),
         ("nomic-embed-text", 768),
         ("mxbai-embed-large", 1024),
@@ -856,5 +866,23 @@ impl AiEngine {
         } else {
             Err(anyhow!("le serveur a répondu {}", resp.status()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_local_model;
+
+    #[test]
+    fn modeles_locaux_resolvent_avec_la_bonne_dimension() {
+        // Nouveaux modèles ajoutés au catalogue (Phase C).
+        assert_eq!(resolve_local_model("gte-large").1, 1024);
+        assert_eq!(resolve_local_model("gte-base").1, 768);
+        assert_eq!(resolve_local_model("bge-large").1, 1024);
+        assert_eq!(resolve_local_model("modernbert-embed-large").1, 1024);
+        // Alias historiques inchangés.
+        assert_eq!(resolve_local_model("multilingual-e5-small").1, 384);
+        // Inconnu → repli sûr sur e5-small (384).
+        assert_eq!(resolve_local_model("inexistant-xyz").1, 384);
     }
 }
