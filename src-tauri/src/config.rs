@@ -139,6 +139,38 @@ impl Default for IndexingConfig {
     }
 }
 
+/// Réglages de la recherche/récupération (RAG moderne). Rétro-compatible via
+/// `#[serde(default)]` : les settings.json antérieurs retombent sur ces valeurs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalConfig {
+    /// Recherche HYBRIDE : fusionne le dense (vecteurs, le sens) et le BM25
+    /// (mots-clés exacts : noms propres, codes, extensions) par Reciprocal Rank
+    /// Fusion. Nettement plus robuste qu'une recherche dense seule.
+    #[serde(default = "default_true")]
+    pub hybrid: bool,
+    /// RERANKING cross-encoder : réordonne les candidats fusionnés (top-N → top-K)
+    /// en scorant conjointement (requête, passage). Gros gain de précision.
+    #[serde(default = "default_true")]
+    pub rerank: bool,
+    /// Modèle de reranking local (fastembed/ONNX). Ex. `bge-reranker-v2-m3`.
+    #[serde(default = "default_reranker_model")]
+    pub reranker_model: String,
+}
+
+fn default_reranker_model() -> String {
+    "bge-reranker-v2-m3".to_string()
+}
+
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        RetrievalConfig {
+            hybrid: true,
+            rerank: true,
+            reranker_model: default_reranker_model(),
+        }
+    }
+}
+
 /// Textes de prompts système surchargés par l'utilisateur. Un champ vide signifie
 /// « utiliser le prompt par défaut intégré » (voir [`default_prompts`]). C'est le
 /// point d'entrée pour ajuster finement l'« extraction du sens » sans recompiler.
@@ -277,6 +309,8 @@ pub struct AppConfig {
     pub vision: ChatConfig,
     pub indexing: IndexingConfig,
     #[serde(default)]
+    pub retrieval: RetrievalConfig,
+    #[serde(default)]
     pub prompts: PromptsConfig,
 }
 
@@ -287,6 +321,7 @@ impl Default for AppConfig {
             reasoning: ChatConfig::default_reasoning(),
             vision: ChatConfig::default_vision(),
             indexing: IndexingConfig::default(),
+            retrieval: RetrievalConfig::default(),
             prompts: PromptsConfig::default(),
         }
     }

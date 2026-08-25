@@ -893,6 +893,61 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
             ))}
           </section>
 
+          {/* Recherche (RAG moderne) — hybride + reranking cross-encoder */}
+          <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
+            <h3 className="text-sm font-semibold text-zinc-200">Recherche (RAG)</h3>
+            <p className="text-[11px] text-zinc-500">
+              <strong>Hybride</strong> : combine le sens (vecteurs) et les mots-clés exacts (BM25)
+              — on trouve à la fois par similarité ET par terme précis (noms propres, codes,
+              extensions). <strong>Reranking</strong> : un cross-encoder réordonne les meilleurs
+              candidats pour une précision nettement supérieure (léger surcoût au 1<sup>er</sup> usage,
+              le temps de charger le modèle en local).
+            </p>
+            <label className="flex items-center gap-2 text-sm text-zinc-300">
+              <input
+                type="checkbox"
+                checked={cfg.retrieval.hybrid}
+                onChange={(e) =>
+                  setCfg({ ...cfg, retrieval: { ...cfg.retrieval, hybrid: e.target.checked } })
+                }
+                className="accent-blue-500"
+              />
+              Recherche hybride (dense + mots-clés)
+            </label>
+            <label className="flex items-center gap-2 text-sm text-zinc-300">
+              <input
+                type="checkbox"
+                checked={cfg.retrieval.rerank}
+                onChange={(e) =>
+                  setCfg({ ...cfg, retrieval: { ...cfg.retrieval, rerank: e.target.checked } })
+                }
+                className="accent-blue-500"
+              />
+              Reranking cross-encoder
+            </label>
+            {cfg.retrieval.rerank && (
+              <label className="flex items-center gap-2 text-xs text-zinc-400">
+                <span className="w-32 shrink-0">Modèle de reranking</span>
+                <select
+                  value={cfg.retrieval.reranker_model}
+                  onChange={(e) =>
+                    setCfg({
+                      ...cfg,
+                      retrieval: { ...cfg.retrieval, reranker_model: e.target.value },
+                    })
+                  }
+                  className="flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
+                >
+                  <option value="bge-reranker-v2-m3">bge-reranker-v2-m3 (multilingue, recommandé)</option>
+                  <option value="bge-reranker-base">bge-reranker-base (léger, anglais)</option>
+                  <option value="jina-reranker-v2-base-multilingual">
+                    jina-reranker-v2 (multilingue)
+                  </option>
+                </select>
+              </label>
+            )}
+          </section>
+
           {/* Prompts IA — édition avancée (repliable) */}
           <section className="rounded-xl border border-zinc-800 bg-zinc-900/30">
             <button

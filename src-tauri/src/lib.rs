@@ -982,8 +982,9 @@ async fn shutdown(st: &Arc<AppState>) {
     tracing::info!("🛑 fermeture : libération des ressources…");
     // 1. Faire cesser worker / crawler / classifieur (ils testent ce drapeau).
     st.paused.store(true, std::sync::atomic::Ordering::Relaxed);
-    // 2. Modèle d'embedding local : détruit la session ORT et ses threads.
+    // 2. Modèle d'embedding local + reranker : détruit les sessions ORT et threads.
     st.ai.invalidate_embedder().await;
+    st.ai.invalidate_reranker().await;
     // 3. Modèles hébergés (Ollama…) : ils survivent à notre processus sans ça.
     st.ai.unload_remote_models().await;
     // 4. Base : on rapatrie le WAL dans le fichier principal.

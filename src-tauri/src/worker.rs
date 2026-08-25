@@ -296,17 +296,43 @@ async fn store_text_document(
     let summary =
         qualify_or_excerpt(state, &cfg, path, doc_type, text, cfg.indexing.qualify_documents).await;
 
-    // On préfixe le sens au 1er chunk pour qu'il soit AUSSI retrouvable par la recherche
-    // (ex. « carte d'identité » devient cherchable même si le mot n'est pas dans l'OCR).
-    let mut texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-    if let Some(first) = texts.first_mut() {
-        *first = format!("[{doc_type}] {summary}\n\n{first}");
-    }
+    // TEXTE STOCKÉ : brut (snippets/BM25/rerank propres). Le 1er chunk porte en plus la
+    // qualification complète, ce qui la rend cherchable AUSSI par mots-clés (BM25) —
+    // ex. « carte d'identité » retrouvable même absent de l'OCR.
+    let stored_texts: Vec<String> = {
+        let mut t: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+        if let Some(first) = t.first_mut() {
+            *first = format!("[{doc_type}] {summary}\n\n{first}");
+        }
+        t
+    };
 
-    let vectors = embedder.embed_documents(texts.clone()).await?;
+    // CONTEXTUAL RETRIEVAL : on situe chaque chunk dans son document (nom + sens) dans
+    // le texte EMBEDDÉ (pas stocké). Un chunk isolé « le montant est de 90€ » devient
+    // ainsi rattachable à « facture EDF » → dense bien plus robuste. Le 1er chunk
+    // contient déjà la qualification, inutile de la redoubler.
+    let file_name = std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ctx_compact: String = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    let ctx_compact: String = ctx_compact.chars().take(180).collect();
+    let embed_texts: Vec<String> = stored_texts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            if i == 0 {
+                t.clone()
+            } else {
+                format!("{file_name} · {ctx_compact}\n\n{t}")
+            }
+        })
+        .collect();
+
+    let vectors = embedder.embed_documents(embed_texts).await?;
     let chunk_vectors: Vec<ChunkVector> = chunks
         .into_iter()
-        .zip(texts.into_iter().zip(vectors.into_iter()))
+        .zip(stored_texts.into_iter().zip(vectors.into_iter()))
         .map(|(c, (t, v))| ChunkVector { chunk_index: c.chunk_index as i32, text: t, vector: v })
         .collect();
     state.vector.upsert_chunks(path, hash, mtime, chunk_vectors).await?;

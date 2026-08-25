@@ -242,6 +242,74 @@ impl EmbeddingProvider for OpenAiEmbedder {
 }
 
 // =========================================================================
+// RERANKING (cross-encoder local, fastembed / ONNX)
+// =========================================================================
+
+/// Résout un identifiant convivial de reranker en modèle fastembed.
+fn resolve_reranker_model(name: &str) -> fastembed::RerankerModel {
+    use fastembed::RerankerModel as R;
+    match name.to_lowercase().as_str() {
+        "bge-reranker-base" => R::BGERerankerBase,
+        "bge-reranker-v2-m3" | "bge-reranker-v2" | "bge-reranker" => R::BGERerankerV2M3,
+        "jina-reranker-v2" | "jina-reranker-v2-base-multilingual" => {
+            R::JINARerankerV2BaseMultiligual
+        }
+        other => {
+            tracing::warn!("reranker inconnu '{other}', repli sur bge-reranker-v2-m3");
+            R::BGERerankerV2M3
+        }
+    }
+}
+
+/// Rerankers locaux (fastembed) proposés à l'utilisateur.
+pub fn supported_reranker_models() -> Vec<&'static str> {
+    vec![
+        "bge-reranker-v2-m3",
+        "bge-reranker-base",
+        "jina-reranker-v2-base-multilingual",
+    ]
+}
+
+/// Reranker cross-encoder : score conjointement (requête, passage) — bien plus
+/// précis qu'un bi-encodeur, mais coûteux, donc appliqué UNIQUEMENT au petit
+/// ensemble de candidats déjà retenus par la recherche hybride.
+pub struct Reranker {
+    model: Arc<fastembed::TextRerank>,
+}
+
+impl Reranker {
+    /// Charge le modèle (bloquant : appeler via `spawn_blocking`, ORT déjà prêt).
+    pub fn load(model_name: &str, cache_dir: std::path::PathBuf) -> Result<Self> {
+        let opts = fastembed::RerankInitOptions::new(resolve_reranker_model(model_name))
+            .with_show_download_progress(false)
+            .with_cache_dir(cache_dir);
+        let model =
+            fastembed::TextRerank::try_new(opts).context("chargement du reranker (fastembed)")?;
+        Ok(Reranker { model: Arc::new(model) })
+    }
+
+    /// Réordonne `docs` par pertinence à `query`. Renvoie `(index d'origine, score)`
+    /// TRIÉ par score décroissant. Le score est un logit (non borné) : à convertir en
+    /// 0–1 par sigmoïde côté appelant si besoin d'affichage.
+    pub async fn rerank(&self, query: String, docs: Vec<String>) -> Result<Vec<(usize, f32)>> {
+        if docs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let model = self.model.clone();
+        tokio::task::spawn_blocking(move || {
+            let res = model
+                .rerank(query, docs, false, None)
+                .context("échec du reranking")?;
+            Ok::<Vec<(usize, f32)>, anyhow::Error>(
+                res.into_iter().map(|r| (r.index, r.score)).collect(),
+            )
+        })
+        .await
+        .context("tâche de reranking interrompue")?
+    }
+}
+
+// =========================================================================
 // CHAT / REASONING / VISION
 // =========================================================================
 
@@ -409,11 +477,17 @@ struct CachedEmbedder {
     provider: Arc<dyn EmbeddingProvider>,
 }
 
+struct CachedReranker {
+    key: String,
+    provider: Arc<Reranker>,
+}
+
 /// Point d'entrée unique vers les modèles, piloté par la configuration.
 pub struct AiEngine {
     config: Arc<ConfigStore>,
     http: reqwest::Client,
     embedder: tokio::sync::Mutex<Option<CachedEmbedder>>,
+    reranker: tokio::sync::Mutex<Option<CachedReranker>>,
     /// Dossier de données (pour approvisionner ONNX Runtime).
     data_dir: std::path::PathBuf,
     /// Garantit qu'ONNX Runtime (ORT_DYLIB_PATH) est prêt AVANT toute init d'ORT,
@@ -431,9 +505,51 @@ impl AiEngine {
             config,
             http,
             embedder: tokio::sync::Mutex::new(None),
+            reranker: tokio::sync::Mutex::new(None),
             data_dir,
             ort_ready: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// Garantit qu'ONNX Runtime (ORT_DYLIB_PATH) est prêt, une seule fois. Partagé
+    /// par l'embedder local ET le reranker (tous deux via ORT).
+    async fn ensure_ort_ready(&self) -> Result<()> {
+        let dir = self.data_dir.clone();
+        self.ort_ready
+            .get_or_try_init(|| async move {
+                tokio::task::spawn_blocking(move || crate::ort_setup::ensure_ort(&dir, false))
+                    .await
+                    .context("tâche de préparation ORT interrompue")?
+                    .map(|_gpu| ())
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Renvoie le reranker courant (chargé paresseusement, mis en cache). Reconstruit
+    /// si le modèle configuré change.
+    pub async fn reranker(&self) -> Result<Arc<Reranker>> {
+        let key = self.config.snapshot().retrieval.reranker_model;
+        let mut guard = self.reranker.lock().await;
+        if let Some(c) = guard.as_ref() {
+            if c.key == key {
+                return Ok(c.provider.clone());
+            }
+        }
+        self.ensure_ort_ready().await?;
+        let cache = local_cache_dir(&self.data_dir);
+        let name = key.clone();
+        let reranker = tokio::task::spawn_blocking(move || Reranker::load(&name, cache))
+            .await
+            .context("tâche de chargement du reranker interrompue")??;
+        let reranker = Arc::new(reranker);
+        *guard = Some(CachedReranker { key, provider: reranker.clone() });
+        Ok(reranker)
+    }
+
+    /// Libère le reranker chargé (fermeture / changement de modèle).
+    pub async fn invalidate_reranker(&self) {
+        *self.reranker.lock().await = None;
     }
 
     fn embedding_cache_key(cfg: &EmbeddingConfig) -> String {

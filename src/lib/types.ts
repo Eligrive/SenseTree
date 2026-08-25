@@ -40,11 +40,18 @@ export interface PromptsConfig {
   reorganize: string;
 }
 
+export interface RetrievalConfig {
+  hybrid: boolean;
+  rerank: boolean;
+  reranker_model: string;
+}
+
 export interface AppConfig {
   embedding: EmbeddingConfig;
   reasoning: ChatConfig;
   vision: ChatConfig;
   indexing: IndexingConfig;
+  retrieval: RetrievalConfig;
   prompts: PromptsConfig;
 }
 
