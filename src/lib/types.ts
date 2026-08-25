@@ -46,12 +46,21 @@ export interface RetrievalConfig {
   reranker_model: string;
 }
 
+/// Un serveur MCP (Model Context Protocol) externe exposant des outils à l'agent.
+export interface McpServerConfig {
+  name: string;
+  url: string;
+  auth: string;
+  enabled: boolean;
+}
+
 export interface AppConfig {
   embedding: EmbeddingConfig;
   reasoning: ChatConfig;
   vision: ChatConfig;
   indexing: IndexingConfig;
   retrieval: RetrievalConfig;
+  mcp_servers: McpServerConfig[];
   prompts: PromptsConfig;
 }
 

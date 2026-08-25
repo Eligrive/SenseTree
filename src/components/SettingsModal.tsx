@@ -7,6 +7,7 @@ import {
   Download,
   Loader2,
   Plug,
+  Plus,
   RefreshCw,
   RotateCcw,
   Save,
@@ -946,6 +947,90 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                 </select>
               </label>
             )}
+          </section>
+
+          {/* Serveurs MCP — outils externes pour l'agent du chat */}
+          <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
+            <div className="flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-200">
+                <Plug size={14} /> Serveurs MCP (outils externes)
+              </h3>
+              <button
+                onClick={() =>
+                  setCfg({
+                    ...cfg,
+                    mcp_servers: [
+                      ...cfg.mcp_servers,
+                      { name: "", url: "", auth: "", enabled: true },
+                    ],
+                  })
+                }
+                className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800"
+              >
+                <Plus size={12} /> Ajouter
+              </button>
+            </div>
+            <p className="text-[11px] text-zinc-500">
+              Branche des serveurs <strong>MCP</strong> (Model Context Protocol, transport HTTP) :
+              leurs outils deviennent utilisables par l'agent du chat. Best-effort — un serveur
+              injoignable est ignoré, l'agent garde ses outils intégrés.
+            </p>
+            {cfg.mcp_servers.length === 0 && (
+              <p className="text-[11px] text-zinc-600">Aucun serveur configuré.</p>
+            )}
+            {cfg.mcp_servers.map((srv, i) => {
+              const patch = (p: Partial<typeof srv>) => {
+                const next = [...cfg.mcp_servers];
+                next[i] = { ...srv, ...p };
+                setCfg({ ...cfg, mcp_servers: next });
+              };
+              return (
+                <div
+                  key={i}
+                  className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950/40 p-3"
+                >
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={srv.enabled}
+                      onChange={(e) => patch({ enabled: e.target.checked })}
+                      className="accent-blue-500"
+                      title="Activer ce serveur"
+                    />
+                    <input
+                      value={srv.name}
+                      placeholder="nom (ex. github)"
+                      onChange={(e) => patch({ name: e.target.value })}
+                      className="w-32 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+                    />
+                    <input
+                      value={srv.url}
+                      placeholder="https://…/mcp"
+                      onChange={(e) => patch({ url: e.target.value })}
+                      className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+                    />
+                    <button
+                      onClick={() =>
+                        setCfg({
+                          ...cfg,
+                          mcp_servers: cfg.mcp_servers.filter((_, j) => j !== i),
+                        })
+                      }
+                      title="Retirer ce serveur"
+                      className="shrink-0 rounded p-1 text-zinc-600 hover:bg-rose-500/15 hover:text-rose-400"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                  <input
+                    value={srv.auth}
+                    placeholder="Authorization (optionnel, ex. Bearer xxx)"
+                    onChange={(e) => patch({ auth: e.target.value })}
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+                  />
+                </div>
+              );
+            })}
           </section>
 
           {/* Prompts IA — édition avancée (repliable) */}

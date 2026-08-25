@@ -10,6 +10,7 @@ pub mod explorer;
 pub mod folders;
 pub mod gardener;
 pub mod installs;
+pub mod mcp;
 pub mod ort_setup;
 pub mod parser;
 pub mod providers;

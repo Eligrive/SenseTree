@@ -5,6 +5,7 @@
 //! l'exécute de façon transactionnelle avec rollback ; les suppressions passent
 //! par une corbeille locale (réversibles). Le gardener ne fait que diagnostiquer.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use serde_json::json;
 use tauri::State;
 use uuid::Uuid;
 
+use crate::config::McpServerConfig;
 use crate::providers::{ChatMessage, ToolCallOut};
 use crate::state::AppState;
 
@@ -524,6 +526,16 @@ fn tool_schemas() -> serde_json::Value {
     ])
 }
 
+/// Normalise un nom d'outil pour le function-calling (^[A-Za-z0-9_-]{1,64}$).
+fn sanitize_tool_name(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    out.truncate(64);
+    out
+}
+
 /// Lit un fichier texte, borné, en UTF-8 tolérant (best-effort pour un binaire).
 fn read_file_bounded(path: &str) -> String {
     if path.trim().is_empty() {
@@ -571,8 +583,18 @@ async fn execute_tool(
     scope: &Option<String>,
     sources: &mut Vec<ChatSource>,
     plan: &mut Option<ActionPlan>,
+    mcp_index: &HashMap<String, (McpServerConfig, String)>,
 ) -> String {
     let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_else(|_| json!({}));
+
+    // Outil EXTERNE fourni par un serveur MCP ?
+    if let Some((srv, orig)) = mcp_index.get(&tc.name) {
+        return match crate::mcp::call_tool(srv, orig, args).await {
+            Ok(txt) => txt,
+            Err(e) => format!("Erreur outil MCP {} : {e}", srv.name),
+        };
+    }
+
     match tc.name.as_str() {
         "search_files" => {
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
@@ -720,8 +742,31 @@ exécuté sans validation de l'utilisateur. Réponds en français, de façon con
         msgs.push(json!({"role": m.role, "content": m.content}));
     }
 
+    // --- Outils : intégrés + outils EXTERNES des serveurs MCP activés (best-effort ;
+    //     un serveur injoignable est ignoré, l'agent garde ses outils intégrés). ---
+    let mut tools = tool_schemas();
+    let mut mcp_index: HashMap<String, (McpServerConfig, String)> = HashMap::new();
+    for srv in cfg.mcp_servers.iter().filter(|s| s.enabled && !s.url.trim().is_empty()) {
+        match crate::mcp::list_tools(srv).await {
+            Ok(list) => {
+                for t in list {
+                    let fname = sanitize_tool_name(&format!("mcp__{}__{}", srv.name, t.name));
+                    if let Some(arr) = tools.as_array_mut() {
+                        arr.push(json!({"type": "function", "function": {
+                            "name": fname,
+                            "description": format!("[{}] {}", srv.name, t.description),
+                            "parameters": t.input_schema,
+                        }}));
+                    }
+                    mcp_index.insert(fname, (srv.clone(), t.name.clone()));
+                }
+                tracing::info!("MCP {} : {} outil(s) exposé(s) à l'agent", srv.name, mcp_index.len());
+            }
+            Err(e) => tracing::warn!("MCP {} indisponible : {e}", srv.name),
+        }
+    }
+
     // --- Boucle ReAct : le modèle appelle des outils, observe, itère, puis répond. ---
-    let tools = tool_schemas();
     let client = state.ai.reasoning_client();
     let mut plan: Option<ActionPlan> = None;
     let mut answer: Option<String> = None;
@@ -746,7 +791,8 @@ exécuté sans validation de l'utilisateur. Réponds en français, de façon con
         // Réinjecte le message assistant (avec ses tool_calls) puis chaque observation.
         msgs.push(turn.raw_message.clone());
         for tc in &turn.tool_calls {
-            let observation = execute_tool(&state, tc, &scope, &mut sources, &mut plan).await;
+            let observation =
+                execute_tool(&state, tc, &scope, &mut sources, &mut plan, &mcp_index).await;
             msgs.push(json!({"role": "tool", "tool_call_id": tc.id, "content": observation}));
         }
 

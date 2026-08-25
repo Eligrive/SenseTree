@@ -171,6 +171,21 @@ impl Default for RetrievalConfig {
     }
 }
 
+/// Un serveur MCP (Model Context Protocol) externe, exposant des outils à l'agent.
+/// Transport HTTP uniquement (URL + en-tête d'auth optionnel).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Nom court (namespace des outils côté agent, ex. `github`, `notion`).
+    pub name: String,
+    /// URL de l'endpoint MCP (Streamable HTTP / JSON-RPC).
+    pub url: String,
+    /// En-tête `Authorization` complet, optionnel (ex. `Bearer xxxxx`).
+    #[serde(default)]
+    pub auth: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 /// Textes de prompts système surchargés par l'utilisateur. Un champ vide signifie
 /// « utiliser le prompt par défaut intégré » (voir [`default_prompts`]). C'est le
 /// point d'entrée pour ajuster finement l'« extraction du sens » sans recompiler.
@@ -310,6 +325,9 @@ pub struct AppConfig {
     pub indexing: IndexingConfig,
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+    /// Serveurs MCP externes branchés sur l'agent (vide par défaut).
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
     #[serde(default)]
     pub prompts: PromptsConfig,
 }
@@ -322,6 +340,7 @@ impl Default for AppConfig {
             vision: ChatConfig::default_vision(),
             indexing: IndexingConfig::default(),
             retrieval: RetrievalConfig::default(),
+            mcp_servers: Vec::new(),
             prompts: PromptsConfig::default(),
         }
     }
