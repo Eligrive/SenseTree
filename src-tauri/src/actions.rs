@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -687,6 +688,65 @@ async fn execute_tool(
     }
 }
 
+/// Découvre les outils MCP des serveurs activés, avec cache (TTL) pour éviter un
+/// handshake à chaque message. Renvoie (schémas function-calling, index de routage).
+async fn discover_mcp_tools(
+    state: &Arc<AppState>,
+    servers: &[McpServerConfig],
+) -> (Vec<serde_json::Value>, HashMap<String, (McpServerConfig, String)>) {
+    let active: Vec<&McpServerConfig> = servers
+        .iter()
+        .filter(|s| s.enabled && (!s.url.trim().is_empty() || !s.command.trim().is_empty()))
+        .collect();
+    if active.is_empty() {
+        return (Vec::new(), HashMap::new());
+    }
+    // Signature de la config : toute modification invalide le cache immédiatement.
+    let key = active
+        .iter()
+        .map(|s| format!("{}|{}|{}|{}|{}", s.name, s.url, s.auth, s.command, s.args.join("\u{1f}")))
+        .collect::<Vec<_>>()
+        .join(";;");
+
+    if let Ok(guard) = state.mcp_cache.lock() {
+        if let Some(d) = guard.as_ref() {
+            if d.key == key && d.at.elapsed() < crate::mcp::DISCOVERY_TTL {
+                return (d.tools_schema.clone(), d.index.clone());
+            }
+        }
+    }
+
+    let mut tools_schema: Vec<serde_json::Value> = Vec::new();
+    let mut index: HashMap<String, (McpServerConfig, String)> = HashMap::new();
+    for srv in &active {
+        match crate::mcp::list_tools(srv).await {
+            Ok(list) => {
+                for t in list {
+                    let fname = sanitize_tool_name(&format!("mcp__{}__{}", srv.name, t.name));
+                    tools_schema.push(json!({"type": "function", "function": {
+                        "name": fname,
+                        "description": format!("[{}] {}", srv.name, t.description),
+                        "parameters": t.input_schema,
+                    }}));
+                    index.insert(fname, ((*srv).clone(), t.name.clone()));
+                }
+                tracing::info!("MCP {} : {} outil(s) exposé(s)", srv.name, index.len());
+            }
+            Err(e) => tracing::warn!("MCP {} indisponible : {e}", srv.name),
+        }
+    }
+
+    if let Ok(mut guard) = state.mcp_cache.lock() {
+        *guard = Some(crate::mcp::McpDiscovery {
+            key,
+            at: Instant::now(),
+            tools_schema: tools_schema.clone(),
+            index: index.clone(),
+        });
+    }
+    (tools_schema, index)
+}
+
 #[tauri::command]
 pub async fn chat_with_assistant(
     state: State<'_, Arc<AppState>>,
@@ -764,28 +824,12 @@ exécuté sans validation de l'utilisateur. Réponds en français, de façon con
         msgs.push(json!({"role": m.role, "content": m.content}));
     }
 
-    // --- Outils : intégrés + outils EXTERNES des serveurs MCP activés (best-effort ;
-    //     un serveur injoignable est ignoré, l'agent garde ses outils intégrés). ---
+    // --- Outils : intégrés + outils EXTERNES des serveurs MCP activés (via cache de
+    //     découverte ; best-effort : un serveur injoignable est ignoré). ---
     let mut tools = tool_schemas();
-    let mut mcp_index: HashMap<String, (McpServerConfig, String)> = HashMap::new();
-    for srv in cfg.mcp_servers.iter().filter(|s| s.enabled && !s.url.trim().is_empty()) {
-        match crate::mcp::list_tools(srv).await {
-            Ok(list) => {
-                for t in list {
-                    let fname = sanitize_tool_name(&format!("mcp__{}__{}", srv.name, t.name));
-                    if let Some(arr) = tools.as_array_mut() {
-                        arr.push(json!({"type": "function", "function": {
-                            "name": fname,
-                            "description": format!("[{}] {}", srv.name, t.description),
-                            "parameters": t.input_schema,
-                        }}));
-                    }
-                    mcp_index.insert(fname, (srv.clone(), t.name.clone()));
-                }
-                tracing::info!("MCP {} : {} outil(s) exposé(s) à l'agent", srv.name, mcp_index.len());
-            }
-            Err(e) => tracing::warn!("MCP {} indisponible : {e}", srv.name),
-        }
+    let (mcp_schemas, mcp_index) = discover_mcp_tools(&state, &cfg.mcp_servers).await;
+    if let Some(arr) = tools.as_array_mut() {
+        arr.extend(mcp_schemas);
     }
 
     // --- Boucle ReAct : le modèle appelle des outils, observe, itère, puis répond. ---

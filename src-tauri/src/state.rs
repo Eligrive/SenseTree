@@ -10,6 +10,7 @@ use serde::Serialize;
 use crate::config::ConfigStore;
 use crate::db::Database;
 use crate::gardener::GardenerReport;
+use crate::mcp::McpDiscovery;
 use crate::providers::AiEngine;
 use crate::vectordb::VectorDb;
 
@@ -49,6 +50,8 @@ pub struct AppState {
     /// Dernier bilan de santé structurel des racines (gardener proactif de fond,
     /// lecture seule). Rafraîchi périodiquement ; servi tel quel à l'UI.
     pub gardener: Arc<Mutex<GardenerReport>>,
+    /// Cache de découverte des outils MCP (évite un handshake par message de chat).
+    pub mcp_cache: Arc<Mutex<Option<McpDiscovery>>>,
 }
 
 impl AppState {

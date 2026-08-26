@@ -47,10 +47,13 @@ export interface RetrievalConfig {
 }
 
 /// Un serveur MCP (Model Context Protocol) externe exposant des outils à l'agent.
+/// Transport HTTP (`url`) OU stdio (`command` + `args`) — `command` a la priorité.
 export interface McpServerConfig {
   name: string;
   url: string;
   auth: string;
+  command: string;
+  args: string[];
   enabled: boolean;
 }
 

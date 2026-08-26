@@ -895,6 +895,7 @@ pub fn run() {
                 activity: Arc::new(std::sync::Mutex::new(None)),
                 scan_epoch: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 gardener: Arc::new(std::sync::Mutex::new(gardener::GardenerReport::default())),
+                mcp_cache: Arc::new(std::sync::Mutex::new(None)),
             });
             app.manage(app_state.clone());
 

@@ -961,7 +961,7 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                     ...cfg,
                     mcp_servers: [
                       ...cfg.mcp_servers,
-                      { name: "", url: "", auth: "", enabled: true },
+                      { name: "", url: "", auth: "", command: "", args: [], enabled: true },
                     ],
                   })
                 }
@@ -971,8 +971,9 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
               </button>
             </div>
             <p className="text-[11px] text-zinc-500">
-              Branche des serveurs <strong>MCP</strong> (Model Context Protocol, transport HTTP) :
-              leurs outils deviennent utilisables par l'agent du chat. Best-effort — un serveur
+              Branche des serveurs <strong>MCP</strong> (Model Context Protocol) : leurs outils
+              deviennent utilisables par l'agent du chat. Transport <strong>HTTP</strong> (URL) ou{" "}
+              <strong>stdio</strong> (commande locale, ex. <code>npx</code>). Best-effort — un serveur
               injoignable est ignoré, l'agent garde ses outils intégrés.
             </p>
             {cfg.mcp_servers.length === 0 && (
@@ -1003,12 +1004,9 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                       onChange={(e) => patch({ name: e.target.value })}
                       className="w-32 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
                     />
-                    <input
-                      value={srv.url}
-                      placeholder="https://…/mcp"
-                      onChange={(e) => patch({ url: e.target.value })}
-                      className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
-                    />
+                    <span className="flex-1 text-[10px] uppercase tracking-widest text-zinc-600">
+                      {srv.command.trim() ? "stdio" : "http"}
+                    </span>
                     <button
                       onClick={() =>
                         setCfg({
@@ -1022,12 +1020,38 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                       <X size={13} />
                     </button>
                   </div>
+                  {/* Transport HTTP */}
                   <input
-                    value={srv.auth}
-                    placeholder="Authorization (optionnel, ex. Bearer xxx)"
-                    onChange={(e) => patch({ auth: e.target.value })}
+                    value={srv.url}
+                    placeholder="URL HTTP (ex. https://…/mcp) — ou laisser vide pour stdio"
+                    onChange={(e) => patch({ url: e.target.value })}
                     className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
                   />
+                  {srv.url.trim() && (
+                    <input
+                      value={srv.auth}
+                      placeholder="Authorization (optionnel, ex. Bearer xxx)"
+                      onChange={(e) => patch({ auth: e.target.value })}
+                      className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+                    />
+                  )}
+                  {/* Transport stdio */}
+                  <div className="flex gap-2">
+                    <input
+                      value={srv.command}
+                      placeholder="commande stdio (ex. npx)"
+                      onChange={(e) => patch({ command: e.target.value })}
+                      className="w-40 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+                    />
+                    <input
+                      value={srv.args.join(" ")}
+                      placeholder="arguments (séparés par des espaces)"
+                      onChange={(e) =>
+                        patch({ args: e.target.value.split(/\s+/).filter(Boolean) })
+                      }
+                      className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+                    />
+                  </div>
                 </div>
               );
             })}

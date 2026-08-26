@@ -177,11 +177,19 @@ impl Default for RetrievalConfig {
 pub struct McpServerConfig {
     /// Nom court (namespace des outils côté agent, ex. `github`, `notion`).
     pub name: String,
-    /// URL de l'endpoint MCP (Streamable HTTP / JSON-RPC).
+    /// Transport HTTP : URL de l'endpoint MCP (Streamable HTTP / JSON-RPC). Vide pour stdio.
+    #[serde(default)]
     pub url: String,
-    /// En-tête `Authorization` complet, optionnel (ex. `Bearer xxxxx`).
+    /// En-tête `Authorization` complet pour le transport HTTP, optionnel (ex. `Bearer xxxxx`).
     #[serde(default)]
     pub auth: String,
+    /// Transport stdio : commande à lancer (ex. `npx`, `uvx`, chemin d'un binaire MCP).
+    /// Si non vide, ce serveur est piloté en stdio et `url` est ignoré.
+    #[serde(default)]
+    pub command: String,
+    /// Arguments de la commande stdio.
+    #[serde(default)]
+    pub args: Vec<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
