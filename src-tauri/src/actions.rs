@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::State;
+use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use crate::config::McpServerConfig;
@@ -688,6 +688,41 @@ async fn execute_tool(
     }
 }
 
+/// Étape de travail de l'agent, poussée en direct à l'UI (événement `agent://step`).
+#[derive(Clone, Serialize)]
+struct AgentStep {
+    label: String,
+}
+
+/// Libellé lisible d'un appel d'outil (pour la trace live du chat).
+fn describe_tool_call(
+    tc: &ToolCallOut,
+    mcp_index: &HashMap<String, (McpServerConfig, String)>,
+) -> String {
+    if let Some((srv, orig)) = mcp_index.get(&tc.name) {
+        return format!("🔌 {} · {}", srv.name, orig);
+    }
+    let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_else(|_| json!({}));
+    let base = |p: &str| {
+        Path::new(p)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| p.to_string())
+    };
+    match tc.name.as_str() {
+        "search_files" => format!(
+            "🔍 Recherche : {}",
+            args.get("query").and_then(|v| v.as_str()).unwrap_or("").chars().take(60).collect::<String>()
+        ),
+        "read_file" => format!("📄 Lecture : {}", base(args.get("path").and_then(|v| v.as_str()).unwrap_or(""))),
+        "list_directory" => {
+            format!("📂 Exploration : {}", base(args.get("path").and_then(|v| v.as_str()).unwrap_or("")))
+        }
+        "propose_actions" => "🛠️ Préparation d'un plan d'action".to_string(),
+        other => format!("🔧 {other}"),
+    }
+}
+
 /// Découvre les outils MCP des serveurs activés, avec cache (TTL) pour éviter un
 /// handshake à chaque message. Renvoie (schémas function-calling, index de routage).
 async fn discover_mcp_tools(
@@ -749,6 +784,7 @@ async fn discover_mcp_tools(
 
 #[tauri::command]
 pub async fn chat_with_assistant(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     messages: Vec<ChatTurn>,
     scope: Option<String>,
@@ -857,6 +893,8 @@ exécuté sans validation de l'utilisateur. Réponds en français, de façon con
         // Réinjecte le message assistant (avec ses tool_calls) puis chaque observation.
         msgs.push(turn.raw_message.clone());
         for tc in &turn.tool_calls {
+            // Trace live : on annonce l'action AVANT de l'exécuter.
+            let _ = app.emit("agent-step", AgentStep { label: describe_tool_call(tc, &mcp_index) });
             let observation =
                 execute_tool(&state, tc, &scope, &mut sources, &mut plan, &mcp_index).await;
             msgs.push(json!({"role": "tool", "tool_call_id": tc.id, "content": observation}));
@@ -882,7 +920,26 @@ exécuté sans validation de l'utilisateur. Réponds en français, de façon con
 
 #[cfg(test)]
 mod tests {
-    use super::{path_within_roots, read_file_bounded, tool_schemas};
+    use super::{describe_tool_call, path_within_roots, read_file_bounded, tool_schemas};
+    use crate::providers::ToolCallOut;
+
+    #[test]
+    fn describe_tool_call_produit_des_libelles_lisibles() {
+        let idx = std::collections::HashMap::new();
+        let search = ToolCallOut {
+            id: "1".into(),
+            name: "search_files".into(),
+            arguments: r#"{"query":"factures 2024"}"#.into(),
+        };
+        assert!(describe_tool_call(&search, &idx).contains("Recherche"));
+        let read = ToolCallOut {
+            id: "2".into(),
+            name: "read_file".into(),
+            arguments: r#"{"path":"C:/docs/rapport.pdf"}"#.into(),
+        };
+        // Le libellé montre le nom de fichier, pas le chemin complet.
+        assert!(describe_tool_call(&read, &idx).contains("rapport.pdf"));
+    }
 
     #[test]
     fn within_roots_respecte_la_frontiere_de_segment() {

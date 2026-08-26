@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, FileText, Loader2, Send, Trash2, Wand2 } from "lucide-react";
+import { Bot, Check, FileText, Loader2, Send, Trash2, Wand2 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import type { ActionPlan, ChatSource, ChatTurn } from "../lib/types";
 import { applyActionPlan, chatWithAssistant, discardActionPlan } from "../lib/ipc";
 import ActionPlanCard from "./ActionPlanCard";
@@ -21,11 +22,13 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  // Trace live des actions de l'agent pendant qu'il travaille (événements backend).
+  const [steps, setSteps] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, busy]);
+  }, [messages, busy, steps.length]);
 
   const push = (m: Msg) => setMessages((prev) => [...prev, m]);
 
@@ -48,8 +51,15 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
     setInput("");
     push({ id: nextId(), role: "user", text });
     setBusy(true);
+    setSteps([]);
 
+    // Écoute les étapes de l'agent (recherche, lecture, outil…) émises en direct.
+    let unlisten: (() => void) | undefined;
     try {
+      unlisten = await listen<{ label: string }>("agent-step", (e) => {
+        setSteps((prev) => [...prev, e.payload.label]);
+      });
+
       const history: ChatTurn[] = messages
         .filter((m): m is Extract<Msg, { role: "user" | "assistant" }> => m.role !== "plan")
         .map((m) => ({ role: m.role, content: m.text }));
@@ -63,6 +73,8 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
     } catch (e) {
       push({ id: nextId(), role: "assistant", text: `⚠️ ${String(e)}` });
     } finally {
+      unlisten?.();
+      setSteps([]);
       setBusy(false);
     }
   };
@@ -155,8 +167,31 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
         )}
 
         {busy && (
-          <div className="flex items-center gap-2 text-xs text-zinc-500">
-            <Loader2 size={13} className="animate-spin" /> réflexion…
+          <div className="space-y-1.5">
+            {steps.length === 0 ? (
+              <div className="flex items-center gap-2 text-xs text-zinc-500">
+                <Loader2 size={13} className="animate-spin" /> réflexion…
+              </div>
+            ) : (
+              steps.map((s, i) => {
+                const last = i === steps.length - 1;
+                return (
+                  <div
+                    key={i}
+                    className={`flex items-center gap-2 text-xs ${
+                      last ? "text-zinc-300" : "text-zinc-500"
+                    }`}
+                  >
+                    {last ? (
+                      <Loader2 size={12} className="shrink-0 animate-spin" />
+                    ) : (
+                      <Check size={12} className="shrink-0 text-emerald-500" />
+                    )}
+                    <span className="truncate">{s}</span>
+                  </div>
+                );
+              })
+            )}
           </div>
         )}
       </div>
