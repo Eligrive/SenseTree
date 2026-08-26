@@ -92,7 +92,7 @@ impl Parser {
     fn route_by_extension(ext: &str) -> Option<FileType> {
         match ext {
             // Documents réellement extractibles (voir worker::extract_text).
-            "pdf" | "docx" => Some(FileType::Document),
+            "pdf" | "docx" | "pptx" | "xlsx" => Some(FileType::Document),
             // Images raster gérées par la vision.
             "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" => Some(FileType::Image),
             // Texte / code / données lisibles → extraction directe.
@@ -149,7 +149,14 @@ mod tests {
     fn extension_inconnue_retombe_sur_les_magic_bytes() {
         assert_eq!(Parser::route_by_extension("xyz"), None);
         assert_eq!(Parser::route_by_extension(""), None);
-        // xlsx/pptx ne sont PAS extractibles → laissés aux magic bytes (contexte).
-        assert_eq!(Parser::route_by_extension("xlsx"), None);
+        // Format binaire non extractible → laissé aux magic bytes (contexte).
+        assert_eq!(Parser::route_by_extension("psd"), None);
+    }
+
+    #[test]
+    fn office_ooxml_sont_des_documents() {
+        // pptx / xlsx sont desormais extraits (zip + XML), pas juste du contexte.
+        assert_eq!(Parser::route_by_extension("pptx"), Some(FileType::Document));
+        assert_eq!(Parser::route_by_extension("xlsx"), Some(FileType::Document));
     }
 }

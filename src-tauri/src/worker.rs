@@ -902,6 +902,9 @@ fn extract_text(path: &str) -> anyhow::Result<String> {
     match ext.as_str() {
         "pdf" => extract_pdf_text(path),
         "docx" => extract_docx_text(path),
+        "pptx" => extract_pptx_text(path),
+        "xlsx" => extract_xlsx_text(path),
+        "html" | "htm" => Ok(strip_html(&fs::read_to_string(path).unwrap_or_default())),
         _ => Ok(fs::read_to_string(path).unwrap_or_default()),
     }
 }
@@ -1029,31 +1032,117 @@ fn extract_docx_text(path: &str) -> anyhow::Result<String> {
     let file = File::open(path)?;
     let mut archive = ZipArchive::new(file)?;
     let mut xml = String::new();
-    archive
-        .by_name("word/document.xml")?
-        .read_to_string(&mut xml)?;
+    archive.by_name("word/document.xml")?.read_to_string(&mut xml)?;
+    let mut out = String::new();
+    strip_xml_into(&xml, &mut out);
+    Ok(out)
+}
 
-    let mut text = String::new();
+/// Extrait le texte de toutes les entrées d'un ZIP OOXML dont le nom satisfait `keep`
+/// (ex. les slides d'un PPTX, la table de chaînes d'un XLSX). Chaque entrée est un XML
+/// dont on ne garde que le texte.
+fn extract_office_zip_text(path: &str, keep: impl Fn(&str) -> bool) -> anyhow::Result<String> {
+    let file = File::open(path)?;
+    let mut archive = ZipArchive::new(file)?;
+    let names: Vec<String> = (0..archive.len())
+        .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+        .filter(|n| keep(n))
+        .collect();
+    let mut out = String::new();
+    for name in names {
+        let mut xml = String::new();
+        if let Ok(mut entry) = archive.by_name(&name) {
+            if entry.read_to_string(&mut xml).is_ok() {
+                strip_xml_into(&xml, &mut out);
+                out.push('\n');
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// PowerPoint : une entrée par slide (`ppt/slides/slideN.xml`).
+fn extract_pptx_text(path: &str) -> anyhow::Result<String> {
+    extract_office_zip_text(path, |n| {
+        n.starts_with("ppt/slides/slide") && n.ends_with(".xml")
+    })
+}
+
+/// Excel : le texte des cellules vit dans la table de chaînes partagées.
+fn extract_xlsx_text(path: &str) -> anyhow::Result<String> {
+    extract_office_zip_text(path, |n| n == "xl/sharedStrings.xml")
+}
+
+/// Strip des balises XML/HTML : ne garde que le texte, avec un espace inséré entre deux
+/// nœuds pour ne pas coller les mots (`<t>Hello</t><t>World</t>` → `Hello World`).
+fn strip_xml_into(xml: &str, out: &mut String) {
     let mut in_tag = false;
     for c in xml.chars() {
         match c {
-            '<' => in_tag = true,
+            '<' => {
+                in_tag = true;
+                if !out.is_empty() && !out.ends_with(|w: char| w.is_whitespace()) {
+                    out.push(' ');
+                }
+            }
             '>' => in_tag = false,
-            _ if !in_tag => text.push(c),
+            _ if !in_tag => out.push(c),
             _ => {}
         }
     }
-    Ok(text)
+}
+
+/// Texte lisible d'un document HTML : retire les blocs script/style, puis les balises,
+/// et décode quelques entités courantes.
+fn strip_html(html: &str) -> String {
+    let mut s = html.to_string();
+    for (open, close) in [("<script", "</script>"), ("<style", "</style>")] {
+        loop {
+            let lower = s.to_ascii_lowercase();
+            let Some(start) = lower.find(open) else { break };
+            let end = lower[start..]
+                .find(close)
+                .map(|rel| start + rel + close.len())
+                .unwrap_or_else(|| s.len());
+            s.replace_range(start..end, " ");
+        }
+    }
+    let mut out = String::new();
+    strip_xml_into(&s, &mut out);
+    out.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::summary_of;
+    use super::{strip_html, strip_xml_into, summary_of};
 
     #[test]
     fn summary_of_nettoie_et_tronque() {
         assert_eq!(summary_of("  hello\nworld  "), "hello world");
         assert_eq!(summary_of(&"a".repeat(500)).chars().count(), 300);
         assert_eq!(summary_of(""), "");
+    }
+
+    #[test]
+    fn strip_xml_separe_les_noeuds_texte() {
+        let mut out = String::new();
+        strip_xml_into("<a:t>Hello</a:t><a:t>World</a:t>", &mut out);
+        assert!(out.contains("Hello World"), "collage des mots : {out:?}");
+    }
+
+    #[test]
+    fn strip_html_retire_script_style_et_balises() {
+        let html = "<html><head><style>.a{color:red}</style></head><body>\
+            <script>evil()</script><p>Bonjour&nbsp;le monde</p></body></html>";
+        let text = strip_html(html);
+        assert!(text.contains("Bonjour"));
+        assert!(text.contains("le monde"));
+        assert!(!text.contains("evil"), "script non retiré : {text:?}");
+        assert!(!text.contains("color:red"), "style non retiré : {text:?}");
     }
 }
