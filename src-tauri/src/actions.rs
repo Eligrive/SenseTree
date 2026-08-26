@@ -276,24 +276,34 @@ fn normalize_path(p: &str) -> String {
     out.trim_end_matches('\\').to_lowercase()
 }
 
+/// Vrai si `path` est À L'INTÉRIEUR d'une des racines configurées, **frontière de
+/// segment respectée** : la racine `…\Docs` ne doit PAS matcher `…\DocsEvil`. Sans
+/// racine configurée, on n'impose aucune restriction (comportement historique).
+///
+/// Note : comparaison textuelle (pas de résolution de symlink). Un symlink placé
+/// à l'intérieur d'une racine et pointant dehors n'est pas détecté — risque résiduel
+/// faible sur une app locale mono-utilisateur (l'attaquant devrait déjà avoir un accès disque).
+fn path_within_roots(path: &str, roots: &[String]) -> bool {
+    if roots.is_empty() {
+        return true;
+    }
+    let np = normalize_path(path);
+    roots.iter().any(|r| {
+        let nr = normalize_path(r);
+        !nr.is_empty() && (np == nr || np.starts_with(&format!("{nr}\\")))
+    })
+}
+
 /// Rejette tout plan qui sortirait des racines autorisées (protection anti-évasion).
 fn validate_operations(ops: &[Operation], roots: &[String]) -> Result<(), String> {
-    if roots.is_empty() {
-        return Ok(());
-    }
-    let norm_roots: Vec<String> = roots.iter().map(|r| normalize_path(r)).collect();
-    let within = |path: &str| {
-        let np = normalize_path(path);
-        norm_roots.iter().any(|r| np.starts_with(r.as_str()))
-    };
     for op in ops {
         if let Some(p) = &op.old_path {
-            if !within(p) {
+            if !path_within_roots(p, roots) {
                 return Err(format!("chemin hors périmètre autorisé: {p}"));
             }
         }
         if let Some(p) = &op.new_path {
-            if !within(p) {
+            if !path_within_roots(p, roots) {
                 return Err(format!("chemin hors périmètre autorisé: {p}"));
             }
         }
@@ -625,9 +635,21 @@ async fn execute_tool(
                 Err(e) => format!("Erreur de recherche : {e}"),
             }
         }
-        "read_file" => read_file_bounded(args.get("path").and_then(|v| v.as_str()).unwrap_or("")),
+        "read_file" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let roots = state.config.snapshot().indexing.roots;
+            if !path_within_roots(path, &roots) {
+                return format!("Accès refusé : « {path} » est hors des dossiers indexés.");
+            }
+            read_file_bounded(path)
+        }
         "list_directory" => {
-            list_dir_compact(args.get("path").and_then(|v| v.as_str()).unwrap_or(""))
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let roots = state.config.snapshot().indexing.roots;
+            if !path_within_roots(path, &roots) {
+                return format!("Accès refusé : « {path} » est hors des dossiers indexés.");
+            }
+            list_dir_compact(path)
         }
         "propose_actions" => {
             let ops: Vec<Operation> =
@@ -816,7 +838,23 @@ exécuté sans validation de l'utilisateur. Réponds en français, de façon con
 
 #[cfg(test)]
 mod tests {
-    use super::{read_file_bounded, tool_schemas};
+    use super::{path_within_roots, read_file_bounded, tool_schemas};
+
+    #[test]
+    fn within_roots_respecte_la_frontiere_de_segment() {
+        let roots = vec![r"C:\Users\virgi\Docs".to_string()];
+        // À l'intérieur, ou la racine elle-même.
+        assert!(path_within_roots(r"C:\Users\virgi\Docs\a\b.txt", &roots));
+        assert!(path_within_roots(r"C:\Users\virgi\Docs", &roots));
+        // Insensible casse / séparateur.
+        assert!(path_within_roots(r"c:/users/virgi/docs/x", &roots));
+        // FAILLE corrigée : un voisin au nom préfixe NE DOIT PAS passer.
+        assert!(!path_within_roots(r"C:\Users\virgi\DocsEvil\secret", &roots));
+        // Hors périmètre franc (exfiltration).
+        assert!(!path_within_roots(r"C:\Users\virgi\.ssh\id_rsa", &roots));
+        // Aucune racine → pas de restriction (comportement historique).
+        assert!(path_within_roots(r"C:\nimporte\ou", &[]));
+    }
 
     #[test]
     fn tool_schemas_exposent_les_quatre_outils() {
