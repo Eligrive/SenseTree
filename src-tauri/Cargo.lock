@@ -7822,7 +7822,7 @@ dependencies = [
 
 [[package]]
 name = "sensetree"
-version = "3.2.0"
+version = "3.2.1"
 dependencies = [
  "anyhow",
  "arrow-array 59.0.0",
