@@ -1005,17 +1005,23 @@ mod tests {
     }
 
     #[test]
-    fn tool_schemas_exposent_les_quatre_outils() {
+    fn tool_schemas_exposent_les_outils_integres() {
         let tools = tool_schemas();
         let arr = tools.as_array().expect("tableau d'outils");
-        assert_eq!(arr.len(), 4);
         let names: Vec<&str> = arr
             .iter()
             .filter_map(|t| t.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
             .collect();
-        for expected in ["search_files", "read_file", "list_directory", "propose_actions"] {
+        for expected in [
+            "search_files",
+            "read_file",
+            "list_directory",
+            "propose_actions",
+            "remember",
+        ] {
             assert!(names.contains(&expected), "outil manquant : {expected}");
         }
+        assert_eq!(arr.len(), names.len(), "des outils sans nom ?");
     }
 
     #[test]
