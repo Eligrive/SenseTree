@@ -320,6 +320,60 @@ impl Reranker {
 }
 
 // =========================================================================
+// CLIP (recherche d'images par similarité visuelle)
+// =========================================================================
+
+/// Dimension des vecteurs CLIP ViT-B/32 (le texte et l'image partagent l'espace).
+pub const CLIP_DIM: usize = 512;
+
+/// Embedder CLIP : encode IMAGES et TEXTE dans le MÊME espace vectoriel (ViT-B/32),
+/// pour retrouver des images par similarité visuelle à partir d'une requête texte.
+pub struct ClipEmbedder {
+    image: Arc<fastembed::ImageEmbedding>,
+    text: Arc<fastembed::TextEmbedding>,
+}
+
+impl ClipEmbedder {
+    /// Charge les deux encodeurs CLIP (bloquant : appeler via `spawn_blocking`, ORT prêt).
+    pub fn load(cache_dir: std::path::PathBuf) -> Result<Self> {
+        let image = fastembed::ImageEmbedding::try_new(
+            fastembed::ImageInitOptions::new(fastembed::ImageEmbeddingModel::ClipVitB32)
+                .with_show_download_progress(false)
+                .with_cache_dir(cache_dir.clone()),
+        )
+        .context("chargement du modèle CLIP (image)")?;
+        let text = fastembed::TextEmbedding::try_new(
+            fastembed::InitOptions::new(fastembed::EmbeddingModel::ClipVitB32)
+                .with_show_download_progress(false)
+                .with_cache_dir(cache_dir),
+        )
+        .context("chargement du modèle CLIP (texte)")?;
+        Ok(ClipEmbedder { image: Arc::new(image), text: Arc::new(text) })
+    }
+
+    /// Vectorise des images (par chemin). Ignore silencieusement celles illisibles.
+    pub async fn embed_images(&self, paths: Vec<std::path::PathBuf>) -> Result<Vec<Vec<f32>>> {
+        let model = self.image.clone();
+        tokio::task::spawn_blocking(move || {
+            model.embed(paths, Some(16)).context("embedding CLIP image")
+        })
+        .await
+        .context("tâche CLIP image interrompue")?
+    }
+
+    /// Vectorise une requête texte dans l'espace CLIP.
+    pub async fn embed_text(&self, text: String) -> Result<Vec<f32>> {
+        let model = self.text.clone();
+        let mut out = tokio::task::spawn_blocking(move || {
+            model.embed(vec![text], Some(1)).context("embedding CLIP texte")
+        })
+        .await
+        .context("tâche CLIP texte interrompue")??;
+        out.pop().ok_or_else(|| anyhow!("aucun vecteur CLIP produit pour la requête"))
+    }
+}
+
+// =========================================================================
 // CHAT / REASONING / VISION
 // =========================================================================
 
@@ -589,6 +643,8 @@ pub struct AiEngine {
     http: reqwest::Client,
     embedder: tokio::sync::Mutex<Option<CachedEmbedder>>,
     reranker: tokio::sync::Mutex<Option<CachedReranker>>,
+    /// Embedder CLIP (recherche d'images), chargé à la demande.
+    clip: tokio::sync::Mutex<Option<Arc<ClipEmbedder>>>,
     /// Dossier de données (pour approvisionner ONNX Runtime).
     data_dir: std::path::PathBuf,
     /// Garantit qu'ONNX Runtime (ORT_DYLIB_PATH) est prêt AVANT toute init d'ORT,
@@ -607,9 +663,29 @@ impl AiEngine {
             http,
             embedder: tokio::sync::Mutex::new(None),
             reranker: tokio::sync::Mutex::new(None),
+            clip: tokio::sync::Mutex::new(None),
             data_dir,
             ort_ready: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// Embedder CLIP (chargé à la demande, ORT prêt). Partagé par l'indexation d'images
+    /// et la recherche visuelle.
+    pub async fn clip(&self) -> Result<Arc<ClipEmbedder>> {
+        {
+            let guard = self.clip.lock().await;
+            if let Some(c) = guard.as_ref() {
+                return Ok(c.clone());
+            }
+        }
+        self.ensure_ort_ready().await?;
+        let cache = local_cache_dir(&self.data_dir);
+        let clip = tokio::task::spawn_blocking(move || ClipEmbedder::load(cache))
+            .await
+            .context("tâche de chargement CLIP interrompue")??;
+        let clip = Arc::new(clip);
+        *self.clip.lock().await = Some(clip.clone());
+        Ok(clip)
     }
 
     /// Garantit qu'ONNX Runtime (ORT_DYLIB_PATH) est prêt, une seule fois. Partagé

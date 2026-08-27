@@ -852,6 +852,125 @@ fn agent_memory_clear(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state.db.clear_memories().map_err(|e| e.to_string())
 }
 
+/// Résultat de recherche d'image (similarité visuelle CLIP).
+#[derive(serde::Serialize)]
+struct ImageHit {
+    path: String,
+    name: String,
+    score: f32,
+}
+
+/// Indexe (à la demande) les images sous les racines (ou `scope`) pour la recherche
+/// visuelle CLIP. Renvoie le nombre d'images vectorisées.
+#[tauri::command]
+async fn index_images(
+    state: State<'_, Arc<AppState>>,
+    scope: Option<String>,
+) -> Result<usize, String> {
+    let st = state.inner().clone();
+    let roots: Vec<String> = match scope {
+        Some(s) if !s.trim().is_empty() => vec![s],
+        _ => st.config.snapshot().indexing.roots,
+    };
+    let clip = st.ai.clip().await.map_err(|e| e.to_string())?;
+
+    let mut images: Vec<std::path::PathBuf> = Vec::new();
+    'outer: for root in &roots {
+        for entry in walkdir::WalkDir::new(root).into_iter().flatten() {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let ext = entry
+                .path()
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp") {
+                images.push(entry.path().to_path_buf());
+                if images.len() >= 5000 {
+                    break 'outer; // garde-fou anti-arbre géant
+                }
+            }
+        }
+    }
+    if images.is_empty() {
+        return Ok(0);
+    }
+
+    let mut done = 0usize;
+    for chunk in images.chunks(16) {
+        let batch: Vec<std::path::PathBuf> = chunk.to_vec();
+        let stored: Vec<String> = batch.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        match clip.embed_images(batch).await {
+            Ok(vecs) => {
+                for (p, v) in stored.into_iter().zip(vecs) {
+                    if st.vector.upsert_image(&p, v).await.is_ok() {
+                        done += 1;
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("CLIP : lot d'images échoué ({e})"),
+        }
+    }
+    Ok(done)
+}
+
+/// Recherche d'images par similarité visuelle à partir d'une requête texte (CLIP).
+#[tauri::command]
+async fn image_search(
+    state: State<'_, Arc<AppState>>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<ImageHit>, String> {
+    let st = state.inner().clone();
+    let q = query.trim().to_string();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let clip = st.ai.clip().await.map_err(|e| e.to_string())?;
+    let qvec = clip.embed_text(q).await.map_err(|e| e.to_string())?;
+    let limit = limit.unwrap_or(24).clamp(1, 100);
+    let hits = st.vector.search_images(qvec, limit).await.map_err(|e| e.to_string())?;
+    Ok(hits
+        .into_iter()
+        .filter(|(p, _)| std::path::Path::new(p).exists())
+        .map(|(p, score)| {
+            let name = std::path::Path::new(&p)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.clone());
+            ImageHit { path: p, name, score }
+        })
+        .collect())
+}
+
+/// Renvoie une image en data URL (aperçu). Bornée en taille pour éviter les énormes fichiers.
+#[tauri::command]
+fn image_data_url(path: String) -> Result<String, String> {
+    use base64::Engine;
+    const MAX: u64 = 8 * 1024 * 1024; // 8 Mo
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() > MAX {
+        return Err("image trop volumineuse pour l'aperçu".to_string());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "webp" => "image/webp",
+        _ => "image/jpeg",
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{mime};base64,{b64}"))
+}
+
 pub fn run() {
     // Logs structurés (remplace les println!). N'échoue pas si déjà initialisé.
     let _ = tracing_subscriber::fmt()
@@ -993,6 +1112,9 @@ pub fn run() {
             agent_memory_list,
             agent_memory_delete,
             agent_memory_clear,
+            index_images,
+            image_search,
+            image_data_url,
         ])
         .build(tauri::generate_context!())
         .expect("erreur lors du lancement de l'application Tauri")

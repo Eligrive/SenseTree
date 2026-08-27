@@ -2,6 +2,7 @@ import {
   Folder,
   Settings,
   Activity,
+  Image as ImageIcon,
   Sprout,
   Loader2,
   CheckCircle2,
@@ -29,6 +30,7 @@ interface Props {
   onAnalyze: () => void;
   onAnalyzeRoot: (root: string) => void;
   onOpenQueue: () => void;
+  onOpenImageSearch: () => void;
   /// Bilan de santé par racine (gardener proactif), indexé par chemin.
   folderHealth: Record<string, FolderHealth>;
   anomalyCount: number;
@@ -161,6 +163,7 @@ export default function Sidebar({
   onAnalyze,
   onAnalyzeRoot,
   onOpenQueue,
+  onOpenImageSearch,
   folderHealth,
   anomalyCount,
 }: Props) {
@@ -297,6 +300,14 @@ export default function Sidebar({
           className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800/60"
         >
           <Sprout size={15} /> Diagnostic du dossier
+        </button>
+
+        <button
+          onClick={onOpenImageSearch}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800/60"
+          title="Rechercher des images par similarité visuelle (CLIP)"
+        >
+          <ImageIcon size={15} /> Recherche d'images
         </button>
 
         <div className="space-y-1.5 rounded-md bg-zinc-900/60 p-2.5">

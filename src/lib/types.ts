@@ -237,6 +237,13 @@ export interface MemoryItem {
   note: string;
 }
 
+/// Un résultat de recherche d'image par similarité visuelle (CLIP).
+export interface ImageHit {
+  path: string;
+  name: string;
+  score: number;
+}
+
 export interface ChatTurn {
   role: "user" | "assistant" | "system";
   content: string;

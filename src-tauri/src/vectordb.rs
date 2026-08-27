@@ -23,6 +23,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 const TABLE: &str = "chunks";
+/// Table séparée pour les vecteurs CLIP d'images (espace visuel, dim 512).
+const IMG_TABLE: &str = "images";
 
 /// Un morceau prêt à être indexé (texte + vecteur).
 pub struct ChunkVector {
@@ -240,6 +242,106 @@ impl VectorDb {
             }
         }
         Ok(hits)
+    }
+
+    // ---------------------------------------------------------------------
+    // IMAGES (CLIP) : table séparée, espace vectoriel VISUEL (dim 512).
+    // ---------------------------------------------------------------------
+
+    fn img_schema() -> Arc<Schema> {
+        let item = Arc::new(Field::new("item", DataType::Float32, true));
+        Arc::new(Schema::new(vec![
+            Field::new("path", DataType::Utf8, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(item, crate::providers::CLIP_DIM as i32),
+                false,
+            ),
+        ]))
+    }
+
+    async fn img_table(&self) -> Result<lancedb::Table> {
+        match self.conn.open_table(IMG_TABLE).execute().await {
+            Ok(t) => Ok(t),
+            Err(_) => self
+                .conn
+                .create_empty_table(IMG_TABLE, Self::img_schema())
+                .execute()
+                .await
+                .context("création de la table d'images"),
+        }
+    }
+
+    /// Insère/remplace le vecteur CLIP d'une image (une ligne par chemin).
+    pub async fn upsert_image(&self, path: &str, vector: Vec<f32>) -> Result<()> {
+        if vector.len() != crate::providers::CLIP_DIM {
+            return Err(anyhow!(
+                "dimension CLIP ({}) != {}",
+                vector.len(),
+                crate::providers::CLIP_DIM
+            ));
+        }
+        let table = self.img_table().await?;
+        table.delete(&path_filter(path)).await.ok();
+
+        let item = Arc::new(Field::new("item", DataType::Float32, true));
+        let values = Float32Array::from(vector);
+        let vectors =
+            FixedSizeListArray::new(item, crate::providers::CLIP_DIM as i32, Arc::new(values), None);
+        let batch = RecordBatch::try_new(
+            Self::img_schema(),
+            vec![Arc::new(StringArray::from(vec![path.to_string()])), Arc::new(vectors)],
+        )
+        .context("construction du RecordBatch image")?;
+        let reader = RecordBatchIterator::new(vec![Ok(batch)], Self::img_schema());
+        let boxed: Box<dyn RecordBatchReader + Send> = Box::new(reader);
+        table.add(boxed).execute().await.context("insertion de l'image")?;
+        Ok(())
+    }
+
+    /// Recherche d'images par similarité visuelle (vecteur requête = CLIP texte).
+    /// Renvoie (chemin, score) triés par pertinence décroissante.
+    pub async fn search_images(
+        &self,
+        query_vec: Vec<f32>,
+        limit: usize,
+    ) -> Result<Vec<(String, f32)>> {
+        let table = match self.conn.open_table(IMG_TABLE).execute().await {
+            Ok(t) => t,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .nearest_to(query_vec)
+            .context("préparation de la requête image")?
+            .distance_type(DistanceType::Cosine)
+            .limit(limit)
+            .execute()
+            .await
+            .context("exécution de la recherche image")?
+            .try_collect()
+            .await
+            .context("collecte des résultats image")?;
+        let mut out = Vec::new();
+        for batch in batches {
+            let paths = column_as_string(&batch, "path")?;
+            let distances = batch
+                .column_by_name("_distance")
+                .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
+            for i in 0..batch.num_rows() {
+                let d = distances.map(|x| x.value(i)).unwrap_or(1.0);
+                out.push((paths.value(i).to_string(), 1.0 - d));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Retire une image de l'index visuel.
+    pub async fn delete_image_by_path(&self, path: &str) -> Result<()> {
+        if let Ok(table) = self.conn.open_table(IMG_TABLE).execute().await {
+            table.delete(&path_filter(path)).await.ok();
+        }
+        Ok(())
     }
 
     /// Recherche par MOTS-CLÉS (BM25) via l'index plein-texte natif de LanceDB sur

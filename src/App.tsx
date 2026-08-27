@@ -7,6 +7,7 @@ import ChatPanel from "./components/ChatPanel";
 import SettingsModal from "./components/SettingsModal";
 import GardenerModal from "./components/GardenerModal";
 import IndexingQueueModal from "./components/IndexingQueueModal";
+import ImageSearchModal from "./components/ImageSearchModal";
 import DetailDrawer from "./components/DetailDrawer";
 import UpdateBanner from "./components/UpdateBanner";
 
@@ -66,6 +67,7 @@ export default function App() {
   const [report, setReport] = useState<DirectoryReport | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [imageSearchOpen, setImageSearchOpen] = useState(false);
 
   const [gardener, setGardener] = useState<GardenerReport | null>(null);
   const folderHealth = useMemo<Record<string, FolderHealth>>(
@@ -319,6 +321,7 @@ export default function App() {
         onAnalyze={analyze}
         onAnalyzeRoot={analyzePath}
         onOpenQueue={() => setQueueOpen(true)}
+        onOpenImageSearch={() => setImageSearchOpen(true)}
         folderHealth={folderHealth}
         anomalyCount={gardener?.anomaly_count ?? 0}
       />
@@ -407,6 +410,8 @@ export default function App() {
       />
 
       <IndexingQueueModal open={queueOpen} onClose={() => setQueueOpen(false)} />
+
+      <ImageSearchModal open={imageSearchOpen} onClose={() => setImageSearchOpen(false)} />
     </div>
   );
 }

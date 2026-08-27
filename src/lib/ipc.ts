@@ -16,6 +16,7 @@ import type {
   DirectoryReport,
   GardenerReport,
   HealthReport,
+  ImageHit,
   IndexingQueueView,
   IndexingStats,
   InstallInfo,
@@ -107,5 +108,11 @@ export const gardenerHealth = () => invoke<GardenerReport>("gardener_health");
 export const agentMemoryList = () => invoke<MemoryItem[]>("agent_memory_list");
 export const agentMemoryDelete = (id: number) => invoke<void>("agent_memory_delete", { id });
 export const agentMemoryClear = () => invoke<void>("agent_memory_clear");
+
+// --- Recherche d'images (CLIP) ---
+export const indexImages = (scope?: string) => invoke<number>("index_images", { scope });
+export const imageSearch = (query: string, limit?: number) =>
+  invoke<ImageHit[]>("image_search", { query, limit });
+export const imageDataUrl = (path: string) => invoke<string>("image_data_url", { path });
 export const chatWithAssistant = (messages: ChatTurn[], scope?: string) =>
   invoke<ChatResponse>("chat_with_assistant", { messages, scope });
