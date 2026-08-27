@@ -23,6 +23,8 @@ import type {
   LocalModelStatus,
   MemoryItem,
   ModelBenchmark,
+  OllamaModel,
+  OllamaTag,
   Operation,
   PathDetails,
   PromptsConfig,
@@ -56,6 +58,12 @@ export const visionBenchmarks = (refresh = false) =>
   invoke<ModelBenchmark[]>("vision_benchmarks", { refresh });
 export const reasoningBenchmarks = (refresh = false) =>
   invoke<ModelBenchmark[]>("reasoning_benchmarks", { refresh });
+export const ollamaLibrary = (refresh = false) =>
+  invoke<OllamaModel[]>("ollama_library", { refresh });
+/// Tags de plusieurs modèles (nom → tags), avec leur taille : c'est la source du
+/// choix de quantification.
+export const ollamaTags = (models: string[]) =>
+  invoke<Record<string, OllamaTag[]>>("ollama_tags", { models });
 export const pullModel = (baseUrl: string, model: string) =>
   invoke<string>("pull_model", { baseUrl, model });
 export const reindexAll = () => invoke<void>("reindex_all");

@@ -11,6 +11,7 @@ pub mod folders;
 pub mod gardener;
 pub mod installs;
 pub mod mcp;
+pub mod ollama_catalog;
 pub mod ort_setup;
 pub mod parser;
 pub mod providers;
@@ -324,6 +325,33 @@ async fn vision_benchmarks(
     catalog::vision(&st.data_dir, refresh)
         .await
         .map_err(|e| format!("benchmarks vision : {e}"))
+}
+
+/// Bibliothèque Ollama LIVE : ce qui est réellement installable, populaire et récent.
+///
+/// Complémentaire des benchmarks : ceux-ci disent qui est BON, celle-ci dit qui est
+/// DISPONIBLE. Le tri (popularité / récence) est fait côté UI sur `pulls` et
+/// `updated_day`, déjà normalisés ici.
+#[tauri::command]
+async fn ollama_library(
+    state: State<'_, Arc<AppState>>,
+    refresh: bool,
+) -> Result<Vec<ollama_catalog::OllamaModel>, String> {
+    let st = state.inner().clone();
+    ollama_catalog::library(&st.data_dir, refresh)
+        .await
+        .map_err(|e| format!("catalogue Ollama : {e}"))
+}
+
+/// Tags d'un ou plusieurs modèles Ollama : c'est ce qui porte le choix de la
+/// QUANTIFICATION (`9b-q4_K_M` contre `9b-q8_0`) et la taille réelle de chacune.
+#[tauri::command]
+async fn ollama_tags(
+    state: State<'_, Arc<AppState>>,
+    models: Vec<String>,
+) -> Result<std::collections::HashMap<String, Vec<ollama_catalog::OllamaTag>>, String> {
+    let st = state.inner().clone();
+    Ok(ollama_catalog::tags_many(&st.data_dir, models).await)
 }
 
 /// Benchmarks REASONING live (OpenCompass Academic : IFEval, MMLU-Pro, GPQA…).
@@ -1089,6 +1117,8 @@ pub fn run() {
             list_benchmark_boards,
             vision_benchmarks,
             reasoning_benchmarks,
+            ollama_library,
+            ollama_tags,
             list_vision_boards,
             list_reasoning_boards,
             resolve_installs,

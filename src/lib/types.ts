@@ -75,12 +75,50 @@ export interface LocalModelStatus {
 }
 
 /// Nom d'installation résolu (via les GGUF réels sur Hugging Face).
+/// Une quantification réellement présente dans un dépôt GGUF Hugging Face.
+export interface GgufQuant {
+  quant: string; // "Q4_K_M", "IQ4_XS", "BF16"…
+  bytes: number; // somme des parties si le modèle est scindé
+  parts: number; // > 1 = GGUF scindé
+}
+
 export interface InstallInfo {
   hf: string;
   gguf_repo: string | null;
+  /// Quantification retenue par défaut ; l'utilisateur peut en choisir une autre.
   quant: string | null;
+  /// Toutes celles présentes dans le dépôt, de la plus légère à la plus lourde.
+  quants: GgufQuant[];
   ollama: string | null; // ex. "hf.co/SuperPauly/…-gguf:Q8_0"
   lmstudio: string | null; // dépôt à charger dans LM Studio
+}
+
+/// Un tag précis d'un modèle Ollama — c'est ce qui porte la QUANTIFICATION.
+///
+/// `9b-q4_K_M` (6,6 Go) et `9b-q8_0` (11 Go) sont le même modèle : seul le tag dit
+/// lequel tiendra dans la carte.
+export interface OllamaTag {
+  tag: string; // suffixe seul, à coller derrière `modele:`
+  bytes: number | null; // null = pas de poids locaux (tag cloud)
+  size_label: string | null; // libellé d'origine, ex. "6.6GB"
+  context: string | null; // ex. "256K"
+  modality: string | null; // ex. "Text, Image"
+}
+
+/// Un modèle de la bibliothèque officielle Ollama (source LIVE, rien de codé en dur).
+///
+/// Complète les benchmarks : ceux-ci disent qui est BON, ceci dit qui est
+/// DISPONIBLE, populaire et récemment mis à jour.
+export interface OllamaModel {
+  name: string; // nom d'installation : `ollama pull <name>`
+  description: string;
+  capabilities: string[]; // vision, tools, thinking, embedding, audio, cloud…
+  sizes: string[]; // ex. ["4b", "9b", "27b"]
+  pulls: number; // normalisé pour le tri
+  pulls_label: string; // libellé d'origine, ex. "18.5M"
+  tags: number | null;
+  updated: string | null; // ex. "Aug 26, 2026 11:07 PM UTC"
+  updated_day: number | null; // jours depuis l'epoch, pour le tri par récence
 }
 
 /// Un classement MTEB disponible (global multilingue, ou par langue).

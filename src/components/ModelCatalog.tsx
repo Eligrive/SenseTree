@@ -21,12 +21,21 @@ import {
   type ServerKind,
   type Task,
 } from "../lib/models";
-import type { BoardInfo, BoardScore, InstallInfo, ModelBenchmark } from "../lib/types";
+import type {
+  BoardInfo,
+  BoardScore,
+  InstallInfo,
+  ModelBenchmark,
+  OllamaModel,
+  OllamaTag,
+} from "../lib/types";
 import {
   listBenchmarkBoards,
   listReasoningBoards,
   listVisionBoards,
   modelBenchmarks,
+  ollamaLibrary,
+  ollamaTags,
   reasoningBenchmarks,
   resolveInstalls,
   visionBenchmarks,
@@ -90,6 +99,205 @@ interface Props {
   progress: Record<string, { percent: number; status: string }>;
 }
 
+/// Créneau SenseTree → capacité annoncée par Ollama.
+///
+/// Un modèle de vision sait aussi raisonner : il reste donc listé en « reasoning ».
+/// Seuls les encodeurs d'embedding sont exclus de ce créneau, faute de savoir chatter.
+function matchesTask(m: OllamaModel, task: Task): boolean {
+  if (task === "embedding") return m.capabilities.includes("embedding");
+  if (task === "vision") return m.capabilities.includes("vision");
+  return !m.capabilities.includes("embedding");
+}
+
+const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/// Rapproche un modèle du leaderboard de son entrée Ollama.
+///
+/// Le leaderboard nomme en Hugging Face (`Qwen/Qwen3-Embedding-0.6B`), Ollama en nom
+/// court (`qwen3-embedding`). On rapproche par PRÉFIXE normalisé, en gardant le nom
+/// Ollama le plus long qui convient : sans ça `qwen` capterait toute la famille Qwen.
+/// Les noms trop courts sont ignorés — ils produisent surtout des faux positifs.
+function matchOllama(hf: string, index: OllamaModel[]): OllamaModel | undefined {
+  const short = norm(hf.split("/").pop() ?? hf);
+  let best: OllamaModel | undefined;
+  for (const m of index) {
+    const n = norm(m.name);
+    if (n.length < 5 || !short.startsWith(n)) continue;
+    if (!best || n.length > norm(best.name).length) best = m;
+  }
+  return best;
+}
+
+/// Plus petite taille proposée, en milliards de paramètres (`300m` → 0,3).
+/// Permet au filtre de taille de s'appliquer aussi aux modèles vus seulement sur Ollama.
+function smallestSizeB(m: OllamaModel): number | undefined {
+  const vals = m.sizes
+    .map((x) => {
+      const v = parseFloat(x);
+      return !isFinite(v) ? NaN : x.trim().endsWith("m") ? v / 1000 : v;
+    })
+    .filter((v) => isFinite(v));
+  return vals.length ? Math.min(...vals) : undefined;
+}
+
+/// `Aug 26, 2026 11:07 PM UTC` → `26 août 2026`, sans dépendance de date.
+const MOIS_FR: Record<string, string> = {
+  Jan: "janv.", Feb: "févr.", Mar: "mars", Apr: "avr.", May: "mai", Jun: "juin",
+  Jul: "juil.", Aug: "août", Sep: "sept.", Oct: "oct.", Nov: "nov.", Dec: "déc.",
+};
+function fmtUpdated(s: string | null): string | null {
+  if (!s) return null;
+  const [mois, jour, annee] = s.split(/[\s,]+/);
+  const m = MOIS_FR[mois];
+  return m && jour && annee ? `${jour} ${m} ${annee}` : null;
+}
+
+/// Tri principal de la liste. « Benchmark » suit le classement officiel ; les deux
+/// autres viennent de la bibliothèque Ollama et ne dépendent d'aucun leaderboard.
+/// Runtime visé par un tag, quand ce n'est pas llama.cpp/GGUF.
+///
+/// `mlx` ne tourne QUE sur Apple Silicon ; `nvfp4` demande une carte Blackwell et
+/// `mxfp8` un GPU FP8. On ne les cache pas — l'utilisateur peut avoir la machine qu'il
+/// faut — mais on les étiquette, et `mlx` est écarté du choix automatique.
+function tagRuntime(tag: string): string | null {
+  const t = tag.toLowerCase();
+  if (t.includes("mlx")) return "Apple Silicon";
+  if (t.includes("nvfp4")) return "GPU Blackwell";
+  if (t.includes("mxfp8")) return "GPU FP8";
+  return null;
+}
+
+/// Une variante installable, quelle que soit sa provenance : tag Ollama ou fichier
+/// GGUF d'un dépôt Hugging Face. C'est ce que le sélecteur affiche.
+interface Variante {
+  /// Nom complet à installer (`qwen3.5:9b-q4_K_M`, `hf.co/org/repo:Q4_K_M`).
+  id: string;
+  /// Ce qui distingue la variante (`9b-q4_K_M`, `Q4_K_M`).
+  label: string;
+  bytes: number | null;
+  sizeLabel: string | null;
+  /// Contexte annoncé (Ollama) ou nombre de fichiers (GGUF scindé).
+  extra: string | null;
+  runtime: string | null;
+}
+
+/// Variantes disponibles pour une ligne, dans l'ordre du plus léger au plus lourd.
+function variantesDe(
+  r: Row,
+  tagsByModel: Record<string, OllamaTag[]>,
+  installs: Record<string, InstallInfo>
+): Variante[] {
+  if (r.ol) {
+    return (tagsByModel[r.ol.name] ?? [])
+      .filter((t) => t.bytes != null)
+      .map((t) => ({
+        id: `${r.ol!.name}:${t.tag}`,
+        label: t.tag,
+        bytes: t.bytes,
+        sizeLabel: t.size_label,
+        extra: t.context,
+        runtime: tagRuntime(t.tag),
+      }))
+      .sort((a, b) => (a.bytes ?? 0) - (b.bytes ?? 0));
+  }
+  const inst = installs[r.hf];
+  if (!inst?.gguf_repo || !inst.quants?.length) return [];
+  return inst.quants.map((q) => ({
+    id: `hf.co/${inst.gguf_repo}:${q.quant}`,
+    label: q.quant,
+    bytes: q.bytes,
+    sizeLabel: fmtGo(q.bytes),
+    extra: q.parts > 1 ? `${q.parts} fichiers` : null,
+    runtime: null,
+  }));
+}
+
+/// Provenance d'une ligne : d'où vient l'entrée, pas où on l'installe.
+function originesDe(r: Row, task: Task): string[] {
+  const out: string[] = [];
+  if (r.bench) {
+    out.push(task === "embedding" ? "MTEB" : task === "vision" ? "OpenVLM" : "OpenCompass");
+  }
+  if (r.ol) out.push("Ollama");
+  if (r.curated) out.push("curaté");
+  return out;
+}
+
+/// Tags dont la taille est connue et qui tournent sur une carte NVIDIA ou en CPU.
+function tagsUtilisables(tags: OllamaTag[]): (OllamaTag & { bytes: number })[] {
+  return tags.filter(
+    (t): t is OllamaTag & { bytes: number } =>
+      typeof t.bytes === "number" && !t.tag.toLowerCase().includes("mlx")
+  );
+}
+
+/// Verdict VRAM : le plus gros tag dont les poids tiennent dans le budget, réserve
+/// déduite. `undefined` = tags pas encore chargés, `null` = aucun ne tient.
+///
+/// Le choix porte sur TOUS les tags, quantifications comprises : c'est ce qui permet
+/// de retenir `9b-q4_K_M` (6,6 Go) au lieu d'écarter le 9 B parce que son `q8_0` pèse
+/// 11 Go.
+function bestFit(
+  m: OllamaModel,
+  tagsByModel: Record<string, OllamaTag[]>,
+  vramGb: number
+): { tag: string; bytes: number } | null | undefined {
+  if (vramGb <= 0) return undefined;
+  const connus = tagsUtilisables(tagsByModel[m.name] ?? []);
+  if (connus.length === 0) return undefined;
+  const budget = (vramGb - VRAM_RESERVE_GB) * GO;
+  const tiennent = connus.filter((x) => x.bytes <= budget);
+  if (!tiennent.length) return null;
+  const meilleur = tiennent.reduce((a, b) => (b.bytes > a.bytes ? b : a));
+  return { tag: meilleur.tag, bytes: meilleur.bytes };
+}
+
+/// Nom à installer pour un modèle Ollama.
+///
+/// Sans budget VRAM connu on laisse Ollama choisir (`latest`) ; dès qu'un tag est
+/// identifié comme tenant dans la carte, on le CIBLE explicitement. Sans ça, un clic
+/// sur « installer » pouvait télécharger le tag par défaut — un 27 B sur une carte de
+/// 8 Go — alors que le catalogue venait d'afficher que seul le 9 B tenait.
+function installName(
+  m: OllamaModel,
+  tagsByModel: Record<string, OllamaTag[]>,
+  vramGb: number
+): string {
+  const fit = bestFit(m, tagsByModel, vramGb);
+  return fit ? `${m.name}:${fit.tag}` : m.name;
+}
+
+/// Budgets VRAM proposés. `0` = on n'affiche aucun verdict.
+const VRAM_OPTIONS = [
+  { label: "VRAM : ignorer", gb: 0 },
+  { label: "VRAM : 6 Go", gb: 6 },
+  { label: "VRAM : 8 Go", gb: 8 },
+  { label: "VRAM : 12 Go", gb: 12 },
+  { label: "VRAM : 16 Go", gb: 16 },
+  { label: "VRAM : 24 Go", gb: 24 },
+  { label: "VRAM : 32 Go", gb: 32 },
+];
+const vramLsKey = "sensetree.vram";
+
+/// Ce qu'il faut réserver EN PLUS des poids du modèle : contexte CUDA (~0,3 Go),
+/// cache KV (~0,55 Go à 8K en q8_0) et buffers de calcul (~0,3 Go).
+///
+/// C'est une approximation calibrée sur un modèle de ~9 B : le cache KV grandit avec
+/// le modèle, donc la marge est un peu optimiste sur les très gros et pessimiste sur
+/// les petits. Elle n'inclut PAS ce que consomme le bureau si l'écran est branché sur
+/// la même carte (0,6 à 1,2 Go de plus) — d'où un verdict volontairement prudent.
+const VRAM_RESERVE_GB = 1.2;
+
+const GO = 1_000_000_000;
+const fmtGo = (bytes: number) => `${(bytes / GO).toFixed(1).replace(".", ",")} Go`;
+
+const SORT_MODES = [
+  { key: "bench", label: "Benchmark" },
+  { key: "pulls", label: "Popularité" },
+  { key: "recent", label: "Récence" },
+] as const;
+type SortMode = (typeof SORT_MODES)[number]["key"];
+
 const TASK_LABEL: Record<Task, string> = {
   embedding: "Embedding (indexation)",
   reasoning: "Reasoning / Chat",
@@ -113,6 +321,7 @@ type IdSource =
   | "curated" // nom vérifié à la main
   | "installed" // déjà présent sur le serveur
   | "gguf" // résolu via un dépôt GGUF réel sur Hugging Face (vérifié)
+  | "ollama" // présent dans la bibliothèque officielle Ollama (vérifié)
   | "closed" // modèle fermé / API-only : non installable localement
   | "guess"; // déduit du nom, non vérifié
 
@@ -121,6 +330,8 @@ interface Row {
   hf: string;
   bench?: ModelBenchmark;
   curated?: CatalogModel;
+  /// Entrée correspondante dans la bibliothèque Ollama (popularité, récence, tailles).
+  ol?: OllamaModel;
   /// Identifiant utilisable sur le backend courant (undefined = indisponible).
   id?: string;
   source: IdSource;
@@ -166,6 +377,20 @@ export default function ModelCatalog({
   const [loadingBench, setLoadingBench] = useState(false);
   const [benchError, setBenchError] = useState<string | null>(null);
   const [limit, setLimit] = useState(40);
+  const [ollama, setOllama] = useState<OllamaModel[]>([]);
+  const [sortMode, setSortMode] = useState<SortMode>("bench");
+  const [vramGb, setVramGb] = useState(() => {
+    const v = Number(localStorage.getItem(vramLsKey));
+    return VRAM_OPTIONS.some((o) => o.gb === v) ? v : 0;
+  });
+  const [onlyFits, setOnlyFits] = useState(false);
+  /// Tags par modèle (quantifications + tailles), chargés à la demande.
+  const [modelTags, setModelTags] = useState<Record<string, OllamaTag[]>>({});
+  /// Variante choisie À LA MAIN (identifiant complet), par ligne. Prime sur tout
+  /// choix automatique — verdict VRAM côté Ollama, `QUANT_PREF` côté GGUF.
+  const [choixInstall, setChoixInstall] = useState<Record<string, string>>({});
+  /// Ligne dont le sélecteur de variante est déplié.
+  const [tagsOuverts, setTagsOuverts] = useState<string | null>(null);
   // Noms d'installation résolus automatiquement (via les GGUF réels sur HF).
   const [installs, setInstalls] = useState<Record<string, InstallInfo>>({});
 
@@ -254,6 +479,16 @@ export default function ModelCatalog({
     return { id: serverKind === "lmstudio" ? hf : short, source: "guess", targetUrl: currentServer?.url };
   };
 
+  // Bibliothèque Ollama : source de la popularité, de la récence et de la
+  // disponibilité réelle. Indépendante des leaderboards — un échec ici dégrade
+  // l'affichage (pas de badge, pas de tri par pulls) sans casser le catalogue.
+  useEffect(() => {
+    if (!open) return;
+    ollamaLibrary()
+      .then(setOllama)
+      .catch(() => setOllama([]));
+  }, [open]);
+
   const curatedByHf = useMemo(() => {
     const m = new Map<string, CatalogModel>();
     for (const c of CATALOG) {
@@ -266,9 +501,14 @@ export default function ModelCatalog({
   const rows: Row[] = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = Object.values(bench);
+    const olForTask = ollama.filter((m) => matchesTask(m, task));
 
-    // Repli : si le leaderboard est injoignable, on montre au moins la liste curatée.
-    if (list.length === 0) {
+    // Repli quand le leaderboard est injoignable. Pour l'embedding, la liste curatée
+    // porte les modèles EMBARQUÉS (fastembed), que rien d'autre ne connaît : elle
+    // reste le bon repli. Pour reasoning/vision, la bibliothèque Ollama prend le
+    // relais plus bas — on ne coupe donc pas court ici, sinon une panne de leaderboard
+    // masquerait des modèles pourtant installables.
+    if (list.length === 0 && (task === "embedding" || olForTask.length === 0)) {
       return CATALOG.filter((c) => c.task === task)
         .filter((c) => (q ? (c.name + c.goodFor).toLowerCase().includes(q) : true))
         .sort((a, b) => b.quality - a.quality)
@@ -300,14 +540,27 @@ export default function ModelCatalog({
         const r = b.closed
           ? { id: undefined, source: "closed" as IdSource, targetUrl: undefined }
           : resolveId(key, cur);
+        // La bibliothèque Ollama donne un nom d'installation VÉRIFIÉ : il vaut mieux
+        // qu'un nom déduit. On ne s'en sert pas sur LM Studio, qui a sa propre
+        // nomenclature.
+        const ol = matchOllama(key, olForTask);
+        const upgraded =
+          r.source === "guess" && ol && serverKind !== "lmstudio"
+            ? {
+                id: installName(ol, modelTags, vramGb),
+                source: "ollama" as IdSource,
+                targetUrl: currentServer?.url,
+              }
+            : r;
         return {
           hf: key,
           bench: b,
           curated: cur,
-          id: r.id,
-          source: r.source,
-          targetUrl: r.targetUrl,
-          installed: !!r.id && isInstalled(r.id),
+          ol,
+          id: choixInstall[key] ?? upgraded.id,
+          source: upgraded.source,
+          targetUrl: upgraded.targetUrl,
+          installed: !!upgraded.id && isInstalled(choixInstall[key] ?? upgraded.id),
         };
       })
       // Filtres (on ne CACHE rien par défaut : les modèles fermés restent visibles).
@@ -316,9 +569,46 @@ export default function ModelCatalog({
       //   téléchargeable : un identifiant d'install a été résolu (GGUF/curaté/installé).
       .filter((r) => !onlyOpen || !r.bench?.closed)
       .filter((r) => !onlyDownloadable || !!r.id)
-      .filter((r) => !onlyUsable || (r.installed && !!r.id));
+      .filter((r) => !onlyUsable || (r.installed && !!r.id))
+      // Ne masque que ce qui est PROUVÉ trop gros : tant que les tailles ne sont pas
+      // connues (`undefined`), le modèle reste visible plutôt que de disparaître.
+      .filter((r) => !onlyFits || !r.ol || bestFit(r.ol, modelTags, vramGb) !== null);
+
+    // Les modèles publiés sur Ollama mais pas encore évalués par les leaderboards —
+    // c'est-à-dire précisément les plus RÉCENTS — n'apparaîtraient nulle part. On les
+    // ajoute ici : c'est ce qui empêche le catalogue de vieillir.
+    if (serverKind !== "lmstudio") {
+      const dejaVus = new Set(out.map((r) => r.ol?.name).filter(Boolean));
+      for (const m of olForTask) {
+        if (dejaVus.has(m.name)) continue;
+        if (q && !(m.name + " " + m.description).toLowerCase().includes(q)) continue;
+        const taille = smallestSizeB(m);
+        if (taille != null && taille > max) continue;
+        if (onlyOpen && m.capabilities.includes("cloud") && m.sizes.length === 0) continue;
+        const nom = installName(m, modelTags, vramGb);
+        const installed = isInstalled(nom);
+        if (onlyUsable && !installed) continue;
+        if (onlyFits && bestFit(m, modelTags, vramGb) === null) continue;
+        out.push({
+          hf: m.name,
+          ol: m,
+          id: choixInstall[m.name] ?? nom,
+          source: "ollama",
+          installed,
+          targetUrl: (serverHosting(nom) ?? currentServer)?.url,
+        });
+      }
+    }
 
     const primaryOf = (r: Row) => r.bench?.scores.find((s) => s.board === primaryBoard);
+
+    // Popularité / récence : deux axes qui viennent d'Ollama et qui fonctionnent même
+    // pour les modèles qu'aucun leaderboard n'a encore évalués.
+    if (sortMode !== "bench") {
+      const cle = (r: Row) =>
+        sortMode === "pulls" ? (r.ol?.pulls ?? -1) : (r.ol?.updated_day ?? -1);
+      return out.sort((a, b) => cle(b) - cle(a) || a.hf.localeCompare(b.hf));
+    }
 
     return out.sort((a, b) => {
       const pa = primaryOf(a);
@@ -341,7 +631,7 @@ export default function ModelCatalog({
       return ra - rb;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task, backend, serverKind, query, onlyUsable, onlyOpen, onlyDownloadable, sizeLimit, primaryBoard, bench, installs, servers, localDownloaded]);
+  }, [task, backend, serverKind, query, onlyUsable, onlyOpen, onlyDownloadable, sizeLimit, primaryBoard, bench, installs, servers, localDownloaded, ollama, sortMode, onlyFits, modelTags, vramGb, choixInstall]);
 
   // Résolution automatique des noms d'installation pour les modèles AFFICHÉS qui
   // n'ont pas de nom vérifié (mode serveur uniquement). Bornée à la page visible,
@@ -364,6 +654,21 @@ export default function ModelCatalog({
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownForResolve.map((r) => r.hf).join("|"), backend, serverKind, hasScores]);
+
+  // Tags des modèles visibles, en UNE requête (le backend parallélise et met en cache
+  // 7 jours). Chargés dès qu'un budget VRAM est choisi — pour le verdict — ou dès
+  // qu'un sélecteur de quantification est déplié.
+  const besoinTags = shownForResolve
+    .filter((r) => !!r.ol && (vramGb > 0 || r.hf === tagsOuverts))
+    .map((r) => r.ol!.name)
+    .filter((n) => !(n in modelTags));
+  useEffect(() => {
+    if (besoinTags.length === 0) return;
+    ollamaTags(besoinTags)
+      .then((m) => setModelTags((prev) => ({ ...prev, ...m })))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [besoinTags.join("|")]);
 
   if (!open) return null;
 
@@ -515,17 +820,61 @@ export default function ModelCatalog({
                 ))}
               </select>
               <select
-                value={sortBoard}
-                onChange={(e) => setSortBoard(e.target.value)}
+                value={vramGb}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setVramGb(v);
+                  localStorage.setItem(vramLsKey, String(v));
+                  if (v === 0) setOnlyFits(false);
+                }}
                 className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 outline-none"
+                title={`Compare la taille RÉELLE de chaque tag (registre Ollama) à ton budget, moins ${VRAM_RESERVE_GB.toFixed(1).replace(".", ",")} Go réservés au cache KV et aux buffers.`}
               >
-                {boards.map((b) => (
-                  <option key={b} value={b}>
-                    Trier : {labelOf(b)}
+                {VRAM_OPTIONS.map((o) => (
+                  <option key={o.gb} value={o.gb}>
+                    {o.label}
                   </option>
                 ))}
               </select>
+              <select
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value as SortMode)}
+                className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 outline-none"
+                title="Popularité et récence viennent de la bibliothèque Ollama, pas des benchmarks"
+              >
+                {SORT_MODES.map((m) => (
+                  <option key={m.key} value={m.key}>
+                    Trier : {m.label}
+                  </option>
+                ))}
+              </select>
+              {sortMode === "bench" && (
+                <select
+                  value={sortBoard}
+                  onChange={(e) => setSortBoard(e.target.value)}
+                  className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 outline-none"
+                >
+                  {boards.map((b) => (
+                    <option key={b} value={b}>
+                      {labelOf(b)}
+                    </option>
+                  ))}
+                </select>
+              )}
             </>
+          )}
+          {vramGb > 0 && (
+            <label
+              className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-400"
+              title="Masque les modèles dont AUCUN tag ne tient dans le budget choisi"
+            >
+              <input
+                type="checkbox"
+                checked={onlyFits}
+                onChange={(e) => setOnlyFits(e.target.checked)}
+              />
+              Tient en VRAM
+            </label>
           )}
           <label
             className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-400"
@@ -606,17 +955,91 @@ export default function ModelCatalog({
                           utilisé
                         </span>
                       )}
-                      {!cur && (
+                      {originesDe(r, task).map((o) => (
                         <span
+                          key={o}
                           className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-400/80"
-                          title="Découvert automatiquement via le leaderboard"
+                          title={
+                            o === "Ollama"
+                              ? "Listé dans la bibliothèque officielle Ollama"
+                              : o === "curaté"
+                                ? "Entrée écrite à la main dans le catalogue de l'app"
+                                : `Classé par le leaderboard ${o}`
+                          }
                         >
-                          découvert
+                          {o}
+                        </span>
+                      ))}
+                      {!r.bench && r.ol && (
+                        <span
+                          className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-500"
+                          title="Publié sur Ollama mais pas encore présent dans le leaderboard — typique d'un modèle récent."
+                        >
+                          non évalué
                         </span>
                       )}
+                      {r.ol && (
+                        <span
+                          className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-300/90"
+                          title={`ollama pull ${r.ol.name}${
+                            r.ol.sizes.length ? ` — tailles : ${r.ol.sizes.join(", ")}` : ""
+                          }`}
+                        >
+                          Ollama · {r.ol.pulls_label} pulls
+                          {fmtUpdated(r.ol.updated) ? ` · ${fmtUpdated(r.ol.updated)}` : ""}
+                        </span>
+                      )}
+                      {(() => {
+                        // Un choix manuel prime sur tout verdict automatique.
+                        const manuel = choixInstall[r.hf];
+                        if (manuel) {
+                          const v = variantesDe(r, modelTags, installs).find(
+                            (x) => x.id === manuel
+                          );
+                          return (
+                            <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] text-sky-200">
+                              choisi : {v?.label ?? manuel}
+                              {v?.sizeLabel ? ` · ${v.sizeLabel}` : ""}
+                            </span>
+                          );
+                        }
+                        const fit = r.ol ? bestFit(r.ol, modelTags, vramGb) : undefined;
+                        if (fit === undefined) return null;
+                        return fit ? (
+                          <span
+                            className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-300"
+                            title={`ollama pull ${r.ol!.name}:${fit.tag} — ${fmtGo(fit.bytes)} de poids, mesurés sur le registre Ollama.`}
+                          >
+                            tient : {fit.tag} · {fmtGo(fit.bytes)}
+                          </span>
+                        ) : (
+                          <span
+                            className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-400/90"
+                            title={`Le plus petit tag pèse déjà plus que ${vramGb} Go moins la réserve.`}
+                          >
+                            trop gros pour {vramGb} Go
+                          </span>
+                        );
+                      })()}
+                      {r.ol?.capabilities
+                        .filter((c) => c !== "cloud")
+                        .map((c) => (
+                          <span
+                            key={c}
+                            className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400"
+                          >
+                            {c}
+                          </span>
+                        ))}
                     </div>
 
-                    {cur && <p className="mt-1 text-[12px] text-zinc-300">{cur.goodFor}</p>}
+                    {cur ? (
+                      <p className="mt-1 text-[12px] text-zinc-300">{cur.goodFor}</p>
+                    ) : (
+                      r.ol?.description && (
+                        <p className="mt-1 text-[12px] text-zinc-400">{r.ol.description}</p>
+                      )
+                    )}
 
                     {/* Scores officiels, un par classement choisi. */}
                     {hasScores && (
@@ -644,8 +1067,85 @@ export default function ModelCatalog({
                       </div>
                     )}
 
+                    {(() => {
+                      // Sélecteur unifié : tags Ollama OU quantifications d'un dépôt
+                      // GGUF. Dans les deux cas, l'utilisateur choisit ce qu'il
+                      // télécharge au lieu de subir un défaut.
+                      const variantes = variantesDe(r, modelTags, installs);
+                      const ouvert = tagsOuverts === r.hf;
+                      const attend = r.ol && ouvert && variantes.length === 0;
+                      if (!r.ol && variantes.length === 0) return null;
+                      const budget = (vramGb - VRAM_RESERVE_GB) * GO;
+                      return (
+                        <div className="mt-1.5">
+                          <button
+                            onClick={() => setTagsOuverts((prev) => (prev === r.hf ? null : r.hf))}
+                            className="text-[11px] text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline"
+                          >
+                            {ouvert ? "Masquer" : "Choisir"} la quantification
+                            {variantes.length ? ` (${variantes.length})` : ""}
+                          </button>
+
+                          {ouvert && (
+                            <div className="mt-1.5 max-h-52 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/60 p-1">
+                              {attend ? (
+                                <p className="px-2 py-1.5 text-[11px] text-zinc-600">
+                                  Chargement des variantes…
+                                </p>
+                              ) : (
+                                variantes.map((v) => {
+                                  // Verdict par variante, seulement si un budget est défini.
+                                  const tient =
+                                    vramGb > 0 && v.bytes != null ? v.bytes <= budget : null;
+                                  const actif = choixInstall[r.hf] === v.id;
+                                  return (
+                                    <button
+                                      key={v.id}
+                                      onClick={() =>
+                                        setChoixInstall((prev) => {
+                                          const next = { ...prev };
+                                          if (actif) delete next[r.hf];
+                                          else next[r.hf] = v.id;
+                                          return next;
+                                        })
+                                      }
+                                      title={v.id}
+                                      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[11px] ${
+                                        actif
+                                          ? "bg-sky-500/15 text-sky-200"
+                                          : "text-zinc-400 hover:bg-zinc-800/60"
+                                      }`}
+                                    >
+                                      <span className="font-mono">{v.label}</span>
+                                      <span className="text-zinc-500">{v.sizeLabel ?? "—"}</span>
+                                      {v.extra && <span className="text-zinc-600">{v.extra}</span>}
+                                      {v.runtime && (
+                                        <span className="rounded bg-zinc-800 px-1 py-0.5 text-[10px] text-amber-400/80">
+                                          {v.runtime}
+                                        </span>
+                                      )}
+                                      {tient === true && (
+                                        <span className="ml-auto text-emerald-400/90">tient</span>
+                                      )}
+                                      {tient === false && (
+                                        <span className="ml-auto text-amber-400/80">trop gros</span>
+                                      )}
+                                    </button>
+                                  );
+                                })
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px] text-zinc-500">
-                      {params && <span>{params}</span>}
+                      {params ? (
+                        <span>{params}</span>
+                      ) : (
+                        r.ol?.sizes.length ? <span>{r.ol.sizes.join(" · ")}</span> : null
+                      )}
                       {dims && <span>{dims} dims</span>}
                       {b?.max_tokens && <span>{Math.round(b.max_tokens)} tokens</span>}
                       {cur && (
@@ -678,6 +1178,14 @@ export default function ModelCatalog({
                             title="Nom résolu automatiquement via un dépôt GGUF réel sur Hugging Face."
                           >
                             <Check size={9} /> GGUF vérifié
+                          </span>
+                        )}
+                        {r.source === "ollama" && (
+                          <span
+                            className="flex items-center gap-0.5 rounded bg-sky-500/10 px-1 py-0.5 font-sans text-[10px] text-sky-300/90"
+                            title="Nom publié dans la bibliothèque officielle Ollama : installable tel quel."
+                          >
+                            <Check size={9} /> officiel Ollama
                           </span>
                         )}
                         {r.source === "guess" && (

@@ -1,9 +1,20 @@
-﻿// Catalogue curaté de modèles, pour choisir en connaissance de cause.
+﻿// Catalogue curaté — EMBEDDING UNIQUEMENT, et volontairement.
 //
-// Les notes `quality` (1–5) sont INDICATIVES : elles reflètent le classement des
-// modèles sur les benchmarks de référence (MTEB multilingue pour les embeddings,
-// MMLU / LMArena pour les LLM, MMMU pour la vision). Les scores exacts évoluent —
-// le champ `benchmark` dit sur quoi la note s'appuie, sans inventer de chiffre.
+// Il ne sert plus à « lister les bons modèles » : cette liste vient désormais en
+// direct des leaderboards (`benchmarks.rs`, `catalog.rs`) et de la bibliothèque
+// Ollama (`ollama_catalog.rs`), donc elle ne vieillit plus. Une liste de noms écrite
+// à la main, elle, périme en quelques mois — les entrées reasoning et vision d'ici
+// recommandaient encore Qwen2.5 et LLaVA deux ans après leur sortie.
+//
+// Ce qui reste ici est ce qu'AUCUNE source distante ne peut fournir :
+//   * les identifiants des modèles d'embedding EMBARQUÉS (fastembed/ONNX), qui ne
+//     sont ni sur Ollama ni sur un leaderboard ;
+//   * l'appariement `mteb` → id d'installation, et l'avis éditorial (`goodFor`,
+//     `quality`) affiché en surcouche du classement MTEB.
+//
+// Les notes `quality` (1–5) sont INDICATIVES : elles reflètent le classement MTEB
+// multilingue. Le champ `benchmark` dit sur quoi la note s'appuie, sans inventer de
+// chiffre.
 
 export type Task = "embedding" | "reasoning" | "vision";
 export type Backend = "local" | "server";
@@ -187,91 +198,6 @@ export const CATALOG: CatalogModel[] = [
     goodFor: "Ultra léger/rapide. Qualité limitée — dépannage seulement.",
   },
 
-  // ---------------------------------------------------------------- REASONING
-  {
-    key: "qwen2.5-7b",
-    name: "Qwen2.5 7B",
-    task: "reasoning",
-    ollama: "qwen2.5:7b",
-    lmstudio: "qwen2.5-7b-instruct",
-    params: "7 B",
-    languages: "multilingue",
-    quality: 4,
-    benchmark: "MMLU / LMArena : très bon pour sa taille, solide en FR",
-    goodFor:
-      "Classification des dossiers, extraction de sens, chat. Recommandé (tient sur 8 Go).",
-  },
-  {
-    key: "llama3.1-8b",
-    name: "Llama 3.1 8B",
-    task: "reasoning",
-    ollama: "llama3.1:8b",
-    lmstudio: "meta-llama-3.1-8b-instruct",
-    params: "8 B",
-    languages: "multilingue",
-    quality: 4,
-    benchmark: "MMLU / LMArena : très bon, référence répandue",
-    goodFor: "Alternative solide au Qwen2.5. Défaut de l'app.",
-  },
-  {
-    key: "llama3.2-3b",
-    name: "Llama 3.2 3B",
-    task: "reasoning",
-    ollama: "llama3.2:3b",
-    lmstudio: "llama-3.2-3b-instruct",
-    params: "3 B",
-    languages: "multilingue",
-    quality: 3,
-    benchmark: "MMLU : correct pour 3 B",
-    goodFor: "Machine modeste : classification rapide, moins bon en raisonnement.",
-  },
-  {
-    key: "phi3-mini",
-    name: "Phi-3 mini",
-    task: "reasoning",
-    ollama: "phi3:mini",
-    params: "3,8 B",
-    languages: "anglais",
-    quality: 3,
-    benchmark: "MMLU : excellent pour sa taille, mais surtout anglais",
-    goodFor: "Très léger. Moins adapté si tes fichiers sont en français.",
-  },
-
-  // ---------------------------------------------------------------- VISION
-  {
-    key: "llama3.2-vision",
-    name: "Llama 3.2 Vision 11B",
-    task: "vision",
-    ollama: "llama3.2-vision",
-    params: "11 B",
-    languages: "multilingue",
-    quality: 4,
-    benchmark: "MMMU : bon niveau, description d'image fiable",
-    goodFor: "Description d'images et OCR de PDF scannés. Le plus qualitatif ici.",
-  },
-  {
-    key: "llava",
-    name: "LLaVA",
-    task: "vision",
-    ollama: "llava",
-    lmstudio: "llava-v1.5-7b",
-    params: "7 B",
-    languages: "anglais",
-    quality: 3,
-    benchmark: "MMMU : correct, classique",
-    goodFor: "Description d'images générique, bien supporté.",
-  },
-  {
-    key: "moondream",
-    name: "Moondream 2",
-    task: "vision",
-    ollama: "moondream",
-    params: "1,8 B",
-    languages: "anglais",
-    quality: 2,
-    benchmark: "MMMU : limité, mais ultra léger",
-    goodFor: "Vision sur machine modeste (défaut de l'app). Descriptions sommaires.",
-  },
 ];
 
 /// Nom Hugging Face du modèle (clé de l'API MTEB) : `Org__Modele` → `Org/Modele`.
