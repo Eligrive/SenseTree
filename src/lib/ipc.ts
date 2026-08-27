@@ -20,6 +20,7 @@ import type {
   IndexingQueueView,
   IndexingStats,
   InstallInfo,
+  LoadedModel,
   LocalModelStatus,
   MemoryItem,
   ModelBenchmark,
@@ -29,6 +30,7 @@ import type {
   PathDetails,
   PromptsConfig,
   SearchResult,
+  Throughput,
   TreeNode,
 } from "./types";
 
@@ -64,6 +66,16 @@ export const ollamaLibrary = (refresh = false) =>
 /// choix de quantification.
 export const ollamaTags = (models: string[]) =>
   invoke<Record<string, OllamaTag[]>>("ollama_tags", { models });
+/// Débit des trois étages IA (vitesse des MODÈLES, pas du pipeline complet).
+export const indexingThroughput = () => invoke<Throughput>("indexing_throughput");
+export const resetThroughput = () => invoke<void>("reset_throughput");
+/// Modèles réellement chargés sur le serveur — Ollama n'expose pas sa config, mais
+/// il expose son état.
+export const ollamaLoaded = (baseUrl: string) =>
+  invoke<LoadedModel[]>("ollama_loaded", { baseUrl });
+/// Décharge un modèle pour libérer la VRAM, sans toucher à la config du serveur.
+export const ollamaUnload = (baseUrl: string, model: string) =>
+  invoke<void>("ollama_unload", { baseUrl, model });
 export const pullModel = (baseUrl: string, model: string) =>
   invoke<string>("pull_model", { baseUrl, model });
 export const reindexAll = () => invoke<void>("reindex_all");

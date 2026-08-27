@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import type { FolderHealth, HealthReport, HealthSeverity, IndexingStats } from "../lib/types";
+import ThroughputPanel from "./ThroughputPanel";
 
 interface Props {
   roots: string[];
@@ -261,6 +262,9 @@ export default function Sidebar({
           onTogglePause={onTogglePause}
           onOpenQueue={onOpenQueue}
         />
+
+        {/* Vitesse des modèles — distincte de l'avancement affiché juste au-dessus. */}
+        <ThroughputPanel />
 
         {embedding && (
           <button

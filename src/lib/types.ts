@@ -18,6 +18,14 @@ export interface ChatConfig {
   enabled: boolean;
 }
 
+/// Ordonnancement des trois étages IA pendant l'indexation.
+///
+/// `sequential` : chaque fichier va au bout (vision → reasoning → embedding) avant le
+/// suivant — l'index avance en continu, mais on alterne les modèles à chaque fichier.
+/// `batch` : toute la tranche passe par les LLM, puis par l'embedding — un seul
+/// échange de modèles par tranche, au prix d'un index qui avance par paliers.
+export type PipelineMode = "sequential" | "batch";
+
 export interface IndexingConfig {
   roots: string[];
   chunk_size: number;
@@ -28,6 +36,40 @@ export interface IndexingConfig {
   qualify_documents: boolean;
   qualify_images: boolean;
   qualify_context: boolean;
+  pipeline_mode: PipelineMode;
+  /// Fichiers par tranche en mode batch.
+  batch_files: number;
+}
+
+/// Débit d'un étage IA. `null` = pas encore mesuré (à ne pas confondre avec zéro).
+export interface StageStats {
+  stage: "vision" | "reasoning" | "embedding";
+  ops: number; // appels au modèle
+  units: number; // fichiers (vision/reasoning) ou chunks (embedding)
+  bytes: number;
+  errors: number;
+  seconds: number; // temps cumulé DANS l'étage
+  ms_per_op: number | null;
+  units_per_sec: number | null;
+  mb_per_sec: number | null;
+}
+
+export interface Throughput {
+  since_unix: number;
+  /// Temps écoulé. Comparé à `seconds` de chaque étage, il dit quelle part du temps
+  /// réel part dans les modèles — donc si le goulot est le modèle ou le reste.
+  wall_seconds: number;
+  stages: StageStats[];
+}
+
+/// Un modèle chargé à l'instant sur le serveur Ollama (via `/api/ps`).
+export interface LoadedModel {
+  name: string;
+  size: number;
+  size_vram: number; // 0 si le serveur tourne en CPU
+  expires_at: string | null;
+  parameter_size: string | null;
+  quantization_level: string | null;
 }
 
 export interface PromptsConfig {
@@ -68,10 +110,13 @@ export interface AppConfig {
 }
 
 /// État d'un modèle d'embedding local (fastembed) : est-il déjà téléchargé ?
+/// Un modèle d'embedding embarqué (fastembed/ONNX).
 export interface LocalModelStatus {
   id: string;
   dimensions: number;
   downloaded: boolean;
+  /// Seule la famille E5 l'est. Les autres s'effondrent sur un corpus non anglophone.
+  multilingual: boolean;
 }
 
 /// Nom d'installation résolu (via les GGUF réels sur Hugging Face).

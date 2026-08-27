@@ -602,9 +602,11 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
               {cfg.embedding.mode === "local" ? (
                 <Field label="Modèle local (téléchargés)">
                   {(() => {
-                    // Menu déroulant = UNIQUEMENT les modèles déjà téléchargés.
-                    // Le modèle courant est toujours listé, même s'il ne l'est pas encore.
-                    const opts = localModels.filter((m) => m.downloaded).map((m) => m.id);
+                    // TOUS les modèles supportés sont proposés, pas seulement ceux déjà
+                    // téléchargés : sur une installation neuve un seul l'est, et filtrer
+                    // rendait le menu inchangeable. Un modèle absent est simplement
+                    // récupéré au premier usage — c'est annoncé dans l'étiquette.
+                    const opts = localModels.map((m) => m.id);
                     if (!opts.includes(cfg.embedding.model)) opts.unshift(cfg.embedding.model);
                     const noneReady = localModels.every((m) => !m.downloaded);
                     return (
@@ -630,17 +632,32 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                               <option key={id} value={id}>
                                 {id}
                                 {lm ? ` · ${lm.dimensions}d` : ""}
-                                {lm && !lm.downloaded ? " · non téléchargé" : ""}
+                                {lm ? (lm.multilingual ? " · multilingue" : " · anglais") : ""}
+                                {lm && !lm.downloaded ? " · à télécharger" : ""}
                               </option>
                             );
                           })}
                         </select>
                         {noneReady && (
                           <span className="mt-1 block text-[11px] text-amber-400">
-                            Aucun modèle local téléchargé — ouvre le catalogue pour en installer un
-                            (il sera sinon téléchargé à la première indexation).
+                            Aucun modèle local téléchargé — celui que tu choisis sera récupéré
+                            automatiquement à la première indexation.
                           </span>
                         )}
+                        {(() => {
+                          // Le piège invisible : un modèle anglophone sur un corpus
+                          // français donne une recherche sémantique médiocre, et seule
+                          // une réindexation complète permet d'en sortir.
+                          const lm = localModels.find((m) => m.id === cfg.embedding.model);
+                          if (!lm || lm.multilingual) return null;
+                          return (
+                            <span className="mt-1 block text-[11px] text-amber-400">
+                              Modèle entraîné sur l'anglais : la recherche se dégradera nettement
+                              sur des fichiers en français. Les modèles «&nbsp;multilingual-e5-*&nbsp;»
+                              sont les seuls multilingues embarqués.
+                            </span>
+                          );
+                        })()}
                       </>
                     );
                   })()}
@@ -852,6 +869,55 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
 
           {chatSection("reasoning", "Reasoning / Chat")}
           {chatSection("vision", "Vision (multimodal)")}
+
+          {/* Ordonnancement du pipeline : séquentiel vs par tranches */}
+          <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
+            <h3 className="text-sm font-semibold text-zinc-200">Ordonnancement de l'indexation</h3>
+            <Field label="Mode">
+              <select
+                className={inputCls}
+                value={cfg.indexing.pipeline_mode ?? "sequential"}
+                onChange={(e) =>
+                  setCfg({
+                    ...cfg,
+                    indexing: {
+                      ...cfg.indexing,
+                      pipeline_mode: e.target.value as "sequential" | "batch",
+                    },
+                  })
+                }
+              >
+                <option value="sequential">Séquentiel — fichier par fichier</option>
+                <option value="batch">Par tranches — tout un étage à la fois</option>
+              </select>
+            </Field>
+            <p className="text-[11px] text-zinc-500">
+              {cfg.indexing.pipeline_mode === "batch"
+                ? "Chaque tranche passe entièrement par la vision et le reasoning, puis par l'embedding. Les modèles ne sont échangés qu'une fois par tranche — le bon choix si ta carte ne peut pas les garder tous en mémoire. En contrepartie, les fichiers d'une tranche ne deviennent cherchables qu'à la fin de celle-ci."
+                : "Chaque fichier est mené de bout en bout avant le suivant : l'index avance en continu et ce qui vient d'être traité est immédiatement cherchable. Suppose que le serveur puisse garder les modèles chargés en même temps — ou que l'embedding soit embarqué (fastembed), auquel cas il n'y a aucun échange à faire."}
+            </p>
+            {cfg.indexing.pipeline_mode === "batch" && (
+              <Field label="Fichiers par tranche">
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  className={inputCls}
+                  value={cfg.indexing.batch_files ?? 64}
+                  onChange={(e) =>
+                    setCfg({
+                      ...cfg,
+                      indexing: { ...cfg.indexing, batch_files: Number(e.target.value) },
+                    })
+                  }
+                />
+                <span className="mt-1 block text-[11px] text-zinc-500">
+                  Plus la tranche est grande, moins on échange de modèles — mais plus il faut
+                  attendre avant que l'index avance.
+                </span>
+              </Field>
+            )}
+          </section>
 
           {/* Classification des dossiers : tendance bloc vs récursif */}
           <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">

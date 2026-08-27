@@ -65,21 +65,27 @@ pub struct LocalEmbedder {
     batch_size: usize,
 }
 
-/// Modèles d'embedding locaux (fastembed) supportés : identifiant convivial + dimension.
-pub fn supported_local_models() -> Vec<(&'static str, usize)> {
+/// Modèles d'embedding locaux (fastembed) supportés : identifiant, dimension, et
+/// s'ils sont MULTILINGUES.
+///
+/// Ce dernier drapeau est décisif et invisible dans le nom : seule la famille E5 est
+/// multilingue ici. Les autres sont entraînés sur de l'anglais et s'effondrent sur un
+/// corpus français — les proposer sans le dire mène l'utilisateur à une indexation
+/// médiocre qu'il ne pourra corriger qu'en réindexant tout.
+pub fn supported_local_models() -> Vec<(&'static str, usize, bool)> {
     vec![
-        ("multilingual-e5-small", 384),
-        ("multilingual-e5-base", 768),
-        ("multilingual-e5-large", 1024),
-        ("bge-small-en-v1.5", 384),
-        ("bge-base-en-v1.5", 768),
-        ("bge-large-en-v1.5", 1024),
-        ("gte-base-en-v1.5", 768),
-        ("gte-large-en-v1.5", 1024),
-        ("modernbert-embed-large", 1024),
-        ("all-minilm", 384),
-        ("nomic-embed-text", 768),
-        ("mxbai-embed-large", 1024),
+        ("multilingual-e5-small", 384, true),
+        ("multilingual-e5-base", 768, true),
+        ("multilingual-e5-large", 1024, true),
+        ("bge-small-en-v1.5", 384, false),
+        ("bge-base-en-v1.5", 768, false),
+        ("bge-large-en-v1.5", 1024, false),
+        ("gte-base-en-v1.5", 768, false),
+        ("gte-large-en-v1.5", 1024, false),
+        ("modernbert-embed-large", 1024, false),
+        ("all-minilm", 384, false),
+        ("nomic-embed-text", 768, false),
+        ("mxbai-embed-large", 1024, false),
     ]
 }
 
@@ -148,14 +154,31 @@ impl EmbeddingProvider for LocalEmbedder {
         } else {
             texts
         };
+        // Mesuré ici plutôt qu'aux appels : le worker embedde depuis quatre endroits,
+        // et un cinquième ajouté plus tard échapperait au compteur.
+        let units = inputs.len() as u64;
+        let bytes: u64 = inputs.iter().map(|t| t.len() as u64).sum();
+        let started = std::time::Instant::now();
+
         let model = self.model.clone();
         let batch = self.batch_size;
         // fastembed est synchrone/CPU-bound : on l'exécute hors du runtime async.
-        tokio::task::spawn_blocking(move || {
+        let out = tokio::task::spawn_blocking(move || {
             model.embed(inputs, Some(batch)).context("échec de l'embedding local")
         })
         .await
-        .context("tâche d'embedding interrompue")?
+        .context("tâche d'embedding interrompue")?;
+
+        match &out {
+            Ok(_) => crate::metrics::record(
+                crate::metrics::Stage::Embedding,
+                started.elapsed(),
+                units,
+                bytes,
+            ),
+            Err(_) => crate::metrics::record_error(crate::metrics::Stage::Embedding),
+        }
+        out
     }
 
     async fn embed_query(&self, text: String) -> Result<Vec<f32>> {
@@ -238,7 +261,20 @@ impl OpenAiEmbedder {
 #[async_trait]
 impl EmbeddingProvider for OpenAiEmbedder {
     async fn embed_documents(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        self.embed_batch(texts).await
+        let units = texts.len() as u64;
+        let bytes: u64 = texts.iter().map(|t| t.len() as u64).sum();
+        let started = std::time::Instant::now();
+        let out = self.embed_batch(texts).await;
+        match &out {
+            Ok(_) => crate::metrics::record(
+                crate::metrics::Stage::Embedding,
+                started.elapsed(),
+                units,
+                bytes,
+            ),
+            Err(_) => crate::metrics::record_error(crate::metrics::Stage::Embedding),
+        }
+        out
     }
 
     async fn embed_query(&self, text: String) -> Result<Vec<f32>> {
@@ -445,6 +481,19 @@ impl OpenAiChatClient {
 
     /// Échange de chat standard. `json_mode` force une réponse JSON stricte (pour les actions).
     pub async fn chat(&self, messages: Vec<ChatMessage>, json_mode: bool) -> Result<String> {
+        let bytes: u64 = messages.iter().map(|m| m.content.len() as u64).sum();
+        let started = std::time::Instant::now();
+        let out = self.chat_inner(messages, json_mode).await;
+        match &out {
+            Ok(_) => {
+                crate::metrics::record(crate::metrics::Stage::Reasoning, started.elapsed(), 1, bytes)
+            }
+            Err(_) => crate::metrics::record_error(crate::metrics::Stage::Reasoning),
+        }
+        out
+    }
+
+    async fn chat_inner(&self, messages: Vec<ChatMessage>, json_mode: bool) -> Result<String> {
         let url = format!("{}/chat/completions", self.base_url);
         let mut body = json!({
             "model": self.model,
@@ -547,6 +596,25 @@ impl OpenAiChatClient {
     /// L'erreur est typée (`VisionError`) pour que l'appelant distingue un échec
     /// passager (à re-tenter) d'un échec définitif (repli contextuel immédiat).
     pub async fn describe_image(
+        &self,
+        image_base64: &str,
+        mime: &str,
+        prompt: &str,
+    ) -> std::result::Result<String, VisionError> {
+        // Le base64 pèse ~4/3 de l'image d'origine : on rapporte la taille réelle.
+        let bytes = (image_base64.len() as u64) * 3 / 4;
+        let started = std::time::Instant::now();
+        let out = self.describe_image_inner(image_base64, mime, prompt).await;
+        match &out {
+            Ok(_) => {
+                crate::metrics::record(crate::metrics::Stage::Vision, started.elapsed(), 1, bytes)
+            }
+            Err(_) => crate::metrics::record_error(crate::metrics::Stage::Vision),
+        }
+        out
+    }
+
+    async fn describe_image_inner(
         &self,
         image_base64: &str,
         mime: &str,
@@ -947,7 +1015,7 @@ impl AiEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_local_model;
+    use super::{resolve_local_model, supported_local_models};
 
     #[test]
     fn modeles_locaux_resolvent_avec_la_bonne_dimension() {
@@ -960,5 +1028,18 @@ mod tests {
         assert_eq!(resolve_local_model("multilingual-e5-small").1, 384);
         // Inconnu → repli sûr sur e5-small (384).
         assert_eq!(resolve_local_model("inexistant-xyz").1, 384);
+    }
+
+    /// Le catalogue affiché et le résolveur doivent rester d'accord : un identifiant
+    /// listé mais non résolu retomberait silencieusement sur e5-small, et l'utilisateur
+    /// indexerait tout avec un modèle qu'il n'a pas choisi.
+    #[test]
+    fn catalogue_local_coherent_avec_le_resolveur() {
+        for (id, dims, multilingue) in supported_local_models() {
+            let (_, resolved_dims, e5) = resolve_local_model(id);
+            assert_eq!(resolved_dims, dims, "dimension incohérente pour {id}");
+            // Le préfixe E5 n'est requis que par la famille E5 — la seule multilingue.
+            assert_eq!(e5, multilingue, "drapeau multilingue incohérent pour {id}");
+        }
     }
 }

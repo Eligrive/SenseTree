@@ -31,6 +31,30 @@ const BATCH: i64 = 8;
 /// Nombre de cycles d'inactivité (3 s chacun) avant de décharger l'embedder.
 const IDLE_UNLOAD_CYCLES: u32 = 5;
 
+/// Travail restant après les étages IA : ce qu'il faut vectoriser puis stocker.
+///
+/// Les cinq chemins d'indexation (texte, image, inconnu, contexte, dossier-bloc)
+/// finissaient tous par la même queue — embedder, écrire dans LanceDB, mettre à jour
+/// les métadonnées. L'isoler ici permet de DÉCALER l'embedding par rapport aux appels
+/// LLM, ce qui est exactement ce que fait le mode batch.
+pub struct Pending {
+    path: String,
+    mtime: i64,
+    hash: String,
+    /// Type stocké dans `file_semantics` (`pdf`, `image`, `folder-block`…).
+    kind: String,
+    /// Le « sens » du fichier, issu du reasoning ou d'un repli.
+    summary: String,
+    /// Contenu extrait conservé à côté du sens, pour comparaison.
+    extract: Option<String>,
+    /// Textes STOCKÉS, un par chunk (snippets, BM25).
+    stored: Vec<String>,
+    /// Textes ENVOYÉS à l'embedding (contextual retrieval) — même longueur que `stored`.
+    embed: Vec<String>,
+    /// Message de fin, pour conserver les journaux existants.
+    log: String,
+}
+
 pub fn start_worker(state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
         tracing::info!("👷 Worker d'indexation sémantique démarré.");
@@ -58,7 +82,17 @@ async fn worker_loop(state: Arc<AppState>) {
             continue;
         }
 
-        let tasks = match state.db.get_pending_extraction_tasks(BATCH) {
+        let cfg_route = state.config.snapshot();
+        let batch_mode = cfg_route.indexing.pipeline_mode == crate::config::PipelineMode::Batch;
+        // En mode batch, on prélève une tranche plus large : c'est elle qui détermine
+        // combien d'appels LLM sont regroupés avant de passer à l'embedding.
+        let slice = if batch_mode {
+            cfg_route.indexing.batch_files.clamp(1, 1000) as i64
+        } else {
+            BATCH
+        };
+
+        let tasks = match state.db.get_pending_extraction_tasks(slice) {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!("worker: lecture de la file échouée: {e}");
@@ -89,37 +123,183 @@ async fn worker_loop(state: Arc<AppState>) {
             }
         };
 
-        let cfg_route = state.config.snapshot();
-        for task in tasks {
-            // Publie l'élément en cours + ses étapes de pipeline (affichage temps réel de la file).
-            let (routes, kind) = route_for(&cfg_route, &task.path);
-            state.set_activity(Some(crate::state::CurrentActivity {
-                path: task.path.clone(),
-                routes: routes.iter().map(|s| s.to_string()).collect(),
-                kind: kind.to_string(),
-            }));
-            match process_task(&state, embedder.as_ref(), &task.path, task.retry_count).await {
-                Ok(()) => {
-                    let _ = state.db.update_task_status(task.id, "completed");
-                }
-                Err(e) => {
-                    tracing::warn!("worker: échec sur {} : {e}", task.path);
-                    let _ = state
-                        .db
-                        .record_task_failure(task.id, &e.to_string(), MAX_RETRIES);
-                }
-            }
-            state.set_activity(None);
+        if batch_mode {
+            run_batch(&state, embedder.as_ref(), &cfg_route, tasks).await;
+        } else {
+            run_sequential(&state, embedder.as_ref(), &cfg_route, tasks).await;
         }
     }
 }
 
-async fn process_task(
+/// Publie l'élément en cours + ses étapes (affichage temps réel de la file).
+fn announce(state: &AppState, cfg: &crate::config::AppConfig, path: &str) {
+    let (routes, kind) = route_for(cfg, path);
+    state.set_activity(Some(crate::state::CurrentActivity {
+        path: path.to_string(),
+        routes: routes.iter().map(|s| s.to_string()).collect(),
+        kind: kind.to_string(),
+    }));
+}
+
+fn fail(state: &AppState, id: i64, path: &str, e: &anyhow::Error) {
+    tracing::warn!("worker: échec sur {path} : {e}");
+    let _ = state.db.record_task_failure(id, &e.to_string(), MAX_RETRIES);
+}
+
+/// Mode SÉQUENTIEL : un fichier est mené de bout en bout avant de passer au suivant.
+///
+/// L'index avance fichier par fichier — ce qui vient d'être traité est immédiatement
+/// cherchable — au prix d'une alternance des modèles à chaque fichier.
+async fn run_sequential(
     state: &AppState,
     embedder: &dyn EmbeddingProvider,
+    cfg: &crate::config::AppConfig,
+    tasks: Vec<crate::db::ExtractionTask>,
+) {
+    for task in tasks {
+        // La pause doit être ressentie tout de suite, pas à la fin du lot. Les tâches
+        // non traitées restent `pending` : elles seront reprises telles quelles.
+        if state.paused.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        announce(state, cfg, &task.path);
+        let outcome = match prepare_task(state, &task.path, task.retry_count).await {
+            // `None` = rien à vectoriser (fichier disparu, inchangé, ignoré).
+            Ok(None) => Ok(()),
+            Ok(Some(p)) => finalize(state, embedder, p).await,
+            Err(e) => Err(e),
+        };
+        match outcome {
+            Ok(()) => {
+                let _ = state.db.update_task_status(task.id, "completed");
+            }
+            Err(e) => fail(state, task.id, &task.path, &e),
+        }
+        state.set_activity(None);
+    }
+}
+
+/// Mode BATCH : toute la tranche passe par les étages LLM, PUIS par l'embedding.
+///
+/// Un seul aller-retour entre les deux moteurs par tranche au lieu d'un par fichier.
+/// Sur une machine où les modèles ne tiennent pas ensemble en mémoire, c'est la
+/// différence entre recharger un modèle de plusieurs gigaoctets à chaque fichier et
+/// le faire une fois toutes les N.
+///
+/// Un échec pendant la phase LLM est enregistré tout de suite : inutile de faire
+/// attendre la tranche entière pour signaler un fichier qui ne passera pas.
+async fn run_batch(
+    state: &AppState,
+    embedder: &dyn EmbeddingProvider,
+    cfg: &crate::config::AppConfig,
+    tasks: Vec<crate::db::ExtractionTask>,
+) {
+    let total = tasks.len();
+    tracing::info!("🧱 tranche de {total} fichiers : phase extraction + LLM");
+
+    let mut prets: Vec<(i64, Pending)> = Vec::with_capacity(total);
+    for task in tasks {
+        // Pause demandée : on arrête de préparer, mais on va tout de même vectoriser ce
+        // qui est déjà prêt — sinon les appels LLM déjà payés seraient perdus et
+        // refaits à la reprise.
+        if state.paused.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!("⏸️ pause pendant la tranche — on finalise les {} fichiers prêts", prets.len());
+            break;
+        }
+        announce(state, cfg, &task.path);
+        match prepare_task(state, &task.path, task.retry_count).await {
+            Ok(Some(p)) => prets.push((task.id, p)),
+            Ok(None) => {
+                let _ = state.db.update_task_status(task.id, "completed");
+            }
+            Err(e) => fail(state, task.id, &task.path, &e),
+        }
+    }
+    state.set_activity(None);
+
+    if prets.is_empty() {
+        return;
+    }
+
+    // Les modèles LLM ne serviront plus avant la prochaine tranche : on les libère
+    // explicitement pour que l'embedding dispose de la mémoire. Sans effet — et sans
+    // erreur — si le serveur n'est pas Ollama.
+    liberer_modeles_llm(cfg).await;
+
+    tracing::info!("🧱 tranche : phase embedding sur {} fichiers", prets.len());
+    for (id, p) in prets {
+        announce(state, cfg, &p.path);
+        let path = p.path.clone();
+        match finalize(state, embedder, p).await {
+            Ok(()) => {
+                let _ = state.db.update_task_status(id, "completed");
+            }
+            Err(e) => fail(state, id, &path, &e),
+        }
+    }
+    state.set_activity(None);
+}
+
+/// Décharge les modèles de reasoning et de vision du serveur, s'il s'agit d'Ollama.
+///
+/// Ollama n'expose aucune API de configuration : on ne peut pas lui imposer combien de
+/// modèles il garde en mémoire. En revanche on peut décharger explicitement ceux dont
+/// on n'a plus besoin, ce qui rend le mode batch déterministe quelle que soit la
+/// configuration du serveur d'en face.
+async fn liberer_modeles_llm(cfg: &crate::config::AppConfig) {
+    let mut vus: Vec<(&str, &str)> = Vec::new();
+    if cfg.reasoning.enabled {
+        vus.push((&cfg.reasoning.base_url, &cfg.reasoning.model));
+    }
+    if cfg.vision.enabled {
+        vus.push((&cfg.vision.base_url, &cfg.vision.model));
+    }
+    for (base, model) in vus {
+        if model.is_empty() {
+            continue;
+        }
+        match crate::ollama_server::unload(base, model).await {
+            Ok(()) => tracing::debug!("modèle {model} déchargé avant la phase embedding"),
+            // Serveur non-Ollama, hors ligne, ou modèle déjà déchargé : sans importance.
+            Err(e) => tracing::debug!("déchargement de {model} ignoré ({e})"),
+        }
+    }
+}
+
+/// Vectorise et stocke le travail préparé. C'est la queue commune à tous les chemins.
+async fn finalize(
+    state: &AppState,
+    embedder: &dyn EmbeddingProvider,
+    p: Pending,
+) -> anyhow::Result<()> {
+    let vectors = embedder.embed_documents(p.embed).await?;
+    let chunk_vectors: Vec<ChunkVector> = p
+        .stored
+        .into_iter()
+        .zip(vectors)
+        .enumerate()
+        .map(|(i, (text, vector))| ChunkVector { chunk_index: i as i32, text, vector })
+        .collect();
+
+    state.vector.upsert_chunks(&p.path, &p.hash, p.mtime, chunk_vectors).await?;
+    let _ = state.db.update_file_hash(&p.path, &p.hash);
+    let _ = state
+        .db
+        .upsert_file_semantics(&p.path, &p.summary, p.extract.as_deref(), &p.kind);
+    let _ = state.db.mark_indexed(&p.path, p.mtime);
+    tracing::info!("{}", p.log);
+    Ok(())
+}
+
+/// Mène un fichier jusqu'au bout des étages IA, sans le vectoriser.
+///
+/// `Ok(None)` signifie « rien à faire » : fichier disparu, inchangé depuis la dernière
+/// indexation, ou ignoré. C'est un succès, pas un échec.
+async fn prepare_task(
+    state: &AppState,
     path: &str,
     retry_count: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Pending>> {
     let p = Path::new(path);
 
     // Fichier disparu entre la mise en file et le traitement : on purge.
@@ -127,14 +307,14 @@ async fn process_task(
         let _ = state.db.remove_from_queue(path);
         state.vector.delete_by_path(path).await.ok();
         let _ = state.db.remove_catalog_path(path);
-        return Ok(());
+        return Ok(None);
     }
 
     let mtime = modified_epoch(p);
 
     // Un dossier dans la file = dossier traité comme « bloc sémantique » unique.
     if p.is_dir() {
-        return index_folder_block(state, embedder, path, mtime).await;
+        return index_folder_block(state, path, mtime).await;
     }
 
     // Garde-fou : un fichier dont le dossier parent est un bloc ne doit JAMAIS être
@@ -144,7 +324,7 @@ async fn process_task(
         if let Ok(Some((mode, _))) = state.db.get_folder_mode(&parent.to_string_lossy()) {
             if mode == "block" {
                 let _ = state.db.remove_from_queue(path);
-                return Ok(());
+                return Ok(None);
             }
         }
     }
@@ -152,10 +332,10 @@ async fn process_task(
     let file_type = Parser::determine_file_type(p);
 
     match file_type {
-        FileType::Ignored => Ok(()),
-        FileType::Image => index_image(state, embedder, path, mtime, retry_count).await,
-        FileType::RequiresAIRouting => index_unknown(state, embedder, path, mtime).await,
-        FileType::Text | FileType::Document => index_textual(state, embedder, path, mtime).await,
+        FileType::Ignored => Ok(None),
+        FileType::Image => index_image(state, path, mtime, retry_count).await,
+        FileType::RequiresAIRouting => index_unknown(state, path, mtime).await,
+        FileType::Text | FileType::Document => index_textual(state, path, mtime).await,
     }
 }
 
@@ -223,15 +403,14 @@ pub fn route_for(cfg: &crate::config::AppConfig, path: &str) -> (Vec<&'static st
 /// Indexation d'un fichier textuel (contenu réel).
 async fn index_textual(
     state: &AppState,
-    embedder: &dyn EmbeddingProvider,
     path: &str,
     mtime: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Pending>> {
     let max_bytes = state.config.snapshot().indexing.max_file_mb * 1024 * 1024;
     if let Ok(meta) = fs::metadata(path) {
         if meta.len() > max_bytes {
             // Trop volumineux pour une extraction complète : on se rabat sur le contexte.
-            return index_context_only(state, embedder, path, mtime, "volumineux").await;
+            return index_context_only(state, path, mtime, "volumineux").await;
         }
     }
 
@@ -250,7 +429,7 @@ async fn index_textual(
         if stored == hash {
             tracing::debug!("contenu inchangé, embedding ignoré: {path}");
             let _ = state.db.mark_indexed(path, mtime);
-            return Ok(());
+            return Ok(None);
         }
     }
 
@@ -268,26 +447,25 @@ async fn index_textual(
 
     if effective.trim().is_empty() {
         // Document vide/opaque : reste trouvable par son contexte.
-        return index_context_only(state, embedder, path, mtime, "vide").await;
+        return index_context_only(state, path, mtime, "vide").await;
     }
 
-    store_text_document(state, embedder, path, mtime, &effective, &hash, &doc_type).await
+    store_text_document(state, path, mtime, &effective, &hash, &doc_type).await
 }
 
-/// Stocke un document textuel : chunk → embed → LanceDB → métadonnées.
+/// Prépare un document textuel : chunk → qualification LLM → textes à vectoriser.
 async fn store_text_document(
     state: &AppState,
-    embedder: &dyn EmbeddingProvider,
     path: &str,
     mtime: i64,
     text: &str,
     hash: &str,
     doc_type: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Pending>> {
     let cfg = state.config.snapshot();
     let chunks = Chunker::slice_text(text, cfg.indexing.chunk_size, cfg.indexing.overlap);
     if chunks.is_empty() {
-        return index_context_only(state, embedder, path, mtime, "vide").await;
+        return index_context_only(state, path, mtime, "vide").await;
     }
 
     // « Sens » du document : une VRAIE qualification par le LLM (CE QUE C'EST + points-clés),
@@ -329,23 +507,20 @@ async fn store_text_document(
         })
         .collect();
 
-    let vectors = embedder.embed_documents(embed_texts).await?;
-    let chunk_vectors: Vec<ChunkVector> = chunks
-        .into_iter()
-        .zip(stored_texts.into_iter().zip(vectors.into_iter()))
-        .map(|(c, (t, v))| ChunkVector { chunk_index: c.chunk_index as i32, text: t, vector: v })
-        .collect();
-    state.vector.upsert_chunks(path, hash, mtime, chunk_vectors).await?;
-    let _ = state.db.update_file_hash(path, hash);
     // On garde LES DEUX : la qualification (« sens ») ET le contenu extrait (borné), pour
     // pouvoir les afficher côte à côte et comparer au document.
     let extract: String = text.trim().chars().take(16_000).collect();
-    let _ = state
-        .db
-        .upsert_file_semantics(path, &summary, Some(&extract), doc_type);
-    let _ = state.db.mark_indexed(path, mtime);
-    tracing::info!("✅ indexé ({} car., {doc_type}) : {path}", text.len());
-    Ok(())
+    Ok(Some(Pending {
+        path: path.to_string(),
+        mtime,
+        hash: hash.to_string(),
+        kind: doc_type.to_string(),
+        summary,
+        extract: Some(extract),
+        stored: stored_texts,
+        embed: embed_texts,
+        log: format!("✅ indexé ({} car., {doc_type}) : {path}", text.len()),
+    }))
 }
 
 /// Renvoie le « sens » d'un document : qualification LLM si autorisée et possible,
@@ -412,10 +587,9 @@ pub async fn llm_qualify_document(
 /// sinon repli sur le contexte (nom, dossier, fichiers voisins).
 async fn index_unknown(
     state: &AppState,
-    embedder: &dyn EmbeddingProvider,
     path: &str,
     mtime: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Pending>> {
     let cfg = state.config.snapshot();
     let max_bytes = cfg.indexing.max_file_mb * 1024 * 1024;
     let path_owned = path.to_string();
@@ -437,7 +611,7 @@ async fn index_unknown(
     if let Ok(Some(stored)) = state.db.get_stored_hash(path) {
         if stored == hash {
             let _ = state.db.mark_indexed(path, mtime);
-            return Ok(());
+            return Ok(None);
         }
     }
 
@@ -450,7 +624,7 @@ async fn index_unknown(
             .await
             .unwrap_or_default();
         if !full.trim().is_empty() {
-            return store_text_document(state, embedder, path, mtime, full.trim(), &hash, "texte").await;
+            return store_text_document(state, path, mtime, full.trim(), &hash, "texte").await;
         }
     }
 
@@ -458,13 +632,12 @@ async fn index_unknown(
     if ratio >= 0.30 && cfg.reasoning.enabled {
         let sample_text = String::from_utf8_lossy(&sample);
         if let Some(extracted) = llm_try_extract(state, path, &sample_text).await {
-            return store_text_document(state, embedder, path, mtime, &extracted, &hash, "llm-extrait")
-                .await;
+            return store_text_document(state, path, mtime, &extracted, &hash, "llm-extrait").await;
         }
     }
 
     // 3) Repli : contexte enrichi (nom, dossier, fichiers voisins).
-    index_context_only(state, embedder, path, mtime, "binaire").await
+    index_context_only(state, path, mtime, "binaire").await
 }
 
 /// Demande au LLM d'extraire le contenu utile d'un extrait de fichier inconnu.
@@ -518,14 +691,13 @@ fn text_ratio(bytes: &[u8]) -> f32 {
 /// Indexation d'une image via un modèle de vision (ou repli contextuel).
 async fn index_image(
     state: &AppState,
-    embedder: &dyn EmbeddingProvider,
     path: &str,
     mtime: i64,
     retry_count: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Pending>> {
     let cfg = state.config.snapshot();
     if !cfg.vision.enabled {
-        return index_context_only(state, embedder, path, mtime, "image").await;
+        return index_context_only(state, path, mtime, "image").await;
     }
 
     // Les modèles de vision ne gèrent que les formats raster courants ; on évite
@@ -537,7 +709,7 @@ async fn index_image(
         .unwrap_or("")
         .to_lowercase();
     if !VISION_FORMATS.contains(&ext.as_str()) {
-        return index_context_only(state, embedder, path, mtime, "image").await;
+        return index_context_only(state, path, mtime, "image").await;
     }
 
     // Lecture + encodage base64 hors runtime async.
@@ -569,7 +741,7 @@ async fn index_image(
         // Échec définitif (image/format/modèle) : inutile d'insister, repli contextuel.
         Err(VisionError::Permanent(e)) => {
             tracing::warn!("vision impossible pour {path} ({e}), repli contextuel");
-            return index_context_only(state, embedder, path, mtime, "image").await;
+            return index_context_only(state, path, mtime, "image").await;
         }
         // Échec passager (timeout, swap de modèle, serveur occupé) : on renvoie une
         // erreur pour que le worker re-mette l'image en file — tant qu'il reste des
@@ -588,7 +760,7 @@ async fn index_image(
                 "vision toujours indisponible pour {path} après {} tentatives ({e}), repli contextuel",
                 MAX_RETRIES
             );
-            return index_context_only(state, embedder, path, mtime, "image").await;
+            return index_context_only(state, path, mtime, "image").await;
         }
     };
 
@@ -603,33 +775,28 @@ async fn index_image(
         caption.trim(),
         context_descriptor(path, "image")
     );
-    let vector = embedder.embed_documents(vec![semantic_text.clone()]).await?;
-    let chunk = ChunkVector {
-        chunk_index: 0,
-        text: semantic_text.clone(),
-        vector: vector.into_iter().next().unwrap_or_default(),
-    };
-    state.vector.upsert_chunks(path, &hash, mtime, vec![chunk]).await?;
-    let _ = state.db.update_file_hash(path, &hash);
-    // On garde les DEUX : la qualification (« sens ») et la légende brute (« contenu extrait »).
-    let _ = state
-        .db
-        .upsert_file_semantics(path, &summary, Some(caption.trim()), "image");
-    let _ = state.db.mark_indexed(path, mtime);
-
-    tracing::info!("🖼️ image décrite et indexée : {path}");
-    Ok(())
+    Ok(Some(Pending {
+        path: path.to_string(),
+        mtime,
+        hash,
+        kind: "image".to_string(),
+        summary,
+        // On garde les DEUX : la qualification (« sens ») et la légende brute.
+        extract: Some(caption.trim().to_string()),
+        stored: vec![semantic_text.clone()],
+        embed: vec![semantic_text],
+        log: format!("🖼️ image décrite et indexée : {path}"),
+    }))
 }
 
 /// Indexation par le contexte seul : nom, dossier parent, extension, taille.
 /// C'est le filet de sécurité pour tout fichier dont on ne peut lire le contenu.
 async fn index_context_only(
     state: &AppState,
-    embedder: &dyn EmbeddingProvider,
     path: &str,
     mtime: i64,
     kind: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Pending>> {
     let descriptor = context_descriptor(path, kind);
     let hash = format!("ctx:{:x}", Sha256::digest(format!("{path}:{mtime}").as_bytes()));
     let cfg = state.config.snapshot();
@@ -651,21 +818,17 @@ async fn index_context_only(
         None => summary.clone(),
     };
 
-    let vector = embedder.embed_documents(vec![text.clone()]).await?;
-    let chunk = ChunkVector {
-        chunk_index: 0,
-        text,
-        vector: vector.into_iter().next().unwrap_or_default(),
-    };
-    state.vector.upsert_chunks(path, &hash, mtime, vec![chunk]).await?;
-    let _ = state.db.update_file_hash(path, &hash);
-    let _ = state
-        .db
-        .upsert_file_semantics(path, &summary, extract.as_deref(), kind);
-    let _ = state.db.mark_indexed(path, mtime);
-
-    tracing::info!("🧩 indexé par contexte ({kind}) : {path}");
-    Ok(())
+    Ok(Some(Pending {
+        path: path.to_string(),
+        mtime,
+        hash,
+        kind: kind.to_string(),
+        summary,
+        extract,
+        stored: vec![text.clone()],
+        embed: vec![text],
+        log: format!("🧩 indexé par contexte ({kind}) : {path}"),
+    }))
 }
 
 /// Devine la nature d'un fichier illisible (contexte seul) via le reasoning, à partir
@@ -715,10 +878,9 @@ async fn llm_guess_context(
 /// instruments Ableton ») sans polluer l'index avec chacun de ses fichiers.
 async fn index_folder_block(
     state: &AppState,
-    embedder: &dyn EmbeddingProvider,
     path: &str,
     mtime: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Pending>> {
     let p = Path::new(path);
     let entries = crate::folders::read_dir_sample(p, 100);
     let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -753,24 +915,20 @@ async fn index_folder_block(
 
     let hash = format!("block:{:x}", Sha256::digest(format!("{path}:{mtime}:{count}").as_bytes()));
 
-    let vector = embedder.embed_documents(vec![text.clone()]).await?;
-    let chunk = ChunkVector {
-        chunk_index: 0,
-        text,
-        vector: vector.into_iter().next().unwrap_or_default(),
-    };
-    state.vector.upsert_chunks(path, &hash, mtime, vec![chunk]).await?;
-    let _ = state.db.update_file_hash(path, &hash);
     // Sens = description LLM (qualification) ; contenu extrait = le listing du dossier
     // (types + exemples), pour comparer. Si pas de description distincte, pas d'extract redondant.
-    let extract = description.as_ref().map(|_| facts.as_str());
-    let _ = state
-        .db
-        .upsert_file_semantics(path, &summary, extract, "folder-block");
-    let _ = state.db.mark_indexed(path, mtime);
-
-    tracing::info!("📦 dossier indexé en bloc : {path}");
-    Ok(())
+    let extract = description.as_ref().map(|_| facts.clone());
+    Ok(Some(Pending {
+        path: path.to_string(),
+        mtime,
+        hash,
+        kind: "folder-block".to_string(),
+        summary,
+        extract,
+        stored: vec![text.clone()],
+        embed: vec![text],
+        log: format!("📦 dossier indexé en bloc : {path}"),
+    }))
 }
 
 /// Demande au LLM une description courte (1 phrase) de ce qu'est un dossier-bloc.

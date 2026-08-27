@@ -88,6 +88,29 @@ impl ChatConfig {
     }
 }
 
+/// Ordonnancement des trois étages IA pendant l'indexation.
+///
+/// Le compromis est réel et dépend de la machine : il n'y a pas de bon défaut
+/// universel, d'où le choix laissé à l'utilisateur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PipelineMode {
+    /// Fichier par fichier : vision → reasoning → embedding, puis fichier suivant.
+    ///
+    /// L'index se remplit progressivement — un fichier traité est immédiatement
+    /// cherchable — mais on alterne les modèles à chaque fichier. Confortable si le
+    /// serveur peut garder plusieurs modèles chargés, ou si l'embedding est embarqué
+    /// (fastembed), auquel cas il n'y a aucun échange à faire.
+    #[default]
+    Sequential,
+    /// Par tranches : toute la vision, puis tout le reasoning, puis tout l'embedding.
+    ///
+    /// Chaque modèle est sollicité en une seule fois par tranche, ce qui divise le
+    /// nombre d'échanges de modèles par la taille de la tranche. En contrepartie, les
+    /// fichiers d'une tranche ne deviennent cherchables qu'à la fin de celle-ci.
+    Batch,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexingConfig {
     /// Dossiers racines surveillés et indexés.
@@ -113,6 +136,18 @@ pub struct IndexingConfig {
     pub qualify_images: bool,
     #[serde(default = "default_true")]
     pub qualify_context: bool,
+    /// Ordonnancement des étages. `#[serde(default)]` : les settings.json existants
+    /// retombent sur le séquentiel, c'est-à-dire le comportement d'avant.
+    #[serde(default)]
+    pub pipeline_mode: PipelineMode,
+    /// Nombre de fichiers par tranche en mode batch. Plus la tranche est grande, moins
+    /// on échange de modèles — mais plus il faut attendre avant que l'index avance.
+    #[serde(default = "default_batch_files")]
+    pub batch_files: usize,
+}
+
+fn default_batch_files() -> usize {
+    64
 }
 
 fn default_block_bias() -> f32 {
@@ -135,6 +170,8 @@ impl Default for IndexingConfig {
             qualify_documents: true,
             qualify_images: true,
             qualify_context: true,
+            pipeline_mode: PipelineMode::default(),
+            batch_files: default_batch_files(),
         }
     }
 }
@@ -440,7 +477,7 @@ impl ConfigStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{path_under_root, prompt_or};
+    use super::{path_under_root, prompt_or, IndexingConfig, PipelineMode};
 
     #[test]
     fn prompt_or_retombe_sur_le_defaut() {
@@ -456,5 +493,36 @@ mod tests {
         assert!(path_under_root(&roots, "C:/Users/virgi/Documents"));
         assert!(!path_under_root(&roots, r"C:\Users\virgi\Downloads\x"));
         assert!(!path_under_root(&roots, r"C:\Users\virgi\DocumentsBIS\x"));
+    }
+
+    /// Une configuration écrite avant l'ajout des modes doit rester en séquentiel :
+    /// basculer silencieusement l'ordonnancement d'un utilisateur existant changerait
+    /// le comportement de son indexation sans qu'il ait rien demandé.
+    #[test]
+    fn config_sans_mode_reste_sequentielle() {
+        let ancien = r#"{
+            "roots": [],
+            "chunk_size": 1000,
+            "overlap": 200,
+            "batch_size": 32,
+            "max_file_mb": 50
+        }"#;
+        let cfg: IndexingConfig = serde_json::from_str(ancien).expect("ancien format illisible");
+        assert_eq!(cfg.pipeline_mode, PipelineMode::Sequential);
+        assert_eq!(cfg.batch_files, 64);
+        // Les autres champs à défaut restent inchangés.
+        assert!(cfg.qualify_documents && cfg.qualify_images && cfg.qualify_context);
+    }
+
+    /// Le front compare des chaînes : le mode doit se sérialiser en minuscules.
+    #[test]
+    fn le_mode_se_serialise_en_minuscules() {
+        assert_eq!(serde_json::to_string(&PipelineMode::Batch).unwrap(), r#""batch""#);
+        assert_eq!(
+            serde_json::to_string(&PipelineMode::Sequential).unwrap(),
+            r#""sequential""#
+        );
+        let m: PipelineMode = serde_json::from_str(r#""batch""#).unwrap();
+        assert_eq!(m, PipelineMode::Batch);
     }
 }

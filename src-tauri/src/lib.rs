@@ -11,7 +11,9 @@ pub mod folders;
 pub mod gardener;
 pub mod installs;
 pub mod mcp;
+pub mod metrics;
 pub mod ollama_catalog;
+pub mod ollama_server;
 pub mod ort_setup;
 pub mod parser;
 pub mod providers;
@@ -276,6 +278,8 @@ struct LocalModelStatus {
     dimensions: usize,
     /// Vrai si le modèle est déjà téléchargé dans le cache local.
     downloaded: bool,
+    /// Vrai si le modèle gère autre chose que l'anglais (famille E5 uniquement).
+    multilingual: bool,
 }
 
 /// État des modèles d'embedding LOCAUX (fastembed) : lesquels sont déjà téléchargés.
@@ -285,10 +289,11 @@ fn list_local_models(state: State<'_, Arc<AppState>>) -> Vec<LocalModelStatus> {
     let dir = state.data_dir.clone();
     providers::supported_local_models()
         .into_iter()
-        .map(|(id, dimensions)| LocalModelStatus {
+        .map(|(id, dimensions, multilingual)| LocalModelStatus {
             downloaded: providers::is_local_model_cached(&dir, id),
             id: id.to_string(),
             dimensions,
+            multilingual,
         })
         .collect()
 }
@@ -325,6 +330,37 @@ async fn vision_benchmarks(
     catalog::vision(&st.data_dir, refresh)
         .await
         .map_err(|e| format!("benchmarks vision : {e}"))
+}
+
+/// Modèles réellement chargés sur le serveur (local ou distant).
+///
+/// Ollama n'expose aucune API pour lire ou changer sa configuration
+/// (`OLLAMA_MAX_LOADED_MODELS`…) : on observe donc l'état réel plutôt que de le
+/// supposer, ce qui marche quelle que soit la machine d'en face.
+#[tauri::command]
+async fn ollama_loaded(base_url: String) -> Result<Vec<ollama_server::LoadedModel>, String> {
+    ollama_server::loaded(&base_url).await.map_err(|e| e.to_string())
+}
+
+/// Décharge un modèle du serveur pour libérer la VRAM, sans toucher à sa config.
+#[tauri::command]
+async fn ollama_unload(base_url: String, model: String) -> Result<(), String> {
+    ollama_server::unload(&base_url, &model).await.map_err(|e| e.to_string())
+}
+
+/// Débit des trois étages IA, mesuré dans les providers.
+///
+/// À ne pas confondre avec l'avancement de l'indexation : ceci mesure la vitesse des
+/// MODÈLES (ms/appel, chunks/s, Mo/s), pas celle du pipeline complet.
+#[tauri::command]
+fn indexing_throughput() -> metrics::Throughput {
+    metrics::snapshot()
+}
+
+/// Remet les compteurs de débit à zéro (pour chronométrer une indexation précise).
+#[tauri::command]
+fn reset_throughput() {
+    metrics::reset();
 }
 
 /// Bibliothèque Ollama LIVE : ce qui est réellement installable, populaire et récent.
@@ -1119,6 +1155,10 @@ pub fn run() {
             reasoning_benchmarks,
             ollama_library,
             ollama_tags,
+            indexing_throughput,
+            reset_throughput,
+            ollama_loaded,
+            ollama_unload,
             list_vision_boards,
             list_reasoning_boards,
             resolve_installs,
