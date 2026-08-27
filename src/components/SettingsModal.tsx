@@ -57,7 +57,13 @@ type EmbedModel = { id: string; dims: number; local: boolean; server: boolean };
 const EMBED_CATALOG: EmbedModel[] = [
   { id: "multilingual-e5-small", dims: 384, local: true, server: false },
   { id: "multilingual-e5-base", dims: 768, local: true, server: false },
+  { id: "multilingual-e5-large", dims: 1024, local: true, server: false },
   { id: "bge-small-en-v1.5", dims: 384, local: true, server: false },
+  { id: "bge-base-en-v1.5", dims: 768, local: true, server: false },
+  { id: "bge-large-en-v1.5", dims: 1024, local: true, server: false },
+  { id: "gte-base-en-v1.5", dims: 768, local: true, server: false },
+  { id: "gte-large-en-v1.5", dims: 1024, local: true, server: false },
+  { id: "modernbert-embed-large", dims: 1024, local: true, server: false },
   { id: "all-minilm", dims: 384, local: true, server: true },
   { id: "nomic-embed-text", dims: 768, local: true, server: true },
   { id: "mxbai-embed-large", dims: 1024, local: true, server: true },
