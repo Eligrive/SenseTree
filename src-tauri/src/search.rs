@@ -34,6 +34,11 @@ fn sigmoid(x: f32) -> f32 {
 /// Constante de Reciprocal Rank Fusion (60 = valeur de référence de la littérature).
 const RRF_K: f32 = 60.0;
 
+/// Longueur max (caractères) d'un document envoyé au reranker. Les cross-encoders
+/// tronquent de toute façon vers ~512 tokens : borner en amont réduit la latence sur
+/// les gros chunks sans perte notable (l'entête d'un chunk est le plus pertinent).
+const RERANK_DOC_CHARS: usize = 800;
+
 /// Candidat au niveau CHUNK, avant reranking et dédoublonnage par fichier.
 struct Candidate {
     path: String,
@@ -163,7 +168,10 @@ pub(crate) async fn run_semantic_search(
     if cfg.retrieval.rerank {
         let top = cands.len().min(rerank_pool);
         if let Ok(rr) = state.ai.reranker().await {
-            let docs: Vec<String> = cands[..top].iter().map(|c| c.text.clone()).collect();
+            let docs: Vec<String> = cands[..top]
+                .iter()
+                .map(|c| c.text.chars().take(RERANK_DOC_CHARS).collect())
+                .collect();
             if let Ok(order) = rr.rerank(query.clone(), docs).await {
                 let mut logits = vec![f32::MIN; top];
                 for (idx, logit) in order {
