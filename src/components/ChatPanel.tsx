@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Bot, Check, FileText, Loader2, Send, Trash2, Wand2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import type { ActionPlan, ChatSource, ChatTurn } from "../lib/types";
+import type { ActionPlan, ChatSource, ChatTurn, Operation } from "../lib/types";
 import { applyActionPlan, chatWithAssistant, discardActionPlan } from "../lib/ipc";
 import ActionPlanCard from "./ActionPlanCard";
 
@@ -79,10 +79,10 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
     }
   };
 
-  const approve = async (msgId: number, plan: ActionPlan) => {
+  const approve = async (msgId: number, plan: ActionPlan, operations: Operation[]) => {
     if (plan.transaction_id == null) return;
     try {
-      const res = await applyActionPlan(plan.transaction_id);
+      const res = await applyActionPlan(plan.transaction_id, operations);
       setStatus(msgId, "applied");
       push({ id: nextId(), role: "assistant", text: `✅ ${res.message}` });
     } catch (e) {
@@ -135,7 +135,7 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
               key={m.id}
               plan={m.plan}
               status={m.status}
-              onApprove={() => approve(m.id, m.plan)}
+              onApprove={(ops) => approve(m.id, m.plan, ops)}
               onDiscard={() => discard(m.id, m.plan)}
             />
           ) : (

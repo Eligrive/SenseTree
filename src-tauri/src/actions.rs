@@ -24,7 +24,7 @@ use crate::state::AppState;
 // Modèle de données du plan d'action
 // -------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OpKind {
     Move,
@@ -33,7 +33,7 @@ pub enum OpKind {
     Mkdir,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Operation {
     pub kind: OpKind,
     #[serde(default)]
@@ -129,6 +129,7 @@ enum Done {
 pub async fn apply_action_plan(
     state: State<'_, Arc<AppState>>,
     transaction_id: i64,
+    operations: Option<Vec<Operation>>,
 ) -> Result<ApplyResult, String> {
     let state = state.inner().clone();
 
@@ -144,14 +145,31 @@ pub async fn apply_action_plan(
     let plan: ActionPlan =
         serde_json::from_str(&tx.payload_json).map_err(|e| format!("plan corrompu: {e}"))?;
 
+    // L'utilisateur peut avoir DÉCOCHÉ des opérations avant d'appliquer. On n'accepte
+    // que des opérations RÉELLEMENT présentes dans le plan validé (anti-injection).
+    let ops: Vec<Operation> = match operations {
+        Some(edited) => {
+            if edited.is_empty() {
+                return Err("aucune opération sélectionnée".to_string());
+            }
+            for op in &edited {
+                if !plan.operations.contains(op) {
+                    return Err("opération absente du plan d'origine : refusée".to_string());
+                }
+            }
+            edited
+        }
+        None => plan.operations.clone(),
+    };
+
     let roots = state.config.snapshot().indexing.roots;
-    validate_operations(&plan.operations, &roots)?;
+    validate_operations(&ops, &roots)?;
 
     let trash_dir = state.db.path().parent().unwrap_or(Path::new(".")).join("trash");
     let mut done: Vec<Done> = Vec::new();
 
     // --- Phase disque : au premier échec, on annule tout ce qui a été fait. ---
-    for op in &plan.operations {
+    for op in &ops {
         let result = execute_op(op, &trash_dir);
         match result {
             Ok(Some(d)) => done.push(d),

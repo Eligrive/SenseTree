@@ -1,10 +1,11 @@
+import { useState } from "react";
 import { ArrowRight, Check, FolderPlus, Trash2, X } from "lucide-react";
 import type { ActionPlan, Operation } from "../lib/types";
 
 interface Props {
   plan: ActionPlan;
   status: "pending" | "applied" | "discarded";
-  onApprove: () => void;
+  onApprove: (operations: Operation[]) => void;
   onDiscard: () => void;
 }
 
@@ -49,30 +50,68 @@ function OpRow({ op }: { op: Operation }) {
 }
 
 export default function ActionPlanCard({ plan, status, onApprove, onDiscard }: Props) {
+  // Toutes les opérations sont cochées par défaut ; l'utilisateur peut en décocher
+  // avant d'appliquer (n'exécute que la sélection).
+  const [selected, setSelected] = useState<Set<number>>(
+    () => new Set(plan.operations.map((_, i) => i))
+  );
+  const pending = status === "pending";
+  const toggle = (i: number) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  const kept = selected.size;
+  const total = plan.operations.length;
+  const apply = () => onApprove(plan.operations.filter((_, i) => selected.has(i)));
+
   return (
     <div className="rounded-xl border border-zinc-700 bg-zinc-900/80 p-3">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-400">
           Plan d'action · Dry-Run
         </span>
-        <span className="text-[10px] text-zinc-500">{plan.operations.length} opération(s)</span>
+        <span className="text-[10px] text-zinc-500">
+          {pending && kept < total ? `${kept} / ${total}` : total} opération(s)
+        </span>
       </div>
 
       {plan.summary && <p className="mb-2 text-xs text-zinc-400">{plan.summary}</p>}
 
-      <div className="max-h-56 space-y-1.5 overflow-y-auto rounded-lg bg-zinc-950/60 p-2.5">
+      <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg bg-zinc-950/60 p-2.5">
         {plan.operations.map((op, i) => (
-          <OpRow key={i} op={op} />
+          <label
+            key={i}
+            className={`flex items-center gap-2 rounded px-1 py-0.5 ${
+              pending ? "cursor-pointer hover:bg-zinc-800/40" : ""
+            }`}
+          >
+            {pending && (
+              <input
+                type="checkbox"
+                checked={selected.has(i)}
+                onChange={() => toggle(i)}
+                className="shrink-0 accent-emerald-500"
+                title="Inclure cette opération"
+              />
+            )}
+            <div className={`min-w-0 flex-1 ${pending && !selected.has(i) ? "opacity-40" : ""}`}>
+              <OpRow op={op} />
+            </div>
+          </label>
         ))}
       </div>
 
-      {status === "pending" ? (
+      {pending ? (
         <div className="mt-3 flex gap-2">
           <button
-            onClick={onApprove}
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 py-1.5 text-xs font-medium text-white hover:bg-emerald-500"
+            onClick={apply}
+            disabled={kept === 0}
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            <Check size={14} /> Appliquer
+            <Check size={14} /> Appliquer{kept < total ? ` (${kept})` : ""}
           </button>
           <button
             onClick={onDiscard}

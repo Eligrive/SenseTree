@@ -21,6 +21,7 @@ import type {
   InstallInfo,
   LocalModelStatus,
   ModelBenchmark,
+  Operation,
   PathDetails,
   PromptsConfig,
   SearchResult,
@@ -93,8 +94,8 @@ export const semanticTree = (query: string, scope?: string, limit?: number) =>
 // --- Actions Dry-Run + gardener ---
 export const planReorganization = (instruction: string, scope: string) =>
   invoke<ActionPlan>("plan_reorganization", { instruction, scope });
-export const applyActionPlan = (transactionId: number) =>
-  invoke<ApplyResult>("apply_action_plan", { transactionId });
+export const applyActionPlan = (transactionId: number, operations?: Operation[]) =>
+  invoke<ApplyResult>("apply_action_plan", { transactionId, operations });
 export const discardActionPlan = (transactionId: number) =>
   invoke<void>("discard_action_plan", { transactionId });
 export const analyzeDirectory = (path: string) =>
