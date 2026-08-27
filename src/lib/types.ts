@@ -231,6 +231,12 @@ export interface GardenerReport {
   scanned_at: number;
 }
 
+/// Une note de la mémoire durable de l'agent.
+export interface MemoryItem {
+  id: number;
+  note: string;
+}
+
 export interface ChatTurn {
   role: "user" | "assistant" | "system";
   content: string;

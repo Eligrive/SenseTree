@@ -205,6 +205,13 @@ impl Database {
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- Mémoire de l'agent : faits/préférences durables retenus entre conversations.
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note TEXT NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
             -- Mode de traitement d'un dossier : 'recursive' (indexation fichier par
             -- fichier) ou 'block' (indexé comme une unité sémantique unique).
             CREATE TABLE IF NOT EXISTS folder_profiles (
@@ -671,6 +678,57 @@ impl Database {
     }
 
     /// Résumés des fichiers situés directement sous `parent` (contexte pour les actions).
+    // =====================================================================
+    // MÉMOIRE DE L'AGENT (faits/préférences durables entre conversations)
+    // =====================================================================
+
+    /// Ajoute une note à la mémoire (ignore un doublon exact).
+    pub fn add_memory(&self, note: &str) -> Result<()> {
+        let note = note.trim();
+        if note.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_memory WHERE note = ?1",
+            params![note],
+            |r| r.get(0),
+        )?;
+        if count == 0 {
+            conn.execute("INSERT INTO agent_memory (note) VALUES (?1)", params![note])?;
+        }
+        Ok(())
+    }
+
+    /// Notes de la mémoire, plus récentes d'abord, bornées à `limit`. Renvoie (id, note).
+    pub fn list_memories(&self, limit: usize) -> Result<Vec<(i64, String)>> {
+        let conn = self.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT id, note FROM agent_memory ORDER BY id DESC LIMIT ?1")?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Supprime une note par id.
+    pub fn delete_memory(&self, id: i64) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM agent_memory WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Vide toute la mémoire de l'agent.
+    pub fn clear_memories(&self) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM agent_memory", [])?;
+        Ok(())
+    }
+
     pub fn summaries_for_parent(&self, parent: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
@@ -1131,6 +1189,21 @@ mod tests {
     fn tmp_db() -> Database {
         let p = std::env::temp_dir().join(format!("sensetree-test-{}.sqlite", uuid::Uuid::new_v4()));
         Database::open(&p).expect("ouverture base temporaire")
+    }
+
+    #[test]
+    fn agent_memory_ajoute_dedoublonne_supprime() {
+        let db = tmp_db();
+        db.add_memory("factures dans Documents/Compta").unwrap();
+        db.add_memory("factures dans Documents/Compta").unwrap(); // doublon exact ignoré
+        db.add_memory("   ").unwrap(); // note vide ignorée
+        db.add_memory("préférence : réponses courtes").unwrap();
+        let mems = db.list_memories(10).unwrap();
+        assert_eq!(mems.len(), 2, "dedup/vide non respectés : {mems:?}");
+        db.delete_memory(mems[0].0).unwrap();
+        assert_eq!(db.list_memories(10).unwrap().len(), 1);
+        db.clear_memories().unwrap();
+        assert!(db.list_memories(10).unwrap().is_empty());
     }
 
     #[test]

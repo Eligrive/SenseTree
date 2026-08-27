@@ -551,6 +551,13 @@ fn tool_schemas() -> serde_json::Value {
                     "reason":{"type":"string"}
                 },"required":["kind"]}}
             },"required":["operations"]}
+        }},
+        {"type":"function","function":{
+            "name":"remember",
+            "description":"Mémorise un fait ou une préférence DURABLE que l'utilisateur te confie (ex. « mes factures sont dans le dossier X », « je préfère les réponses courtes »), pour t'en souvenir lors des prochaines conversations. À n'utiliser que pour de l'information durable, pas pour du contexte éphémère.",
+            "parameters":{"type":"object","properties":{
+                "note":{"type":"string","description":"Le fait ou la préférence à retenir, en une phrase."}
+            },"required":["note"]}
         }}
     ])
 }
@@ -702,6 +709,16 @@ async fn execute_tool(
                 Err(e) => format!("Erreur d'enregistrement du plan : {e}"),
             }
         }
+        "remember" => {
+            let note = args.get("note").and_then(|v| v.as_str()).unwrap_or("");
+            if note.trim().is_empty() {
+                return "Rien à mémoriser (note vide).".to_string();
+            }
+            match state.db.add_memory(note) {
+                Ok(_) => format!("Mémorisé : {note}"),
+                Err(e) => format!("Erreur de mémorisation : {e}"),
+            }
+        }
         other => format!("Outil inconnu : {other}"),
     }
 }
@@ -845,12 +862,24 @@ le sens et les mots-clés), read_file (lire un fichier), list_directory (lister 
 Utilise-les autant que nécessaire — cherche, lis, recoupe — AVANT de répondre, et cite les \
 fichiers pertinents par leur nom. Pour AGIR sur des fichiers (déplacer, renommer, supprimer, \
 créer un dossier), appelle propose_actions avec des chemins EXACTS et existants : rien n'est \
-exécuté sans validation de l'utilisateur. Réponds en français, de façon concise et factuelle.",
+exécuté sans validation de l'utilisateur. Quand l'utilisateur te confie un fait ou une \
+préférence DURABLE, appelle remember pour t'en souvenir aux prochaines conversations. \
+Réponds en français, de façon concise et factuelle.",
     );
     let user_override = cfg.prompts.chat_system.trim();
     if !user_override.is_empty() {
         system.push_str("\n\nConsignes supplémentaires :\n");
         system.push_str(user_override);
+    }
+    // Mémoire durable : ce que l'agent a retenu des sessions précédentes.
+    let memories = state.db.list_memories(50).unwrap_or_default();
+    if !memories.is_empty() {
+        let list = memories
+            .iter()
+            .map(|(_, n)| format!("- {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        system.push_str(&format!("\n\nCe que tu sais déjà (mémoire durable) :\n{list}"));
     }
     if !sources.is_empty() {
         let ctx: String = sources

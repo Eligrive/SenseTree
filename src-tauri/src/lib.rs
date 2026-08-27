@@ -824,6 +824,34 @@ fn gardener_health(state: State<'_, Arc<AppState>>) -> gardener::GardenerReport 
         .unwrap_or_default()
 }
 
+/// Une note de la mémoire de l'agent (pour l'affichage/gestion dans les Paramètres).
+#[derive(serde::Serialize)]
+struct MemoryItem {
+    id: i64,
+    note: String,
+}
+
+#[tauri::command]
+fn agent_memory_list(state: State<'_, Arc<AppState>>) -> Vec<MemoryItem> {
+    state
+        .db
+        .list_memories(200)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, note)| MemoryItem { id, note })
+        .collect()
+}
+
+#[tauri::command]
+fn agent_memory_delete(state: State<'_, Arc<AppState>>, id: i64) -> Result<(), String> {
+    state.db.delete_memory(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn agent_memory_clear(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.db.clear_memories().map_err(|e| e.to_string())
+}
+
 pub fn run() {
     // Logs structurés (remplace les println!). N'échoue pas si déjà initialisé.
     let _ = tracing_subscriber::fmt()
@@ -962,6 +990,9 @@ pub fn run() {
             actions::analyze_directory,
             actions::chat_with_assistant,
             gardener_health,
+            agent_memory_list,
+            agent_memory_delete,
+            agent_memory_clear,
         ])
         .build(tauri::generate_context!())
         .expect("erreur lors du lancement de l'application Tauri")

@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   BookOpen,
+  Brain,
   ChevronDown,
   ChevronRight,
   Download,
@@ -11,13 +12,23 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Trash2,
   X,
 } from "lucide-react";
-import type { AppConfig, ChatConfig, LocalModelStatus, PromptsConfig } from "../lib/types";
+import type {
+  AppConfig,
+  ChatConfig,
+  LocalModelStatus,
+  MemoryItem,
+  PromptsConfig,
+} from "../lib/types";
 import type { Backend, ServerKind, Task } from "../lib/models";
 import { serverKind } from "../lib/models";
 import ModelCatalog from "./ModelCatalog";
 import {
+  agentMemoryClear,
+  agentMemoryDelete,
+  agentMemoryList,
   downloadLocalModel,
   getConfig,
   getDefaultPrompts,
@@ -194,8 +205,12 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   const [catalogTask, setCatalogTask] = useState<Task | null>(null);
   const [dlBusy, setDlBusy] = useState<Record<string, boolean>>({});
 
+  const [memories, setMemories] = useState<MemoryItem[]>([]);
+
   const refreshLocalModels = () =>
     listLocalModels().then(setLocalModels).catch(() => setLocalModels([]));
+  const refreshMemories = () =>
+    agentMemoryList().then(setMemories).catch(() => setMemories([]));
 
   useEffect(() => {
     if (open) {
@@ -203,6 +218,7 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
       gpuAvailable().then(setGpuSupported).catch(() => setGpuSupported(false));
       getDefaultPrompts().then(setDefaultPrompts).catch(() => setDefaultPrompts(null));
       refreshLocalModels();
+      refreshMemories();
     }
   }, [open]);
 
@@ -1055,6 +1071,49 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
                 </div>
               );
             })}
+          </section>
+
+          {/* Mémoire de l'agent — faits/préférences durables */}
+          <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
+            <div className="flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-200">
+                <Brain size={14} /> Mémoire de l'agent
+              </h3>
+              {memories.length > 0 && (
+                <button
+                  onClick={() => agentMemoryClear().then(refreshMemories).catch(() => {})}
+                  className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-rose-400 hover:bg-rose-500/10"
+                >
+                  <Trash2 size={12} /> Tout vider
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-zinc-500">
+              Faits et préférences que l'agent a retenus (il s'en sert dans chaque conversation).
+              Il ajoute une note quand tu lui confies quelque chose de durable ; tu peux en retirer
+              ici.
+            </p>
+            {memories.length === 0 ? (
+              <p className="text-[11px] text-zinc-600">Aucun souvenir pour l'instant.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {memories.map((m) => (
+                  <li
+                    key={m.id}
+                    className="flex items-start gap-2 rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-300"
+                  >
+                    <span className="min-w-0 flex-1">{m.note}</span>
+                    <button
+                      onClick={() => agentMemoryDelete(m.id).then(refreshMemories).catch(() => {})}
+                      title="Oublier ce souvenir"
+                      className="shrink-0 rounded p-0.5 text-zinc-600 hover:bg-rose-500/15 hover:text-rose-400"
+                    >
+                      <X size={12} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
 
           {/* Prompts IA — édition avancée (repliable) */}

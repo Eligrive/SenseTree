@@ -20,6 +20,7 @@ import type {
   IndexingStats,
   InstallInfo,
   LocalModelStatus,
+  MemoryItem,
   ModelBenchmark,
   Operation,
   PathDetails,
@@ -101,5 +102,10 @@ export const discardActionPlan = (transactionId: number) =>
 export const analyzeDirectory = (path: string) =>
   invoke<DirectoryReport>("analyze_directory", { path });
 export const gardenerHealth = () => invoke<GardenerReport>("gardener_health");
+
+// --- Mémoire de l'agent ---
+export const agentMemoryList = () => invoke<MemoryItem[]>("agent_memory_list");
+export const agentMemoryDelete = (id: number) => invoke<void>("agent_memory_delete", { id });
+export const agentMemoryClear = () => invoke<void>("agent_memory_clear");
 export const chatWithAssistant = (messages: ChatTurn[], scope?: string) =>
   invoke<ChatResponse>("chat_with_assistant", { messages, scope });
