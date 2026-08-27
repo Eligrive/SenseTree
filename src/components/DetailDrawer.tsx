@@ -22,6 +22,7 @@ interface Props {
   onClose: () => void;
   onOpenFile: (path: string) => void;
   onSummarySaved: (path: string) => void;
+  onDiscussFile: (path: string) => void;
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -235,6 +236,7 @@ export default function DetailDrawer({
   onClose,
   onOpenFile,
   onSummarySaved,
+  onDiscussFile,
 }: Props) {
   return (
     <div className="flex h-full flex-col overflow-hidden bg-zinc-950">
@@ -318,12 +320,21 @@ export default function DetailDrawer({
             )}
 
             {!details.is_directory && (
-              <button
-                onClick={() => onOpenFile(details.path)}
-                className="mt-3 w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
-              >
-                Ouvrir le fichier
-              </button>
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={() => onDiscussFile(details.path)}
+                  className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-sm font-medium text-blue-300 transition hover:bg-blue-500/20"
+                  title="Ouvrir une discussion avec l'agent à propos de ce fichier"
+                >
+                  <Sparkles size={14} /> Discuter de ce fichier
+                </button>
+                <button
+                  onClick={() => onOpenFile(details.path)}
+                  className="flex-1 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500"
+                >
+                  Ouvrir le fichier
+                </button>
+              </div>
             )}
           </>
         )}

@@ -75,6 +75,8 @@ export default function App() {
 
   const [details, setDetails] = useState<PathDetails | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  // Message à injecter dans le chat (« discuter de ce fichier »), consommé une fois.
+  const [chatInject, setChatInject] = useState<string | null>(null);
 
   // Dimensions redimensionnables : largeur de la colonne droite, hauteur du tiroir.
   const [rightWidth, setRightWidth] = useState(384);
@@ -257,6 +259,14 @@ export default function App() {
     openPath(path).catch((e) => console.error("openPath:", e));
   };
 
+  // Lance une discussion avec l'agent à propos d'un fichier précis.
+  const discussFile = (path: string) => {
+    const name = path.split(/[\\/]/).pop() || path;
+    setChatInject(
+      `Analyse le fichier « ${name} » : résume son contenu et son intérêt. Chemin exact : ${path}`
+    );
+  };
+
   // Simple-clic : ouvre le panneau de détail (double-clic = ouvrir le fichier).
   const openDetail = (path: string) => {
     setDetails(null);
@@ -352,6 +362,8 @@ export default function App() {
             currentPath={currentPath}
             reasoningOk={!!health?.reasoning_ok}
             onOpenSource={openDetail}
+            inject={chatInject}
+            onInjectConsumed={() => setChatInject(null)}
           />
         </div>
 
@@ -369,6 +381,7 @@ export default function App() {
                 onClose={() => setDetailOpen(false)}
                 onOpenFile={openFile}
                 onSummarySaved={(path) => pathDetails(path).then(setDetails).catch(() => {})}
+                onDiscussFile={discussFile}
               />
             </div>
           </div>

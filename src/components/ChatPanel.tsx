@@ -9,6 +9,9 @@ interface Props {
   currentPath: string | null;
   reasoningOk: boolean;
   onOpenSource: (path: string) => void;
+  /// Message à envoyer automatiquement (ex. « discuter de ce fichier »). Consommé une fois.
+  inject: string | null;
+  onInjectConsumed: () => void;
 }
 
 type Msg =
@@ -49,7 +52,13 @@ function renderWithCitations(
   });
 }
 
-export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Props) {
+export default function ChatPanel({
+  currentPath,
+  reasoningOk,
+  onOpenSource,
+  inject,
+  onInjectConsumed,
+}: Props) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -109,6 +118,15 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
       setBusy(false);
     }
   };
+
+  // Message injecté (ex. « discuter de ce fichier ») : envoyé une fois puis consommé.
+  useEffect(() => {
+    if (inject) {
+      send(inject);
+      onInjectConsumed();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inject]);
 
   const approve = async (msgId: number, plan: ActionPlan, operations: Operation[]) => {
     if (plan.transaction_id == null) return;
