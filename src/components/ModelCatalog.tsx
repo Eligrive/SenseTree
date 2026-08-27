@@ -794,9 +794,9 @@ export default function ModelCatalog({
           </p>
         </div>
 
-        {/* Filtres */}
-        <div className="flex items-center gap-2 border-b border-zinc-800 px-5 py-2.5">
-          <div className="flex flex-1 items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5">
+        {/* Filtres — flex-wrap : les filtres passent à la ligne au lieu d'écraser la recherche. */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-5 py-2.5">
+          <div className="flex min-w-[200px] flex-1 items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5">
             <Search size={13} className="shrink-0 text-zinc-500" />
             <input
               value={query}
