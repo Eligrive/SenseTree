@@ -18,6 +18,37 @@ type Msg =
 let uid = 0;
 const nextId = () => ++uid;
 
+/// Rend le texte d'une réponse en linkifiant les noms de fichiers qui correspondent
+/// à une source (clic = ouvrir le fichier). Robuste : ne dépend pas du modèle, on
+/// détecte les mentions de sources dans le texte produit.
+function renderWithCitations(
+  text: string,
+  sources: ChatSource[] | undefined,
+  onOpen: (path: string) => void
+) {
+  const names = [...new Set((sources ?? []).map((s) => s.name).filter(Boolean))].sort(
+    (a, b) => b.length - a.length
+  );
+  if (names.length === 0) return text;
+  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = new RegExp(`(${escaped.join("|")})`, "g");
+  return text.split(re).map((part, i) => {
+    const src = sources!.find((s) => s.name === part);
+    return src ? (
+      <button
+        key={i}
+        onClick={() => onOpen(src.path)}
+        title={src.path}
+        className="text-blue-400 underline decoration-dotted underline-offset-2 hover:text-blue-300"
+      >
+        {part}
+      </button>
+    ) : (
+      <span key={i}>{part}</span>
+    );
+  });
+}
+
 export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Props) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -145,7 +176,11 @@ export default function ChatPanel({ currentPath, reasoningOk, onOpenSource }: Pr
                   m.role === "user" ? "bg-blue-600 text-white" : "bg-zinc-800/80 text-zinc-200"
                 }`}
               >
-                <p className="whitespace-pre-wrap break-words">{m.text}</p>
+                <p className="whitespace-pre-wrap break-words">
+                  {m.role === "assistant"
+                    ? renderWithCitations(m.text, m.sources, onOpenSource)
+                    : m.text}
+                </p>
               </div>
               {m.role === "assistant" && m.sources && m.sources.length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-1.5">
