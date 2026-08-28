@@ -1093,6 +1093,23 @@ fn extract_text(path: &str) -> anyhow::Result<String> {
 
 /// Extrait les images JPEG embarquées d'un PDF (cas des PDF scannés).
 /// On ne gère que le filtre DCTDecode : le flux brut EST un JPEG valide.
+/// Décompresse un flux `FlateDecode`. `None` si le flux n'est pas exploitable.
+///
+/// Les PDF utilisent le format zlib (en-tête `78 xx`), mais certains producteurs
+/// écrivent du deflate brut : on tente les deux plutôt que d'abandonner une image.
+fn inflate(data: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    if flate2::read::ZlibDecoder::new(data).read_to_end(&mut out).is_ok() && !out.is_empty() {
+        return Some(out);
+    }
+    out.clear();
+    // Un flux tronqué peut décoder partiellement : on garde ce qui a été obtenu.
+    let mut d = flate2::read::DeflateDecoder::new(data);
+    let _ = d.read_to_end(&mut out);
+    (!out.is_empty()).then_some(out)
+}
+
 fn extract_pdf_images(path: &str, max: usize) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut doc = match lopdf::Document::load(path) {
@@ -1119,16 +1136,44 @@ fn extract_pdf_images(path: &str, max: usize) -> Vec<Vec<u8>> {
         if !is_image {
             continue;
         }
-        // Filtre JPEG (DCTDecode), éventuellement dans un tableau de filtres ?
-        let is_jpeg = match dict.get(b"Filter").ok() {
-            Some(lopdf::Object::Name(n)) => n == b"DCTDecode",
-            Some(lopdf::Object::Array(a)) => a
-                .iter()
-                .any(|o| o.as_name().map(|n| n == b"DCTDecode").unwrap_or(false)),
-            _ => false,
+        // Chaîne de filtres, dans l'ordre d'application.
+        let filtres: Vec<Vec<u8>> = match dict.get(b"Filter").ok() {
+            Some(lopdf::Object::Name(n)) => vec![n.clone()],
+            Some(lopdf::Object::Array(a)) => {
+                a.iter().filter_map(|o| o.as_name().ok().map(|n| n.to_vec())).collect()
+            }
+            _ => Vec::new(),
         };
-        if is_jpeg && !stream.content.is_empty() {
-            out.push(stream.content.clone());
+        let Some(dernier) = filtres.last() else { continue };
+        // On ne sait produire un fichier image valide que pour le JPEG. Les scans en
+        // CCITTFaxDecode / JBIG2 sont des flux de pixels bruts qu'il faudrait
+        // reconstruire — hors de portée ici, on les laisse de côté.
+        if dernier.as_slice() != b"DCTDecode" {
+            continue;
+        }
+
+        // Un JPEG peut être ENVELOPPÉ dans une compression Flate : la chaîne vaut
+        // alors `[FlateDecode, DCTDecode]`. Pousser `content` tel quel enverrait au
+        // modèle de vision des octets encore compressés — c'est-à-dire un fichier
+        // invalide, un échec vision, et un document indexé « vide » à tort.
+        // lopdf est compilé sans ses algorithmes de décompression : on inflate nous-mêmes.
+        let octets = if filtres.iter().any(|f| f == b"FlateDecode") {
+            match inflate(&stream.content) {
+                Some(v) => v,
+                None => {
+                    tracing::debug!("image PDF : décompression Flate impossible");
+                    continue;
+                }
+            }
+        } else {
+            stream.content.clone()
+        };
+
+        // Un JPEG valide commence par le marqueur SOI (0xFF 0xD8).
+        if octets.starts_with(&[0xFF, 0xD8]) {
+            out.push(octets);
+        } else {
+            tracing::debug!("image PDF ignorée : ce n'est pas un JPEG exploitable");
         }
     }
     out
@@ -1301,6 +1346,58 @@ fn strip_html(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Diagnostic manuel : que voit réellement l'extracteur dans un PDF donné ?
+    ///
+    /// ```text
+    /// PDF_DIAG="C:\chemin\vers\doc.pdf" cargo test --lib diag_images_pdf -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "diagnostic manuel (PDF_DIAG)"]
+    fn diag_images_pdf() {
+        let path = std::env::var("PDF_DIAG").expect("PDF_DIAG non défini");
+        let doc = lopdf::Document::load(&path);
+        match &doc {
+            Ok(d) => println!("lopdf : chargé, {} objets", d.objects.len()),
+            Err(e) => println!("lopdf : ÉCHEC DE CHARGEMENT — {e}"),
+        }
+        if let Ok(d) = &doc {
+            let mut images = 0;
+            let mut filtres: std::collections::BTreeMap<String, usize> = Default::default();
+            for (_id, obj) in &d.objects {
+                let lopdf::Object::Stream(s) = obj else { continue };
+                let est_image = s
+                    .dict
+                    .get(b"Subtype")
+                    .ok()
+                    .and_then(|o| o.as_name().ok())
+                    .map(|n| n == b"Image")
+                    .unwrap_or(false);
+                if !est_image {
+                    continue;
+                }
+                images += 1;
+                let f = match s.dict.get(b"Filter").ok() {
+                    Some(lopdf::Object::Name(n)) => String::from_utf8_lossy(n).to_string(),
+                    Some(lopdf::Object::Array(a)) => a
+                        .iter()
+                        .filter_map(|o| o.as_name().ok())
+                        .map(|n| String::from_utf8_lossy(n).to_string())
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    _ => "(aucun)".into(),
+                };
+                *filtres.entry(f).or_default() += 1;
+            }
+            println!("objets image vus par lopdf : {images}");
+            println!("filtres                    : {filtres:?}");
+        }
+        let extraites = super::extract_pdf_images(&path, 8);
+        println!("images RETENUES par extract_pdf_images : {}", extraites.len());
+        for (i, img) in extraites.iter().enumerate() {
+            println!("  #{i} : {} octets", img.len());
+        }
+    }
+
     use super::{strip_html, strip_xml_into, summary_of};
 
     #[test]

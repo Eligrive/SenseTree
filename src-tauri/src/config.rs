@@ -367,8 +367,16 @@ pub mod default_prompts {
         en identifiant les objets, le texte visible et le thème, \
         pour faciliter son classement dans une arborescence de fichiers.";
 
-    pub const VISION_OCR: &str = "Transcris fidèlement TOUT le texte visible dans cette image (OCR). \
-        Ne renvoie que le texte transcrit, sans commentaire.";
+    // Une transcription SEULE fait perdre ce que l'image MONTRE : une planche de six
+    // photos d'identité accompagnée d'un ticket de caisse se résumait au ticket, et le
+    // document était qualifié de « reçu de photomaton » au lieu de « photos d'identité ».
+    // Le modèle de vision a l'image sous les yeux : autant lui demander les deux.
+    pub const VISION_OCR: &str = "Décris d'abord en UNE phrase ce que MONTRE cette image : \
+        la nature du document et ce qu'on y voit réellement (photos d'identité, pièce \
+        d'identité, formulaire, ticket, schéma, page manuscrite…). \
+        Puis, sur les lignes suivantes, transcris fidèlement tout le texte visible. \
+        Si l'image ne contient aucun texte, donne seulement la description. \
+        Pas de préambule ni de commentaire.";
 
     pub const CHAT_SYSTEM: &str = "Tu es l'assistant de SenseTree, un explorateur de fichiers sémantique local. \
         RÈGLE DE FORMAT : si l'utilisateur pose une QUESTION ou demande une analyse, réponds \

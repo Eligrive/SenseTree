@@ -7831,6 +7831,7 @@ dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
  "fastembed",
+ "flate2",
  "futures-util",
  "infer",
  "lancedb",
