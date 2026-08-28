@@ -550,6 +550,48 @@ async fn pull_lmstudio(app: tauri::AppHandle, model: String) -> Result<String, S
     }
 }
 
+/// Supprime un modèle du serveur Ollama (`DELETE /api/delete`).
+///
+/// Destructif et irréversible : le modèle devra être re-téléchargé. L'appelant
+/// (l'UI) demande confirmation avant d'appeler — la commande, elle, ne pose pas de
+/// question, elle exécute.
+///
+/// LM Studio n'expose aucune API de suppression : on le dit plutôt que d'échouer
+/// avec une erreur HTTP incompréhensible.
+#[tauri::command]
+async fn delete_model(base_url: String, model: String) -> Result<(), String> {
+    if is_lmstudio(&base_url) {
+        return Err(
+            "LM Studio n'expose pas de suppression : retire le modèle depuis son interface.".into(),
+        );
+    }
+    if model.trim().is_empty() {
+        return Err("aucun modèle indiqué".into());
+    }
+
+    let url = format!("{}/api/delete", ollama_server::native_base(&base_url));
+    let resp = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?
+        .delete(&url)
+        .json(&serde_json::json!({ "model": model }))
+        .send()
+        .await
+        .map_err(|e| format!("suppression impossible (serveur Ollama ?) : {e}"))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!("« {model} » n'est pas installé sur ce serveur"));
+    }
+    if !status.is_success() {
+        let detail = resp.text().await.unwrap_or_default();
+        return Err(format!("échec de la suppression ({status}) : {detail}"));
+    }
+    tracing::info!("🗑️ modèle supprimé du serveur : {model}");
+    Ok(())
+}
+
 /// Télécharge un modèle : Ollama (POST /api/pull, en streaming avec progression) ou
 /// LM Studio (CLI `lms get`), selon l'endpoint détecté. Émet `model-pull-progress`.
 #[tauri::command]
@@ -1163,6 +1205,7 @@ pub fn run() {
             list_reasoning_boards,
             resolve_installs,
             pull_model,
+            delete_model,
             reindex_all,
             explorer::list_directory,
             explorer::get_roots,

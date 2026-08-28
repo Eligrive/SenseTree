@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Search,
   Star,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -94,7 +95,10 @@ interface Props {
   /// `serverUrl` = endpoint où le modèle est installé (bascule auto). Absent = inchangé.
   onUse: (id: string, dims?: number, serverUrl?: string) => void;
   onDownload: (id: string, targetUrl?: string) => void;
+  /// Suppression cote SERVEUR. Irreversible : le parent confirme avant d'appeler.
+  onDelete: (id: string, targetUrl?: string) => void;
   downloading: Record<string, boolean>;
+  deleting: Record<string, boolean>;
   /// Progression de téléchargement, par nom de modèle.
   progress: Record<string, { percent: number; status: string }>;
 }
@@ -152,8 +156,6 @@ function fmtUpdated(s: string | null): string | null {
   return m && jour && annee ? `${jour} ${m} ${annee}` : null;
 }
 
-/// Tri principal de la liste. « Benchmark » suit le classement officiel ; les deux
-/// autres viennent de la bibliothèque Ollama et ne dépendent d'aucun leaderboard.
 /// Runtime visé par un tag, quand ce n'est pas llama.cpp/GGUF.
 ///
 /// `mlx` ne tourne QUE sur Apple Silicon ; `nvfp4` demande une carte Blackwell et
@@ -291,6 +293,8 @@ const VRAM_RESERVE_GB = 1.2;
 const GO = 1_000_000_000;
 const fmtGo = (bytes: number) => `${(bytes / GO).toFixed(1).replace(".", ",")} Go`;
 
+/// Tri principal de la liste. « Benchmark » suit le classement officiel ; les deux
+/// autres viennent de la bibliothèque Ollama et ne dépendent d'aucun leaderboard.
 const SORT_MODES = [
   { key: "bench", label: "Benchmark" },
   { key: "pulls", label: "Popularité" },
@@ -361,7 +365,9 @@ export default function ModelCatalog({
   currentModel,
   onUse,
   onDownload,
+  onDelete,
   downloading,
+  deleting,
   progress,
 }: Props) {
   const [query, setQuery] = useState("");
@@ -928,6 +934,7 @@ export default function ModelCatalog({
             const b = r.bench;
             const inUse = !!r.id && currentModel === r.id;
             const busy = !!r.id && !!downloading[r.id];
+            const suppression = r.id && deleting[r.id] ? r.id : null;
             const dims = b?.embed_dim ?? cur?.dims;
             const params = b?.params_b ? fmtParams(b.params_b) : cur?.params;
             const displayName = cur?.name ?? r.hf.split("/")[1] ?? r.hf;
@@ -1225,9 +1232,25 @@ export default function ModelCatalog({
                         {inUse ? "Utilisé" : "Utiliser"}
                       </button>
                       {r.installed ? (
-                        <span className="flex items-center justify-center gap-1 text-[11px] text-emerald-400">
-                          <Check size={12} /> installé
-                        </span>
+                        // Installé : on affiche l'état ET on permet de libérer la place.
+                        // La suppression est irréversible côté serveur, d'où la
+                        // confirmation en deux temps plutôt qu'un clic direct.
+                        <div className="flex items-center justify-center gap-2">
+                          <span className="flex items-center gap-1 text-[11px] text-emerald-400">
+                            <Check size={12} /> installé
+                          </span>
+                          {backend === "server" && !inUse && (
+                            <button
+                              onClick={() => onDelete(r.id!, r.targetUrl)}
+                              disabled={suppression === r.id}
+                              title={`Supprimer ${r.id} du serveur pour libérer de la place`}
+                              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-zinc-500 hover:bg-rose-500/10 hover:text-rose-400 disabled:opacity-40"
+                            >
+                              <Trash2 size={11} />
+                              {suppression === r.id ? "…" : ""}
+                            </button>
+                          )}
+                        </div>
                       ) : busy ? (
                         // Progression du téléchargement, directement dans le catalogue.
                         <div className="space-y-0.5">

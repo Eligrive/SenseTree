@@ -76,6 +76,9 @@ export const ollamaLoaded = (baseUrl: string) =>
 /// Décharge un modèle pour libérer la VRAM, sans toucher à la config du serveur.
 export const ollamaUnload = (baseUrl: string, model: string) =>
   invoke<void>("ollama_unload", { baseUrl, model });
+/// Supprime un modele du serveur Ollama. Irreversible : l'appelant confirme d'abord.
+export const deleteModel = (baseUrl: string, model: string) =>
+  invoke<void>("delete_model", { baseUrl, model });
 export const pullModel = (baseUrl: string, model: string) =>
   invoke<string>("pull_model", { baseUrl, model });
 export const reindexAll = () => invoke<void>("reindex_all");

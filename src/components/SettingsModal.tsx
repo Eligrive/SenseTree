@@ -29,6 +29,7 @@ import {
   agentMemoryClear,
   agentMemoryDelete,
   agentMemoryList,
+  deleteModel,
   downloadLocalModel,
   getConfig,
   getDefaultPrompts,
@@ -210,6 +211,7 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   // Catalogue ouvert pour telle tâche (null = fermé) + téléchargements en cours.
   const [catalogTask, setCatalogTask] = useState<Task | null>(null);
   const [dlBusy, setDlBusy] = useState<Record<string, boolean>>({});
+  const [delBusy, setDelBusy] = useState<Record<string, boolean>>({});
 
   const [memories, setMemories] = useState<MemoryItem[]>([]);
 
@@ -414,6 +416,29 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
       setTestMsg((m) => ({ ...m, save: `⚠️ ${String(e)}` }));
     } finally {
       setDlBusy((b) => ({ ...b, [id]: false }));
+    }
+  };
+
+  /// Suppression d'un modele du serveur, avec confirmation : l'action est
+  /// irreversible cote serveur (il faudra le re-telecharger).
+  const catalogDelete = async (id: string, targetUrl?: string) => {
+    const url = targetUrl ?? catalogUrl;
+    if (!window.confirm(`Supprimer « ${id} » du serveur ${url} ?
+
+Le modèle devra être re-téléchargé pour être réutilisé.`)) {
+      return;
+    }
+    setDelBusy((b) => ({ ...b, [id]: true }));
+    try {
+      await deleteModel(url, id);
+      refreshModels(OLLAMA_URL, "");
+      refreshModels(LMSTUDIO_URL, "");
+      setTimeout(() => refreshModels(url, catalogApiKey), 1000);
+      setTestMsg((m) => ({ ...m, save: `🗑️ ${id} supprimé du serveur` }));
+    } catch (e) {
+      setTestMsg((m) => ({ ...m, save: `⚠️ ${String(e)}` }));
+    } finally {
+      setDelBusy((b) => ({ ...b, [id]: false }));
     }
   };
 
@@ -1283,6 +1308,8 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
           currentModel={catalogCurrent}
           onUse={catalogUse}
           onDownload={catalogDownload}
+          onDelete={catalogDelete}
+          deleting={delBusy}
           downloading={dlBusy}
           progress={pullProgress}
         />
