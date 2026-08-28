@@ -416,13 +416,25 @@ async fn index_textual(
 
     let path_owned = path.to_string();
     // Extraction + hash exécutés hors du runtime async (CPU/IO bloquants).
-    let (content, hash) = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
+    let extraction = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
         let content = extract_text(&path_owned)?;
         let hash = hash_file(&path_owned)?;
         Ok((content, hash))
     })
-    .await
-    .map_err(|e| anyhow::anyhow!("extraction interrompue: {e}"))??;
+    .await;
+
+    let (content, hash) = match extraction {
+        Ok(r) => r?,
+        // PANIQUE dans la bibliothèque d'extraction (PDF à table Unicode malformée,
+        // surrogate UTF-16 isolé…). C'est DÉTERMINISTE : réessayer donnera la même
+        // panique, en consommant les trois tentatives puis en abandonnant le fichier.
+        // On dégrade donc tout de suite en indexation par contexte — le document reste
+        // trouvable par son nom et son emplacement, au lieu d'être perdu.
+        Err(e) => {
+            tracing::warn!("extraction impossible pour {path} ({e}), repli contextuel");
+            return index_context_only(state, path, mtime, "illisible").await;
+        }
+    };
 
     // Contenu inchangé depuis la dernière indexation : on ne ré-embedde pas.
     if let Ok(Some(stored)) = state.db.get_stored_hash(path) {
@@ -595,18 +607,26 @@ async fn index_unknown(
     let max_bytes = cfg.indexing.max_file_mb * 1024 * 1024;
     let path_owned = path.to_string();
 
-    let (sample, hash, too_big) =
-        tokio::task::spawn_blocking(move || -> anyhow::Result<(Vec<u8>, String, bool)> {
-            let too_big = fs::metadata(&path_owned).map(|m| m.len() > max_bytes).unwrap_or(false);
-            let mut f = File::open(&path_owned)?;
-            let mut buf = vec![0u8; 32 * 1024];
-            let n = f.read(&mut buf)?;
-            buf.truncate(n);
-            let hash = hash_file(&path_owned)?;
-            Ok((buf, hash, too_big))
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("lecture interrompue: {e}"))??;
+    let lecture = tokio::task::spawn_blocking(move || -> anyhow::Result<(Vec<u8>, String, bool)> {
+        let too_big = fs::metadata(&path_owned).map(|m| m.len() > max_bytes).unwrap_or(false);
+        let mut f = File::open(&path_owned)?;
+        let mut buf = vec![0u8; 32 * 1024];
+        let n = f.read(&mut buf)?;
+        buf.truncate(n);
+        let hash = hash_file(&path_owned)?;
+        Ok((buf, hash, too_big))
+    })
+    .await;
+
+    let (sample, hash, too_big) = match lecture {
+        Ok(r) => r?,
+        // Même politique que pour les documents : une panique est déterministe, on
+        // dégrade au lieu de réessayer trois fois puis d'abandonner le fichier.
+        Err(e) => {
+            tracing::warn!("lecture impossible pour {path} ({e}), repli contextuel");
+            return index_context_only(state, path, mtime, "binaire").await;
+        }
+    };
 
     // Inchangé → on ne refait rien.
     if let Ok(Some(stored)) = state.db.get_stored_hash(path) {

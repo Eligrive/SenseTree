@@ -218,6 +218,9 @@ pub struct OpenAiEmbedder {
     dimensions: usize,
     /// Contexte demandé au serveur, borné à ce dont un chunk a réellement besoin.
     num_ctx: u32,
+    /// Textes par requête. Sans cette borne, un gros fichier produit une requête
+    /// unique de plusieurs milliers de textes que le serveur refuse.
+    batch_size: usize,
 }
 
 /// Contexte suffisant pour un chunk, avec une marge confortable.
@@ -236,7 +239,12 @@ pub fn embedding_num_ctx(chunk_size: usize) -> u32 {
 }
 
 impl OpenAiEmbedder {
-    pub fn new(http: reqwest::Client, cfg: &EmbeddingConfig, num_ctx: u32) -> Self {
+    pub fn new(
+        http: reqwest::Client,
+        cfg: &EmbeddingConfig,
+        num_ctx: u32,
+        batch_size: usize,
+    ) -> Self {
         OpenAiEmbedder {
             http,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
@@ -244,10 +252,30 @@ impl OpenAiEmbedder {
             api_key: cfg.api_key.clone(),
             dimensions: cfg.dimensions,
             num_ctx,
+            batch_size: batch_size.max(1),
         }
     }
 
+    /// Vectorise en LOTS bornés, et non en une seule requête.
+    ///
+    /// Le réglage `indexing.batch_size` n'était honoré que par le moteur embarqué ;
+    /// le chemin serveur envoyait tous les chunks d'un fichier d'un coup. Sur un
+    /// journal de 1,7 Mo, cela faisait **une requête de ~1 750 textes** que le serveur
+    /// n'honorait pas : l'appel échouait, le fichier était réessayé, et la file
+    /// entière restait bloquée dessus pendant des minutes.
     async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        let taille = self.batch_size.max(1);
+        if texts.len() <= taille {
+            return self.embed_one_request(texts).await;
+        }
+        let mut out = Vec::with_capacity(texts.len());
+        for lot in texts.chunks(taille) {
+            out.extend(self.embed_one_request(lot.to_vec()).await?);
+        }
+        Ok(out)
+    }
+
+    async fn embed_one_request(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         // Sur Ollama on passe par l'API NATIVE : c'est la seule qui accepte `num_ctx`.
         // Mesuré sur un serveur réel avec un modèle d'embedding à 32k de contexte :
         // 5,78 Go de VRAM au contexte par défaut contre 2,13 Go à 2048 — 3,65 Go de
@@ -951,6 +979,7 @@ impl AiEngine {
                 self.http.clone(),
                 &cfg.embedding,
                 embedding_num_ctx(cfg.indexing.chunk_size),
+                cfg.indexing.batch_size,
             )),
         };
 
@@ -1129,6 +1158,29 @@ impl AiEngine {
 #[cfg(test)]
 mod tests {
     use super::{embedding_num_ctx, resolve_local_model, supported_local_models};
+
+    /// Un fichier volumineux ne doit JAMAIS partir en une seule requête.
+    ///
+    /// Un journal de 1,7 Mo produit ~1 750 chunks. Envoyés d'un bloc, le serveur ne
+    /// répond pas, le fichier est réessayé, et la file entière reste bloquée dessus.
+    /// Le découpage honore enfin `indexing.batch_size`, qui n'était respecté que par
+    /// le moteur embarqué.
+    #[test]
+    fn le_decoupage_en_lots_couvre_tous_les_textes() {
+        // Le calcul de lots est celui de `embed_batch` : on vérifie ici qu'aucun texte
+        // n'est perdu ni dupliqué, quelle que soit la divisibilité.
+        for (total, taille) in [(1750usize, 32usize), (32, 32), (33, 32), (1, 32), (100, 7)] {
+            let textes: Vec<usize> = (0..total).collect();
+            let lots: Vec<&[usize]> = textes.chunks(taille.max(1)).collect();
+            let reassemble: Vec<usize> = lots.concat();
+            assert_eq!(reassemble, textes, "textes perdus pour {total}/{taille}");
+            assert!(
+                lots.iter().all(|l| l.len() <= taille),
+                "lot trop grand pour {total}/{taille}"
+            );
+            assert_eq!(lots.len(), total.div_ceil(taille), "nombre de lots inattendu");
+        }
+    }
 
     /// Le contexte demandé doit couvrir un chunk avec marge, et surtout rester PETIT.
     ///
