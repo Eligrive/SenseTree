@@ -1030,6 +1030,81 @@ mod tests {
         assert_eq!(resolve_local_model("inexistant-xyz").1, 384);
     }
 
+    /// Banc d'essai du moteur d'embedding EMBARQUÉ, dans les conditions réelles de
+    /// l'indexation : lots de 32 chunks de 1000 caractères, préfixe E5 compris.
+    ///
+    /// Sert à comparer un modèle local à un modèle servi par un serveur HTTP, sur la
+    /// même machine et avec le même découpage. À lancer à la main :
+    ///
+    /// ```text
+    /// EMBED_MODEL=multilingual-e5-large \
+    ///   cargo test --lib banc_embedding_local -- --ignored --nocapture
+    /// ```
+    ///
+    /// Le modèle doit déjà être en cache, sinon la première exécution le télécharge.
+    #[test]
+    #[ignore = "banc d'essai manuel (EMBED_MODEL)"]
+    fn banc_embedding_local() {
+        use crate::config::{EmbeddingConfig, EmbeddingMode};
+        use crate::providers::EmbeddingProvider;
+
+        let model = std::env::var("EMBED_MODEL")
+            .unwrap_or_else(|_| "multilingual-e5-small".to_string());
+        let data_dir = dirs_data();
+        // Même préparation que l'app : la lib ORT est fournie par le dossier de données.
+        crate::ort_setup::ensure_ort(&data_dir, false).expect("ONNX Runtime indisponible");
+
+        let cfg = EmbeddingConfig {
+            mode: EmbeddingMode::Local,
+            model: model.clone(),
+            base_url: String::new(),
+            api_key: String::new(),
+            dimensions: 0,
+            use_gpu: false,
+        };
+
+        let charge = std::time::Instant::now();
+        let emb = super::LocalEmbedder::load(&cfg, 32, super::local_cache_dir(&data_dir))
+            .expect("chargement du modèle");
+        println!("\n== {model} ==");
+        println!("chargement : {:.2} s", charge.elapsed().as_secs_f64());
+
+        // Un chunk représentatif : 1000 caractères, le défaut de `chunk_size`.
+        let base = "Le rapport trimestriel detaille la marge brute par segment, les couts de personnel et les investissements en recherche. ";
+        let chunk: String = base.repeat(10).chars().take(1000).collect();
+        let lot: Vec<String> = std::iter::repeat_n(chunk.clone(), 32).collect();
+        let octets: usize = lot.iter().map(|t| t.len()).sum();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        // Première passe ignorée : elle porte l'initialisation des threads ORT.
+        rt.block_on(emb.embed_documents(lot.clone())).expect("embedding");
+
+        let mut temps = Vec::new();
+        for _ in 0..3 {
+            let t0 = std::time::Instant::now();
+            let v = rt.block_on(emb.embed_documents(lot.clone())).expect("embedding");
+            temps.push(t0.elapsed().as_secs_f64());
+            assert_eq!(v.len(), 32);
+            assert_eq!(v[0].len(), emb.dimensions());
+        }
+        let best = temps.iter().cloned().fold(f64::INFINITY, f64::min);
+        println!("dimensions : {}", emb.dimensions());
+        println!("lot de 32 x 1000 car. : {temps:.3?} s");
+        println!(
+            "meilleur   : {:.3} s  ->  {:.1} chunks/s  ·  {:.3} Mo/s",
+            best,
+            32.0 / best,
+            octets as f64 / 1e6 / best
+        );
+    }
+
+    /// Dossier de données de l'app (même emplacement que l'application installée).
+    #[cfg(test)]
+    fn dirs_data() -> std::path::PathBuf {
+        std::path::PathBuf::from(std::env::var("APPDATA").expect("APPDATA"))
+            .join("com.virgi.sensetree")
+    }
+
     /// Le catalogue affiché et le résolveur doivent rester d'accord : un identifiant
     /// listé mais non résolu retomberait silencieusement sur e5-small, et l'utilisateur
     /// indexerait tout avec un modèle qu'il n'a pas choisi.
