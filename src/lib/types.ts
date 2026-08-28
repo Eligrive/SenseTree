@@ -11,11 +11,19 @@ export interface EmbeddingConfig {
   use_gpu: boolean;
 }
 
+/// Effort de raisonnement demandé à un modèle « thinking ».
+///
+/// `auto` n'envoie rien et laisse le serveur décider. Mesuré sur un serveur réel :
+/// classer un dossier prend 24,4 s avec raisonnement contre 0,78 s en `none`, pour la
+/// même réponse — décisif sur des milliers d'appels, sans intérêt sur un seul.
+export type ReasoningEffort = "auto" | "none" | "low" | "medium" | "high";
+
 export interface ChatConfig {
   base_url: string;
   model: string;
   api_key: string;
   enabled: boolean;
+  reasoning_effort: ReasoningEffort;
 }
 
 /// Ordonnancement des trois étages IA pendant l'indexation.
@@ -36,6 +44,8 @@ export interface IndexingConfig {
   qualify_documents: boolean;
   qualify_images: boolean;
   qualify_context: boolean;
+  /// Effort de raisonnement des QUALIFICATIONS d'indexation (défaut : `none`).
+  qualify_effort: ReasoningEffort;
   pipeline_mode: PipelineMode;
   /// Fichiers par tranche en mode batch.
   batch_files: number;

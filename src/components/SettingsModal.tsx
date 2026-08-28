@@ -19,6 +19,7 @@ import type {
   AppConfig,
   ChatConfig,
   LocalModelStatus,
+  ReasoningEffort,
   MemoryItem,
   PromptsConfig,
 } from "../lib/types";
@@ -497,6 +498,22 @@ Le modèle devra être re-téléchargé pour être réutilisé.`)) {
             Activé
           </label>
         </div>
+        <Field label="Raisonnement">
+          <select
+            className={inputCls}
+            value={cfg[key].reasoning_effort ?? "auto"}
+            onChange={(e) =>
+              patchChat(key, { reasoning_effort: e.target.value as ReasoningEffort })
+            }
+            title="Les modèles « thinking » réfléchissent avant de répondre : précieux pour un raisonnement complexe, coûteux pour une réponse courte."
+          >
+            <option value="auto">Auto — laisser le serveur décider</option>
+            <option value="none">Aucun — réponses les plus rapides</option>
+            <option value="low">Faible</option>
+            <option value="medium">Moyen</option>
+            <option value="high">Élevé — réponses les plus réfléchies</option>
+          </select>
+        </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="URL du serveur (base)">
             <input
@@ -921,6 +938,33 @@ Le modèle devra être re-téléchargé pour être réutilisé.`)) {
                 ? "Chaque tranche passe entièrement par la vision et le reasoning, puis par l'embedding. Les modèles ne sont échangés qu'une fois par tranche — le bon choix si ta carte ne peut pas les garder tous en mémoire. En contrepartie, les fichiers d'une tranche ne deviennent cherchables qu'à la fin de celle-ci."
                 : "Chaque fichier est mené de bout en bout avant le suivant : l'index avance en continu et ce qui vient d'être traité est immédiatement cherchable. Suppose que le serveur puisse garder les modèles chargés en même temps — ou que l'embedding soit embarqué (fastembed), auquel cas il n'y a aucun échange à faire."}
             </p>
+            <Field label="Raisonnement des qualifications">
+              <select
+                className={inputCls}
+                value={cfg.indexing.qualify_effort ?? "none"}
+                onChange={(e) =>
+                  setCfg({
+                    ...cfg,
+                    indexing: {
+                      ...cfg.indexing,
+                      qualify_effort: e.target.value as ReasoningEffort,
+                    },
+                  })
+                }
+              >
+                <option value="none">Aucun — recommandé</option>
+                <option value="auto">Auto — laisser le serveur décider</option>
+                <option value="low">Faible</option>
+                <option value="medium">Moyen</option>
+                <option value="high">Élevé</option>
+              </select>
+              <span className="mt-1 block text-[11px] text-zinc-500">
+                Classer un dossier ou qualifier un fichier appelle le modèle des milliers de
+                fois pour des réponses de quelques mots. Mesuré : 24,4&nbsp;s avec raisonnement
+                contre 0,78&nbsp;s sans, pour une réponse identique. Le chat et les plans
+                d'actions ont leur propre réglage, dans leurs sections.
+              </span>
+            </Field>
             {cfg.indexing.pipeline_mode === "batch" && (
               <Field label="Fichiers par tranche">
                 <input

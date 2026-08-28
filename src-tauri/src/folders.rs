@@ -318,8 +318,11 @@ fn llm_classify(state: &AppState, dir: &Path, entries: &[EntryInfo], bias: f32) 
         ChatMessage { role: "user".into(), content: user },
     ];
 
+    // Sans raisonnement : la réponse tient en six tokens, la chaîne de pensée ne sert
+    // qu'à faire expirer le délai. Celui-ci reste généreux, en filet de sécurité — un
+    // pic de charge ne doit pas reporter un dossier indéfiniment et bloquer le scan.
     let result = tauri::async_runtime::block_on(async {
-        tokio::time::timeout(Duration::from_secs(25), client.chat(messages, true)).await
+        tokio::time::timeout(Duration::from_secs(60), client.chat_quick(messages, true, cfg.indexing.qualify_effort)).await
     });
 
     let raw = match result {

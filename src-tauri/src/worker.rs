@@ -565,12 +565,13 @@ pub async fn llm_qualify_document(
     let resp = state
         .ai
         .reasoning_client()
-        .chat(
+        .chat_quick(
             vec![
                 ChatMessage { role: "system".into(), content: system.into() },
                 ChatMessage { role: "user".into(), content: user },
             ],
             false,
+            state.config.snapshot().indexing.qualify_effort,
         )
         .await
         .ok()?;
@@ -657,12 +658,13 @@ async fn llm_try_extract(state: &AppState, path: &str, sample: &str) -> Option<S
     let resp = state
         .ai
         .reasoning_client()
-        .chat(
+        .chat_quick(
             vec![
                 ChatMessage { role: "system".into(), content: system.into() },
                 ChatMessage { role: "user".into(), content: user },
             ],
             false,
+            state.config.snapshot().indexing.qualify_effort,
         )
         .await
         .ok()?;
@@ -855,12 +857,13 @@ async fn llm_guess_context(
     let resp = state
         .ai
         .reasoning_client()
-        .chat(
+        .chat_quick(
             vec![
                 ChatMessage { role: "system".into(), content: system.into() },
                 ChatMessage { role: "user".into(), content: user },
             ],
             false,
+            state.config.snapshot().indexing.qualify_effort,
         )
         .await
         .ok()?;
@@ -950,12 +953,13 @@ async fn llm_describe_folder(
     let resp = state
         .ai
         .reasoning_client()
-        .chat(
+        .chat_quick(
             vec![
                 ChatMessage { role: "system".into(), content: system.into() },
                 ChatMessage { role: "user".into(), content: user },
             ],
             false,
+            state.config.snapshot().indexing.qualify_effort,
         )
         .await
         .ok()?;

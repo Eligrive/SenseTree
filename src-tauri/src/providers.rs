@@ -15,7 +15,7 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::{ChatConfig, ConfigStore, EmbeddingConfig, EmbeddingMode};
+use crate::config::{ChatConfig, ConfigStore, EmbeddingConfig, EmbeddingMode, ReasoningEffort};
 
 // =========================================================================
 // EMBEDDINGS
@@ -216,20 +216,47 @@ pub struct OpenAiEmbedder {
     model: String,
     api_key: String,
     dimensions: usize,
+    /// Contexte demandé au serveur, borné à ce dont un chunk a réellement besoin.
+    num_ctx: u32,
+}
+
+/// Contexte suffisant pour un chunk, avec une marge confortable.
+///
+/// Un chunk fait `chunk_size` caractères, auxquels s'ajoute le préfixe de contextual
+/// retrieval (nom du fichier + résumé, ~250 caractères). On compte 2 caractères par
+/// token — pessimiste, le français tourne plutôt autour de 3,5 — et on ne descend
+/// jamais sous 2048.
+///
+/// L'enjeu n'est pas la vitesse mais la MÉMOIRE : le cache KV est alloué pour tout le
+/// contexte annoncé, et un modèle d'embedding à 32k réserve plusieurs gigaoctets de
+/// VRAM dont il ne se servira jamais.
+pub fn embedding_num_ctx(chunk_size: usize) -> u32 {
+    let besoin = ((chunk_size + 250) / 2) as u32;
+    besoin.max(2048).div_ceil(1024) * 1024
 }
 
 impl OpenAiEmbedder {
-    pub fn new(http: reqwest::Client, cfg: &EmbeddingConfig) -> Self {
+    pub fn new(http: reqwest::Client, cfg: &EmbeddingConfig, num_ctx: u32) -> Self {
         OpenAiEmbedder {
             http,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             model: cfg.model.clone(),
             api_key: cfg.api_key.clone(),
             dimensions: cfg.dimensions,
+            num_ctx,
         }
     }
 
     async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        // Sur Ollama on passe par l'API NATIVE : c'est la seule qui accepte `num_ctx`.
+        // Mesuré sur un serveur réel avec un modèle d'embedding à 32k de contexte :
+        // 5,78 Go de VRAM au contexte par défaut contre 2,13 Go à 2048 — 3,65 Go de
+        // cache KV alloués pour rien, puisqu'un chunk fait quelques centaines de
+        // tokens. L'endpoint compatible OpenAI, lui, IGNORE le paramètre (vérifié).
+        if let Some(v) = self.embed_native_ollama(&texts).await {
+            return v;
+        }
+
         let url = format!("{}/embeddings", self.base_url);
         let mut req = self
             .http
@@ -255,6 +282,45 @@ impl OpenAiEmbedder {
         }
         let parsed: EmbeddingResponse = resp.json().await.context("parsing de la réponse /embeddings")?;
         Ok(parsed.data.into_iter().map(|d| d.embedding).collect())
+    }
+
+    /// Tente l'API native Ollama (`/api/embed`) pour pouvoir borner le contexte.
+    ///
+    /// `None` = ce n'est pas un Ollama (ou il n'a pas répondu) → l'appelant retombe
+    /// sur le chemin compatible OpenAI. On ne casse donc aucun serveur tiers.
+    async fn embed_native_ollama(&self, texts: &[String]) -> Option<Result<Vec<Vec<f32>>>> {
+        if !self.base_url.ends_with("/v1") || !self.api_key.is_empty() {
+            return None;
+        }
+        let root = self.base_url.trim_end_matches("/v1");
+
+        let resp = self
+            .http
+            .post(format!("{root}/api/embed"))
+            .json(&json!({
+                "model": self.model,
+                "input": texts,
+                "options": { "num_ctx": self.num_ctx },
+            }))
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        #[derive(Deserialize)]
+        struct NativeEmbed {
+            #[serde(default)]
+            embeddings: Vec<Vec<f32>>,
+        }
+        let parsed: NativeEmbed = resp.json().await.ok()?;
+        // Une réponse vide ou incomplète n'est pas exploitable : on laisse le repli
+        // OpenAI faire le travail plutôt que de stocker des vecteurs manquants.
+        if parsed.embeddings.len() != texts.len() {
+            return None;
+        }
+        Some(Ok(parsed.embeddings))
     }
 }
 
@@ -467,6 +533,8 @@ pub struct OpenAiChatClient {
     base_url: String,
     model: String,
     api_key: String,
+    /// Effort de raisonnement configuré pour ce créneau (chat, actions).
+    effort: ReasoningEffort,
 }
 
 impl OpenAiChatClient {
@@ -476,14 +544,46 @@ impl OpenAiChatClient {
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             model: cfg.model.clone(),
             api_key: cfg.api_key.clone(),
+            effort: cfg.reasoning_effort,
         }
     }
 
     /// Échange de chat standard. `json_mode` force une réponse JSON stricte (pour les actions).
     pub async fn chat(&self, messages: Vec<ChatMessage>, json_mode: bool) -> Result<String> {
+        self.chat_with(messages, json_mode, self.effort).await
+    }
+
+    /// Chat SANS chaîne de raisonnement, pour les appels courts et nombreux de
+    /// l'indexation (classer un dossier, qualifier un document, deviner un contexte).
+    ///
+    /// Les modèles « thinking » raisonnent avant de répondre, ce qui est du gaspillage
+    /// pur quand la réponse tient en six tokens. Mesuré sur un serveur réel, pour la
+    /// classification d'un dossier : **24,4 s avec raisonnement contre 0,78 s sans**,
+    /// pour une réponse identique. À 25 s de délai d'attente, cela suffisait à faire
+    /// échouer la classification en boucle et à bloquer toute l'indexation.
+    ///
+    /// L'effort est CHOISI PAR L'APPELANT (réglage `indexing.qualify_effort`) et non
+    /// imposé ici : sur un choix binaire il n'a aucun intérêt, sur une qualification de
+    /// document il peut se défendre. Les serveurs qui ne connaissent pas
+    /// `reasoning_effort` ignorent le champ — vérifié sur Ollama.
+    pub async fn chat_quick(
+        &self,
+        messages: Vec<ChatMessage>,
+        json_mode: bool,
+        effort: ReasoningEffort,
+    ) -> Result<String> {
+        self.chat_with(messages, json_mode, effort).await
+    }
+
+    async fn chat_with(
+        &self,
+        messages: Vec<ChatMessage>,
+        json_mode: bool,
+        effort: ReasoningEffort,
+    ) -> Result<String> {
         let bytes: u64 = messages.iter().map(|m| m.content.len() as u64).sum();
         let started = std::time::Instant::now();
-        let out = self.chat_inner(messages, json_mode).await;
+        let out = self.chat_inner(messages, json_mode, effort).await;
         match &out {
             Ok(_) => {
                 crate::metrics::record(crate::metrics::Stage::Reasoning, started.elapsed(), 1, bytes)
@@ -493,7 +593,12 @@ impl OpenAiChatClient {
         out
     }
 
-    async fn chat_inner(&self, messages: Vec<ChatMessage>, json_mode: bool) -> Result<String> {
+    async fn chat_inner(
+        &self,
+        messages: Vec<ChatMessage>,
+        json_mode: bool,
+        effort: ReasoningEffort,
+    ) -> Result<String> {
         let url = format!("{}/chat/completions", self.base_url);
         let mut body = json!({
             "model": self.model,
@@ -503,6 +608,10 @@ impl OpenAiChatClient {
         });
         if json_mode {
             body["response_format"] = json!({ "type": "json_object" });
+        }
+        // `Auto` n'envoie rien : on laisse le serveur décider, comme avant ce réglage.
+        if let Some(e) = effort.as_param() {
+            body["reasoning_effort"] = json!(e);
         }
 
         let mut req = self.http.post(&url).json(&body);
@@ -838,7 +947,11 @@ impl AiEngine {
                         .context("tâche de chargement du modèle interrompue")??;
                 Arc::new(local)
             }
-            EmbeddingMode::Openai => Arc::new(OpenAiEmbedder::new(self.http.clone(), &cfg.embedding)),
+            EmbeddingMode::Openai => Arc::new(OpenAiEmbedder::new(
+                self.http.clone(),
+                &cfg.embedding,
+                embedding_num_ctx(cfg.indexing.chunk_size),
+            )),
         };
 
         *guard = Some(CachedEmbedder {
@@ -1015,7 +1128,31 @@ impl AiEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_local_model, supported_local_models};
+    use super::{embedding_num_ctx, resolve_local_model, supported_local_models};
+
+    /// Le contexte demandé doit couvrir un chunk avec marge, et surtout rester PETIT.
+    ///
+    /// Mesuré sur un serveur réel : un modèle d'embedding annonçant 32k de contexte
+    /// réserve 5,78 Go de VRAM au chargement contre 2,13 Go à 2048 — pour des chunks
+    /// de quelques centaines de tokens. Laisser le défaut du modèle, c'est perdre
+    /// plusieurs gigaoctets sans aucune contrepartie.
+    #[test]
+    fn contexte_embedding_borne_mais_suffisant() {
+        // Défaut de l'app (chunk_size 1000) : le plancher de 2048 suffit largement.
+        assert_eq!(embedding_num_ctx(1000), 2048);
+        // Un chunk minuscule ne descend pas sous le plancher.
+        assert_eq!(embedding_num_ctx(10), 2048);
+        // Un gros chunk fait monter le contexte, arrondi au ko supérieur.
+        assert_eq!(embedding_num_ctx(8000), 5120);
+        // Toujours >= au besoin estimé (2 caracteres par token, hypothèse pessimiste).
+        for taille in [500, 1000, 2000, 4000, 16000] {
+            let besoin = ((taille + 250) / 2) as u32;
+            assert!(
+                embedding_num_ctx(taille) >= besoin,
+                "contexte trop court pour chunk_size={taille}"
+            );
+        }
+    }
 
     #[test]
     fn modeles_locaux_resolvent_avec_la_bonne_dimension() {

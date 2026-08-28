@@ -65,6 +65,45 @@ pub struct ChatConfig {
     pub model: String,
     pub api_key: String,
     pub enabled: bool,
+    /// Effort de raisonnement demandé au modèle.
+    ///
+    /// `#[serde(default)]` : les configurations existantes gardent `Auto`, donc le
+    /// comportement du serveur — on ne change le raisonnement de personne en silence.
+    #[serde(default)]
+    pub reasoning_effort: ReasoningEffort,
+}
+
+/// Effort de raisonnement demandé à un modèle « thinking ».
+///
+/// Les modèles récents raisonnent avant de répondre. C'est précieux pour un plan
+/// d'actions, et purement coûteux pour un choix binaire : mesuré sur un serveur réel,
+/// classer un dossier prend 24,4 s avec raisonnement contre 0,78 s sans, pour la
+/// MÊME réponse.
+///
+/// `Auto` n'envoie rien et laisse le serveur décider. Les serveurs qui ne connaissent
+/// pas `reasoning_effort` ignorent simplement le champ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    #[default]
+    Auto,
+    None,
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    /// Valeur à envoyer au serveur, ou `None` pour ne rien envoyer du tout.
+    pub fn as_param(self) -> Option<&'static str> {
+        match self {
+            ReasoningEffort::Auto => Option::None,
+            ReasoningEffort::None => Some("none"),
+            ReasoningEffort::Low => Some("low"),
+            ReasoningEffort::Medium => Some("medium"),
+            ReasoningEffort::High => Some("high"),
+        }
+    }
 }
 
 impl ChatConfig {
@@ -74,6 +113,7 @@ impl ChatConfig {
             model: "llama3.1:8b".to_string(),
             api_key: String::new(),
             enabled: true,
+            reasoning_effort: ReasoningEffort::default(),
         }
     }
 
@@ -84,6 +124,7 @@ impl ChatConfig {
             api_key: String::new(),
             // La vision est opt-in : elle sollicite un modèle multimodal souvent absent par défaut.
             enabled: false,
+            reasoning_effort: ReasoningEffort::default(),
         }
     }
 }
@@ -136,6 +177,14 @@ pub struct IndexingConfig {
     pub qualify_images: bool,
     #[serde(default = "default_true")]
     pub qualify_context: bool,
+    /// Effort de raisonnement pour les QUALIFICATIONS d'indexation (classer un
+    /// dossier, qualifier un document, deviner un contexte).
+    ///
+    /// Défaut `None` : ce sont des milliers d'appels courts dont la réponse tient en
+    /// quelques tokens. C'est le seul réglage dont le défaut coupe le raisonnement —
+    /// le chat et les plans d'actions, eux, restent sur `Auto`.
+    #[serde(default = "default_qualify_effort")]
+    pub qualify_effort: ReasoningEffort,
     /// Ordonnancement des étages. `#[serde(default)]` : les settings.json existants
     /// retombent sur le séquentiel, c'est-à-dire le comportement d'avant.
     #[serde(default)]
@@ -144,6 +193,10 @@ pub struct IndexingConfig {
     /// on échange de modèles — mais plus il faut attendre avant que l'index avance.
     #[serde(default = "default_batch_files")]
     pub batch_files: usize,
+}
+
+fn default_qualify_effort() -> ReasoningEffort {
+    ReasoningEffort::None
 }
 
 fn default_batch_files() -> usize {
@@ -170,6 +223,7 @@ impl Default for IndexingConfig {
             qualify_documents: true,
             qualify_images: true,
             qualify_context: true,
+            qualify_effort: default_qualify_effort(),
             pipeline_mode: PipelineMode::default(),
             batch_files: default_batch_files(),
         }
@@ -477,7 +531,7 @@ impl ConfigStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{path_under_root, prompt_or, IndexingConfig, PipelineMode};
+    use super::{path_under_root, prompt_or, AppConfig, ChatConfig, IndexingConfig, PipelineMode, ReasoningEffort};
 
     #[test]
     fn prompt_or_retombe_sur_le_defaut() {
@@ -512,6 +566,35 @@ mod tests {
         assert_eq!(cfg.batch_files, 64);
         // Les autres champs à défaut restent inchangés.
         assert!(cfg.qualify_documents && cfg.qualify_images && cfg.qualify_context);
+    }
+
+    /// Le raisonnement du CHAT reste au choix du serveur par défaut : on ne coupe la
+    /// réflexion de personne en silence. Seules les qualifications d'indexation —
+    /// des milliers d'appels dont la réponse tient en quelques tokens — partent sans.
+    #[test]
+    fn defauts_de_raisonnement_par_usage() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.reasoning.reasoning_effort, ReasoningEffort::Auto);
+        assert_eq!(cfg.vision.reasoning_effort, ReasoningEffort::Auto);
+        assert_eq!(cfg.indexing.qualify_effort, ReasoningEffort::None);
+
+        // `Auto` n'envoie rien du tout : le serveur décide, comme avant ce réglage.
+        assert_eq!(ReasoningEffort::Auto.as_param(), None);
+        assert_eq!(ReasoningEffort::None.as_param(), Some("none"));
+        assert_eq!(ReasoningEffort::High.as_param(), Some("high"));
+    }
+
+    /// Une config antérieure ne doit pas voir son chat changer de comportement.
+    #[test]
+    fn config_ancienne_garde_le_raisonnement_du_chat() {
+        let ancien = r#"{
+            "base_url": "http://localhost:11434/v1",
+            "model": "qwen3.5:4b",
+            "api_key": "",
+            "enabled": true
+        }"#;
+        let cfg: ChatConfig = serde_json::from_str(ancien).expect("ancien format illisible");
+        assert_eq!(cfg.reasoning_effort, ReasoningEffort::Auto);
     }
 
     /// Le front compare des chaînes : le mode doit se sérialiser en minuscules.
