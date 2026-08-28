@@ -177,6 +177,18 @@ pub struct IndexingConfig {
     pub qualify_images: bool,
     #[serde(default = "default_true")]
     pub qualify_context: bool,
+    /// Nombre maximum de chunks vectorisés par fichier. **`0` = illimité (défaut).**
+    ///
+    /// Un fichier volumineux produit beaucoup de vecteurs — un texte de 5 Mo donne
+    /// ~6 000 chunks — et monopolise la file un long moment. Mais la taille ne dit RIEN
+    /// de la valeur sémantique : une thèse, un gros corpus de code ou un livre méritent
+    /// d'être indexés intégralement. Tronquer par défaut ferait perdre du contenu en
+    /// silence, ce qui est pire qu'une indexation lente.
+    ///
+    /// Le plafond existe donc pour qui veut arbitrer en connaissance de cause. Quand il
+    /// est actif, la troncature est ANNONCÉE dans le contenu extrait.
+    #[serde(default = "default_max_chunks")]
+    pub max_chunks_per_file: usize,
     /// Effort de raisonnement pour les QUALIFICATIONS d'indexation (classer un
     /// dossier, qualifier un document, deviner un contexte).
     ///
@@ -193,6 +205,10 @@ pub struct IndexingConfig {
     /// on échange de modèles — mais plus il faut attendre avant que l'index avance.
     #[serde(default = "default_batch_files")]
     pub batch_files: usize,
+}
+
+fn default_max_chunks() -> usize {
+    0
 }
 
 fn default_qualify_effort() -> ReasoningEffort {
@@ -223,6 +239,7 @@ impl Default for IndexingConfig {
             qualify_documents: true,
             qualify_images: true,
             qualify_context: true,
+            max_chunks_per_file: default_max_chunks(),
             qualify_effort: default_qualify_effort(),
             pipeline_mode: PipelineMode::default(),
             batch_files: default_batch_files(),

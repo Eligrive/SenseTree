@@ -475,9 +475,23 @@ async fn store_text_document(
     doc_type: &str,
 ) -> anyhow::Result<Option<Pending>> {
     let cfg = state.config.snapshot();
-    let chunks = Chunker::slice_text(text, cfg.indexing.chunk_size, cfg.indexing.overlap);
+    let mut chunks = Chunker::slice_text(text, cfg.indexing.chunk_size, cfg.indexing.overlap);
     if chunks.is_empty() {
         return index_context_only(state, path, mtime, "vide").await;
+    }
+
+    // Plafond OPTIONNEL de vecteurs par fichier. Désactivé par défaut (`0`) : la taille
+    // d'un fichier ne dit rien de sa valeur sémantique, et tronquer sans le dire ferait
+    // perdre le contenu d'un document légitimement volumineux. Qui veut borner le temps
+    // passé sur un seul fichier peut l'activer dans les Paramètres.
+    let plafond = cfg.indexing.max_chunks_per_file;
+    let tronque = plafond > 0 && chunks.len() > plafond;
+    if tronque {
+        tracing::info!(
+            "✂️ {path} : {} chunks ramenés à {plafond} (plafond par fichier)",
+            chunks.len()
+        );
+        chunks.truncate(plafond);
     }
 
     // « Sens » du document : une VRAIE qualification par le LLM (CE QUE C'EST + points-clés),
@@ -521,7 +535,15 @@ async fn store_text_document(
 
     // On garde LES DEUX : la qualification (« sens ») ET le contenu extrait (borné), pour
     // pouvoir les afficher côte à côte et comparer au document.
-    let extract: String = text.trim().chars().take(16_000).collect();
+    let mut extract: String = text.trim().chars().take(16_000).collect();
+    // La troncature doit être VISIBLE : sans ça, l'utilisateur croit le document
+    // intégralement indexé alors que seule sa première partie est cherchable.
+    if tronque {
+        extract.push_str(&format!(
+            "\n\n[Indexation partielle : les {plafond} premiers extraits seulement — \
+             document trop volumineux. Ajustez « chunks max par fichier » si besoin.]"
+        ));
+    }
     Ok(Some(Pending {
         path: path.to_string(),
         mtime,
