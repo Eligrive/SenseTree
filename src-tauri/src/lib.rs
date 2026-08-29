@@ -745,6 +745,34 @@ fn retry_all_failed(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
     state.db.requeue_failed().map_err(|e| e.to_string())
 }
 
+/// Force le RETRAITEMENT COMPLET d'un fichier : extraction, vision, qualification,
+/// vectorisation.
+///
+/// À distinguer de `qualify_file`, qui ne relance que la qualification sur le contenu
+/// DÉJÀ extrait — inutile quand c'est justement l'extraction qui avait échoué.
+///
+/// Sans cette commande, un fichier mal indexé le restait définitivement : sa tâche est
+/// `completed` et rien ne la reprend, même après correction du pipeline. Les seules
+/// issues étaient de tout réindexer ou de modifier le fichier pour changer sa date.
+#[tauri::command]
+async fn reindex_path(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
+    let st = state.inner().clone();
+    if !std::path::Path::new(&path).exists() {
+        return Err("Ce fichier n'existe plus.".into());
+    }
+    // Le hash stocké doit être effacé, sinon le worker considère le contenu inchangé
+    // et ressort immédiatement sans rien refaire.
+    st.db.update_file_hash(&path, "").map_err(|e| e.to_string())?;
+    st.vector.delete_by_path(&path).await.ok();
+    // Priorité haute : l'utilisateur attend le résultat, il ne doit pas faire la queue
+    // derrière des milliers de fichiers.
+    st.db
+        .enqueue_path(&path, Some("pending_extraction"), 9)
+        .map_err(|e| e.to_string())?;
+    tracing::info!("🔄 retraitement demandé : {path}");
+    Ok(())
+}
+
 /// Qualifie un fichier À LA DEMANDE (mode « paresseux ») : relit le contenu déjà
 /// extrait (`extract`) et fait produire au reasoning un « sens » qualifié, qu'on
 /// enregistre. Permet d'indexer vite (qualification désactivée) puis de qualifier
@@ -1176,6 +1204,7 @@ pub fn run() {
             ignore_indexing,
             retry_all_failed,
             set_file_summary,
+            reindex_path,
             qualify_file,
             qualify_folder,
             set_indexing_paused,

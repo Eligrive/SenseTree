@@ -759,7 +759,7 @@ impl OpenAiChatClient {
     ) -> std::result::Result<String, VisionError> {
         let url = format!("{}/chat/completions", self.base_url);
         let data_url = format!("data:{mime};base64,{image_base64}");
-        let body = json!({
+        let mut body = json!({
             "model": self.model,
             "messages": [{
                 "role": "user",
@@ -771,6 +771,15 @@ impl OpenAiChatClient {
             "temperature": 0.1,
             "stream": false,
         });
+        // Même effort de raisonnement que `chat()` : celui du créneau, choisi par
+        // l'utilisateur. Il était ignoré ici — le réglage « Raisonnement » de la
+        // section Vision s'affichait et se sauvegardait, mais ne changeait rien.
+        // L'enjeu est mesurable : sur une image réelle, 32,5 s avec raisonnement
+        // contre 6,9 s sans, pour 7 306 caractères de réflexion précédant 226
+        // caractères de réponse.
+        if let Some(e) = self.effort.as_param() {
+            body["reasoning_effort"] = json!(e);
+        }
         let mut req = self.http.post(&url).json(&body).timeout(VISION_TIMEOUT);
         if !self.api_key.is_empty() {
             req = req.bearer_auth(&self.api_key);

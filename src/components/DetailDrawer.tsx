@@ -8,12 +8,13 @@ import {
   FolderTree,
   Loader2,
   Pencil,
+  RotateCcw,
   Save,
   Sparkles,
   X,
 } from "lucide-react";
 import type { PathDetails } from "../lib/types";
-import { qualifyFile, qualifyFolder, setFileSummary } from "../lib/ipc";
+import { qualifyFile, qualifyFolder, reindexPath, setFileSummary } from "../lib/ipc";
 import { formatBytes, formatDate } from "../lib/format";
 
 interface Props {
@@ -156,6 +157,18 @@ function SenseSection({
       .finally(() => setQualifying(false));
   };
 
+  // Retraitement COMPLET : le seul recours quand l'extraction elle-meme a echoue
+  // (scan mal decode, PDF illisible). La qualification, elle, ne relit que l'extrait
+  // deja stocke -- inutile s'il est vide.
+  const reindex = () => {
+    setQualifying(true);
+    setQualifyErr(null);
+    reindexPath(path)
+      .then(() => setQualifyErr("Remis en file — le résultat apparaîtra une fois traité."))
+      .catch((e) => setQualifyErr(String(e)))
+      .finally(() => setQualifying(false));
+  };
+
   return (
     <div className="mt-3">
       <div className="mb-1.5 flex items-center justify-between">
@@ -175,6 +188,14 @@ function SenseSection({
                 {qualifying ? "Qualification…" : "Qualifier avec l'IA"}
               </button>
             )}
+            <button
+              onClick={reindex}
+              disabled={qualifying}
+              className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+              title="Tout refaire depuis le fichier : extraction, OCR, qualification, vectorisation. À utiliser quand l'extraction a échoué (document vu comme « vide »)."
+            >
+              <RotateCcw size={11} /> Réindexer
+            </button>
             <button
               onClick={() => {
                 setDraft(summary ?? "");
