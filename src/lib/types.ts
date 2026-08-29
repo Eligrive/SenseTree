@@ -265,6 +265,10 @@ export interface HealthReport {
   reasoning_detail: string;
   vision_ok: boolean;
   vision_detail: string;
+  transcription_ok: boolean;
+  transcription_detail: string;
+  video_ok: boolean;
+  video_detail: string;
 }
 
 export interface DirEntryInfo {

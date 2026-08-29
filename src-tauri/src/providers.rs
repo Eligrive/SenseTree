@@ -1297,6 +1297,10 @@ pub struct HealthReport {
     pub reasoning_detail: String,
     pub vision_ok: bool,
     pub vision_detail: String,
+    pub transcription_ok: bool,
+    pub transcription_detail: String,
+    pub video_ok: bool,
+    pub video_detail: String,
 }
 
 struct CachedEmbedder {
@@ -1585,7 +1589,7 @@ impl AiEngine {
 
         // Reasoning
         let (reasoning_ok, reasoning_detail) = if cfg.reasoning.enabled {
-            match self.ping_models(&cfg.reasoning).await {
+            match self.ping_models(&cfg.reasoning.base_url, &cfg.reasoning.api_key).await {
                 Ok(_) => (true, "connecté".to_string()),
                 Err(e) => (false, format!("{e}")),
             }
@@ -1595,8 +1599,32 @@ impl AiEngine {
 
         // Vision
         let (vision_ok, vision_detail) = if cfg.vision.enabled {
-            match self.ping_models(&cfg.vision).await {
+            match self.ping_models(&cfg.vision.base_url, &cfg.vision.api_key).await {
                 Ok(_) => (true, "connecté".to_string()),
+                Err(e) => (false, format!("{e}")),
+            }
+        } else {
+            (false, "désactivé".to_string())
+        };
+
+        // Transcription et description vidéo : deux serveurs distincts et
+        // indépendamment activables, donc deux voyants distincts. Les confondre
+        // masquerait lequel des deux est en panne.
+        let (transcription_ok, transcription_detail) = if cfg.transcription.enabled {
+            match self
+                .ping_media(&cfg.transcription.base_url, &cfg.transcription.api_key)
+                .await
+            {
+                Ok(d) => (true, d),
+                Err(e) => (false, format!("{e}")),
+            }
+        } else {
+            (false, "désactivé".to_string())
+        };
+
+        let (video_ok, video_detail) = if cfg.video.enabled {
+            match self.ping_media(&cfg.video.base_url, &cfg.video.api_key).await {
+                Ok(d) => (true, d),
                 Err(e) => (false, format!("{e}")),
             }
         } else {
@@ -1610,25 +1638,49 @@ impl AiEngine {
             reasoning_detail,
             vision_ok,
             vision_detail,
+            transcription_ok,
+            transcription_detail,
+            video_ok,
+            video_detail,
         }
     }
 
     /// Ping léger d'un endpoint compatible OpenAI (`GET /models`).
-    async fn ping_models(&self, cfg: &ChatConfig) -> Result<()> {
-        let url = format!("{}/models", cfg.base_url.trim_end_matches('/'));
-        let mut req = self
-            .http
-            .get(&url)
-            .timeout(Duration::from_secs(5));
-        if !cfg.api_key.is_empty() {
-            req = req.bearer_auth(&cfg.api_key);
-        }
-        let resp = req.send().await.context("serveur injoignable")?;
+    async fn ping_models(&self, base_url: &str, api_key: &str) -> Result<()> {
+        let resp = self.requete_models(base_url, api_key).await?;
         if resp.status().is_success() {
             Ok(())
         } else {
             Err(anyhow!("le serveur a répondu {}", resp.status()))
         }
+    }
+
+    /// Ping d'un serveur média (transcription, description vidéo).
+    ///
+    /// Plus tolérant que [`Self::ping_models`] à dessein : plusieurs serveurs de
+    /// transcription — whisper.cpp au premier chef — n'exposent PAS `/models`. Un
+    /// 404 prouve pourtant que le serveur répond. L'afficher en rouge serait un
+    /// faux négatif, c'est-à-dire pire qu'un indicateur absent : l'utilisateur
+    /// irait chercher une panne inexistante.
+    async fn ping_media(&self, base_url: &str, api_key: &str) -> Result<String> {
+        let resp = self.requete_models(base_url, api_key).await?;
+        let statut = resp.status();
+        if statut.is_success() {
+            Ok("connecté".to_string())
+        } else if statut == reqwest::StatusCode::NOT_FOUND {
+            Ok("connecté (pas d'inventaire /models)".to_string())
+        } else {
+            Err(anyhow!("le serveur a répondu {statut}"))
+        }
+    }
+
+    async fn requete_models(&self, base_url: &str, api_key: &str) -> Result<reqwest::Response> {
+        let url = format!("{}/models", base_url.trim_end_matches('/'));
+        let mut req = self.http.get(&url).timeout(Duration::from_secs(5));
+        if !api_key.is_empty() {
+            req = req.bearer_auth(api_key);
+        }
+        req.send().await.context("serveur injoignable")
     }
 }
 

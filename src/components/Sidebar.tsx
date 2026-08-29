@@ -333,6 +333,16 @@ export default function Sidebar({
             label="Vision"
             detail={health?.vision_detail ?? "…"}
           />
+          <HealthDot
+            ok={!!health?.transcription_ok}
+            label="Transcription"
+            detail={health?.transcription_detail ?? "…"}
+          />
+          <HealthDot
+            ok={!!health?.video_ok}
+            label="Description vidéo"
+            detail={health?.video_detail ?? "…"}
+          />
         </div>
 
         <button
