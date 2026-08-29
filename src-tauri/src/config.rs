@@ -129,6 +129,137 @@ impl ChatConfig {
     }
 }
 
+/// Configuration de la transcription audio/vidéo (« speech to text »).
+///
+/// Le principe : **l'app ne présume rien du serveur**. Elle envoie le média tel
+/// quel et laisse le serveur accepter ou refuser ; tout ce qui varie d'une
+/// implémentation à l'autre (chemin de l'endpoint, format de réponse, champs
+/// supplémentaires, délai) est réglable ici plutôt que codé en dur.
+///
+/// L'endpoint de référence est `POST {base_url}{endpoint_path}` en
+/// `multipart/form-data` — OpenAI et Groq côté hébergé, whisper.cpp, speaches
+/// (ex-faster-whisper-server), LocalAI et vLLM côté local.
+///
+/// **Ollama ne fait pas de transcription** : le défaut ne pointe volontairement
+/// PAS sur `localhost:11434`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptionConfig {
+    pub base_url: String,
+    pub model: String,
+    pub api_key: String,
+    pub enabled: bool,
+    /// Code ISO-639-1 (`fr`, `en`…) envoyé au serveur. Vide = détection automatique.
+    #[serde(default)]
+    pub language: String,
+    /// Plafond de taille du média (Mo). **`0` = aucune limite (défaut)** : le
+    /// fichier est téléversé en flux, jamais chargé entièrement en mémoire, donc
+    /// sa taille n'est pas bornée par la RAM. Le plafond n'existe que pour qui
+    /// veut se protéger d'une API facturée à la minute.
+    #[serde(default)]
+    pub max_file_mb: u64,
+    /// Chemin de l'endpoint, relatif à `base_url`. Réglable pour les serveurs qui
+    /// s'écartent de la convention.
+    #[serde(default = "default_transcription_path")]
+    pub endpoint_path: String,
+    /// Valeur du champ `response_format`. Vide = on n'envoie rien et le serveur
+    /// applique son défaut. À régler si ton serveur exige `text`, `json`,
+    /// `verbose_json`, `srt`…
+    #[serde(default)]
+    pub response_format: String,
+    /// Champs supplémentaires du multipart, en objet JSON `{"clé": "valeur"}`.
+    /// L'échappatoire qui évite une modification du code pour un serveur qui
+    /// attend un paramètre exotique (`temperature`, `prompt`, `diarize`…).
+    #[serde(default)]
+    pub extra_fields: String,
+    /// Délai maximal, en secondes. Large par défaut : un Whisper local sur CPU
+    /// transcrit souvent moins vite que le temps réel.
+    #[serde(default = "default_media_timeout")]
+    pub timeout_secs: u64,
+}
+
+impl Default for TranscriptionConfig {
+    fn default() -> Self {
+        TranscriptionConfig {
+            // Pas de défaut Ollama : il n'expose aucun endpoint de transcription.
+            // 8000 est le port de speaches ; whisper.cpp écoute sur 8080.
+            base_url: "http://localhost:8000/v1".to_string(),
+            // Identifiant d'un modèle servi localement. `whisper-1` est l'identifiant
+            // OpenAI et ne serait reconnu que par l'API hébergée.
+            model: "Systran/faster-whisper-large-v3".to_string(),
+            api_key: String::new(),
+            // Opt-in : suppose un serveur de transcription en face.
+            enabled: false,
+            language: String::new(),
+            max_file_mb: 0,
+            endpoint_path: default_transcription_path(),
+            response_format: String::new(),
+            extra_fields: String::new(),
+            timeout_secs: default_media_timeout(),
+        }
+    }
+}
+
+/// Comment la vidéo parvient au serveur de description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoDelivery {
+    /// Data-URL `data:<mime>;base64,…` dans le corps JSON. Universel : c'est ce
+    /// que tout serveur compatible sait lire. Le corps est STREAMÉ, la vidéo
+    /// n'est donc jamais chargée en mémoire malgré son encodage.
+    #[default]
+    Base64,
+    /// URL `file:///…` : le serveur va chercher le fichier lui-même. Rien ne
+    /// transite, ni en mémoire ni sur le réseau — de loin le plus efficace, mais
+    /// suppose un serveur voyant le même système de fichiers et configuré pour
+    /// accepter les médias locaux (vLLM : `--allowed-local-media-path`).
+    FileUri,
+}
+
+/// Description visuelle d'une vidéo par un modèle multimodal.
+///
+/// Chemin distinct de la transcription : `POST {base_url}{endpoint_path}` en JSON,
+/// avec une part `video_url` portant le média en data-URL — la convention des
+/// serveurs qui savent lire une vidéo (vLLM avec Qwen-VL, passerelles compatibles
+/// OpenAI). Combinée à la transcription, elle donne le sens complet d'une vidéo :
+/// ce qu'on y VOIT en plus de ce qui s'y DIT.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoConfig {
+    pub base_url: String,
+    pub model: String,
+    pub api_key: String,
+    pub enabled: bool,
+    /// Chemin de l'endpoint, relatif à `base_url`.
+    #[serde(default = "default_video_path")]
+    pub endpoint_path: String,
+    /// Comment la vidéo est transmise au serveur.
+    #[serde(default)]
+    pub delivery: VideoDelivery,
+    /// Plafond de taille (Mo). **`0` = aucune limite (défaut).**
+    ///
+    /// Comme la transcription, ce chemin est streamé : le corps JSON est assemblé
+    /// autour d'un flux base64 du fichier, jamais autour d'une copie en mémoire.
+    /// La taille n'est donc pas bornée par la RAM ici non plus.
+    #[serde(default)]
+    pub max_file_mb: u64,
+    #[serde(default = "default_media_timeout")]
+    pub timeout_secs: u64,
+}
+
+impl Default for VideoConfig {
+    fn default() -> Self {
+        VideoConfig {
+            base_url: "http://localhost:8000/v1".to_string(),
+            model: "Qwen/Qwen2.5-VL-7B-Instruct".to_string(),
+            api_key: String::new(),
+            enabled: false,
+            endpoint_path: default_video_path(),
+            delivery: VideoDelivery::default(),
+            max_file_mb: 0,
+            timeout_secs: default_media_timeout(),
+        }
+    }
+}
+
 /// Ordonnancement des trois étages IA pendant l'indexation.
 ///
 /// Le compromis est réel et dépend de la machine : il n'y a pas de bon défaut
@@ -177,6 +308,11 @@ pub struct IndexingConfig {
     pub qualify_images: bool,
     #[serde(default = "default_true")]
     pub qualify_context: bool,
+    /// Qualification LLM des transcriptions audio/vidéo. Séparé des documents :
+    /// une transcription d'une heure est longue et coûteuse à qualifier, on peut
+    /// vouloir la couper sans toucher aux PDF.
+    #[serde(default = "default_true")]
+    pub qualify_media: bool,
     /// Nombre maximum de chunks vectorisés par fichier. **`0` = illimité (défaut).**
     ///
     /// Un fichier volumineux produit beaucoup de vecteurs — un texte de 5 Mo donne
@@ -227,6 +363,20 @@ fn default_true() -> bool {
     true
 }
 
+fn default_transcription_path() -> String {
+    "/audio/transcriptions".to_string()
+}
+
+fn default_video_path() -> String {
+    "/chat/completions".to_string()
+}
+
+/// Délai d'un appel média. Volontairement large : transcrire une heure d'audio
+/// sur un CPU peut prendre bien plus longtemps que la durée du média.
+fn default_media_timeout() -> u64 {
+    1800
+}
+
 impl Default for IndexingConfig {
     fn default() -> Self {
         IndexingConfig {
@@ -239,6 +389,7 @@ impl Default for IndexingConfig {
             qualify_documents: true,
             qualify_images: true,
             qualify_context: true,
+            qualify_media: true,
             max_chunks_per_file: default_max_chunks(),
             qualify_effort: default_qualify_effort(),
             pipeline_mode: PipelineMode::default(),
@@ -328,6 +479,9 @@ pub struct PromptsConfig {
     /// OCR d'une page (vision).
     #[serde(default)]
     pub vision_ocr: String,
+    /// Description visuelle d'une vidéo (ce qu'on y VOIT, en complément de ce qui s'y dit).
+    #[serde(default)]
+    pub video_describe: String,
     /// Instruction système de l'assistant de chat (RAG + actions).
     #[serde(default)]
     pub chat_system: String,
@@ -395,6 +549,11 @@ pub mod default_prompts {
         Si l'image ne contient aucun texte, donne seulement la description. \
         Pas de préambule ni de commentaire.";
 
+    pub const VIDEO_DESCRIBE: &str = "Décris cette vidéo : ce qu'on y voit, le lieu, les \
+        personnes ou objets présents, les actions, et tout texte lisible à l'écran. \
+        Ne transcris PAS ce qui est dit : la bande son est traitée séparément. \
+        Sois factuel et concis. Pas de préambule ni de commentaire.";
+
     pub const CHAT_SYSTEM: &str = "Tu es l'assistant de SenseTree, un explorateur de fichiers sémantique local. \
         RÈGLE DE FORMAT : si l'utilisateur pose une QUESTION ou demande une analyse, réponds \
         NORMALEMENT en texte, en citant les fichiers pertinents par leur nom. \
@@ -426,6 +585,7 @@ impl PromptsConfig {
             context_guess: default_prompts::CONTEXT_GUESS.to_string(),
             vision_caption: default_prompts::VISION_CAPTION.to_string(),
             vision_ocr: default_prompts::VISION_OCR.to_string(),
+            video_describe: default_prompts::VIDEO_DESCRIBE.to_string(),
             chat_system: default_prompts::CHAT_SYSTEM.to_string(),
             reorganize: default_prompts::REORGANIZE.to_string(),
         }
@@ -446,6 +606,13 @@ pub struct AppConfig {
     pub embedding: EmbeddingConfig,
     pub reasoning: ChatConfig,
     pub vision: ChatConfig,
+    /// `#[serde(default)]` : les settings.json antérieurs restent lisibles et
+    /// retombent sur une transcription désactivée.
+    #[serde(default)]
+    pub transcription: TranscriptionConfig,
+    /// Description visuelle des vidéos, complémentaire de la transcription.
+    #[serde(default)]
+    pub video: VideoConfig,
     pub indexing: IndexingConfig,
     #[serde(default)]
     pub retrieval: RetrievalConfig,
@@ -462,6 +629,8 @@ impl Default for AppConfig {
             embedding: EmbeddingConfig::default(),
             reasoning: ChatConfig::default_reasoning(),
             vision: ChatConfig::default_vision(),
+            transcription: TranscriptionConfig::default(),
+            video: VideoConfig::default(),
             indexing: IndexingConfig::default(),
             retrieval: RetrievalConfig::default(),
             mcp_servers: Vec::new(),
@@ -591,6 +760,8 @@ mod tests {
         assert_eq!(cfg.batch_files, 64);
         // Les autres champs à défaut restent inchangés.
         assert!(cfg.qualify_documents && cfg.qualify_images && cfg.qualify_context);
+        // Champ ajouté avec la transcription : un ancien settings.json doit le voir à true.
+        assert!(cfg.qualify_media);
     }
 
     /// Le raisonnement du CHAT reste au choix du serveur par défaut : on ne coupe la

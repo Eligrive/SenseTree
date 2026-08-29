@@ -935,6 +935,18 @@ fn open_path(path: String) -> Result<(), String> {
     result.map(|_| ()).map_err(|e| format!("ouverture impossible: {e}"))
 }
 
+/// Version de l'application, lue à la compilation depuis Cargo.toml.
+///
+/// C'est la MÊME source que celle bumpée à chaque release (Cargo.toml,
+/// package.json et tauri.conf.json le sont ensemble), donc elle ne peut pas
+/// diverger de la version réellement installée. Affichée dans les Paramètres :
+/// sans elle, impossible de savoir quelle version tourne, ni de rapporter un bug
+/// de façon exploitable.
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// Indique si un GPU NVIDIA est présent au runtime (détection dynamique).
 /// L'UI s'en sert pour n'activer la case « Utiliser le GPU » que si elle a un effet.
 #[tauri::command]
@@ -1211,6 +1223,7 @@ pub fn run() {
             indexing_paused,
             open_path,
             gpu_available,
+            app_version,
             get_config,
             set_config,
             get_default_prompts,

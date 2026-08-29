@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
+  AudioLines,
   Ban,
   Brain,
   CheckCircle2,
@@ -21,6 +22,7 @@ const ROUTE_META: Record<string, { label: string; cls: string; Icon: LucideIcon 
   routing: { label: "Routage", cls: "bg-teal-500/15 text-teal-300", Icon: Route },
   embedding: { label: "Embedding", cls: "bg-blue-500/15 text-blue-300", Icon: Cpu },
   vision: { label: "Vision", cls: "bg-purple-500/15 text-purple-300", Icon: Eye },
+  media: { label: "Média", cls: "bg-cyan-500/15 text-cyan-300", Icon: AudioLines },
   reasoning: { label: "Reasoning", cls: "bg-amber-500/15 text-amber-300", Icon: Brain },
   context: { label: "Contexte", cls: "bg-zinc-700/40 text-zinc-400", Icon: FileText },
 };

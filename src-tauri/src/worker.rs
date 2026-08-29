@@ -22,7 +22,7 @@ use zip::ZipArchive;
 
 use crate::chunker::Chunker;
 use crate::parser::{FileType, Parser};
-use crate::providers::{ChatMessage, EmbeddingProvider, VisionError};
+use crate::providers::{ChatMessage, EmbeddingProvider, AiCallError};
 use crate::state::AppState;
 use crate::vectordb::ChunkVector;
 
@@ -334,13 +334,15 @@ async fn prepare_task(
     match file_type {
         FileType::Ignored => Ok(None),
         FileType::Image => index_image(state, path, mtime, retry_count).await,
+        FileType::Media => index_media(state, path, mtime, retry_count).await,
         FileType::RequiresAIRouting => index_unknown(state, path, mtime).await,
         FileType::Text | FileType::Document => index_textual(state, path, mtime).await,
     }
 }
 
 /// Étapes (pipeline) qu'un chemin en file va traverser, dans l'ordre : un sous-ensemble
-/// ordonné de {`vision`, `reasoning`, `embedding`}. Sert à l'affichage de la file.
+/// ordonné de {`vision`, `media`, `reasoning`, `embedding`}. Sert à
+/// l'affichage de la file.
 /// C'est une PRÉDICTION (ex. un texte très court saute la qualification reasoning ;
 /// un PDF non scanné n'utilise pas la vision). `kind` est un libellé court du type.
 pub fn route_for(cfg: &crate::config::AppConfig, path: &str) -> (Vec<&'static str>, &'static str) {
@@ -362,6 +364,17 @@ pub fn route_for(cfg: &crate::config::AppConfig, path: &str) -> (Vec<&'static st
                 kind = "image";
                 if cfg.vision.enabled {
                     stages.push("vision");
+                }
+                if reasoning {
+                    stages.push("reasoning");
+                }
+            }
+            FileType::Media => {
+                // Média : transcription et/ou description visuelle, puis
+                // qualification reasoning, puis embedding.
+                kind = "média";
+                if cfg.transcription.enabled || cfg.video.enabled {
+                    stages.push("media");
                 }
                 if reasoning {
                     stages.push("reasoning");
@@ -462,7 +475,8 @@ async fn index_textual(
         return index_context_only(state, path, mtime, "vide").await;
     }
 
-    store_text_document(state, path, mtime, &effective, &hash, &doc_type).await
+    store_text_document(state, path, mtime, &effective, &hash, &doc_type, cfg.indexing.qualify_documents)
+        .await
 }
 
 /// Prépare un document textuel : chunk → qualification LLM → textes à vectoriser.
@@ -473,6 +487,10 @@ async fn store_text_document(
     text: &str,
     hash: &str,
     doc_type: &str,
+    // Toggle de qualification correspondant au type de contenu : `qualify_documents`
+    // pour un document, `qualify_media` pour une transcription. Passé par l'appelant
+    // plutôt que déduit de `doc_type`, pour que le réglage reste lisible ici.
+    qualify: bool,
 ) -> anyhow::Result<Option<Pending>> {
     let cfg = state.config.snapshot();
     let mut chunks = Chunker::slice_text(text, cfg.indexing.chunk_size, cfg.indexing.overlap);
@@ -497,8 +515,7 @@ async fn store_text_document(
     // « Sens » du document : une VRAIE qualification par le LLM (CE QUE C'EST + points-clés),
     // pas un simple extrait. Conditionnée au toggle documents ; repli sur un extrait si off,
     // reasoning indisponible, ou texte trop court.
-    let summary =
-        qualify_or_excerpt(state, &cfg, path, doc_type, text, cfg.indexing.qualify_documents).await;
+    let summary = qualify_or_excerpt(state, &cfg, path, doc_type, text, qualify).await;
 
     // TEXTE STOCKÉ : brut (snippets/BM25/rerank propres). Le 1er chunk porte en plus la
     // qualification complète, ce qui la rend cherchable AUSSI par mots-clés (BM25) —
@@ -675,7 +692,8 @@ async fn index_unknown(
             .await
             .unwrap_or_default();
         if !full.trim().is_empty() {
-            return store_text_document(state, path, mtime, full.trim(), &hash, "texte").await;
+            return store_text_document(state, path, mtime, full.trim(), &hash, "texte", cfg.indexing.qualify_documents)
+                .await;
         }
     }
 
@@ -683,7 +701,10 @@ async fn index_unknown(
     if ratio >= 0.30 && cfg.reasoning.enabled {
         let sample_text = String::from_utf8_lossy(&sample);
         if let Some(extracted) = llm_try_extract(state, path, &sample_text).await {
-            return store_text_document(state, path, mtime, &extracted, &hash, "llm-extrait").await;
+            return store_text_document(
+                state, path, mtime, &extracted, &hash, "llm-extrait", cfg.indexing.qualify_documents,
+            )
+            .await;
         }
     }
 
@@ -791,7 +812,7 @@ async fn index_image(
     let caption = match state.ai.vision_client().describe_image(&b64, &mime, prompt).await {
         Ok(c) => c,
         // Échec définitif (image/format/modèle) : inutile d'insister, repli contextuel.
-        Err(VisionError::Permanent(e)) => {
+        Err(AiCallError::Permanent(e)) => {
             tracing::warn!("vision impossible pour {path} ({e}), repli contextuel");
             return index_context_only(state, path, mtime, "image").await;
         }
@@ -799,7 +820,7 @@ async fn index_image(
         // erreur pour que le worker re-mette l'image en file — tant qu'il reste des
         // tentatives. À la dernière seulement, repli contextuel pour ne pas laisser
         // l'image sans aucun sens plutôt que de l'abandonner (failed_permanent).
-        Err(VisionError::Transient(e)) => {
+        Err(AiCallError::Transient(e)) => {
             if retry_count + 1 < MAX_RETRIES {
                 return Err(anyhow::anyhow!(
                     "vision indisponible (tentative {}/{}) : {}",
@@ -839,6 +860,196 @@ async fn index_image(
         embed: vec![semantic_text],
         log: format!("🖼️ image décrite et indexée : {path}"),
     }))
+}
+
+/// Extensions de conteneurs vidéo, utilisées UNIQUEMENT en repli quand la
+/// détection par magic bytes échoue. Ce n'est pas une liste d'autorisation :
+/// elle ne sert qu'à décider s'il vaut la peine de tenter une description
+/// visuelle en plus de la transcription.
+const EXTENSIONS_VIDEO: &[&str] = &[
+    "mp4", "m4v", "mkv", "avi", "mov", "webm", "wmv", "mpeg", "mpg", "3gp", "flv", "ogv", "mts",
+    "m2ts", "ts", "vob", "asf", "rm", "rmvb", "divx", "f4v",
+];
+
+/// Vrai si le fichier est un conteneur vidéo, d'après son type MIME puis, à
+/// défaut, son extension.
+fn est_video(mime: &str, ext: &str) -> bool {
+    mime.starts_with("video/") || EXTENSIONS_VIDEO.contains(&ext)
+}
+
+/// Vrai si la taille dépasse le plafond configuré. `0` = aucun plafond.
+fn au_dessus_du_plafond(taille: u64, plafond_mo: u64) -> bool {
+    plafond_mo > 0 && taille > plafond_mo * 1024 * 1024
+}
+
+/// Indexation d'un média audio/vidéo.
+///
+/// Deux sources de sens, complémentaires et indépendamment activables :
+///   * la **transcription** de la parole (`/audio/transcriptions`) ;
+///   * la **description visuelle** de l'image, pour les vidéos, via un modèle
+///     multimodal (`/chat/completions` avec une part `video_url`).
+///
+/// L'app ne présume RIEN du format : tout fichier routé ici est envoyé tel quel,
+/// et c'est le serveur configuré qui accepte ou refuse. Un refus est un échec
+/// définitif, traité comme tel — le fichier retombe alors sur son contexte au
+/// lieu de bloquer l'indexation.
+///
+/// Le résultat passe par [`store_text_document`] : découpage, qualification, BM25
+/// et contextual retrieval. Un enregistrement devient ainsi cherchable sur
+/// n'importe lequel de ses passages, et pas seulement sur son résumé.
+async fn index_media(
+    state: &AppState,
+    path: &str,
+    mtime: i64,
+    retry_count: i64,
+) -> anyhow::Result<Option<Pending>> {
+    let cfg = state.config.snapshot();
+    if !cfg.transcription.enabled && !cfg.video.enabled {
+        return index_context_only(state, path, mtime, "média").await;
+    }
+
+    // Empreinte calculée EN FLUX (`hash_file` lit par blocs de 16 Ko) : un média de
+    // plusieurs Go ne passe jamais entièrement en mémoire.
+    let path_owned = path.to_string();
+    let hash = match tokio::task::spawn_blocking(move || hash_file(&path_owned)).await {
+        Ok(Ok(h)) => h,
+        Ok(Err(e)) => {
+            tracing::warn!("lecture impossible pour {path} ({e}), repli contextuel");
+            return index_context_only(state, path, mtime, "média").await;
+        }
+        Err(e) => {
+            tracing::warn!("hachage interrompu pour {path} ({e}), repli contextuel");
+            return index_context_only(state, path, mtime, "média").await;
+        }
+    };
+
+    // Média inchangé : transcrire est l'appel le plus coûteux de l'indexation, on ne
+    // le refait pas pour un contenu identique.
+    if let Ok(Some(stored)) = state.db.get_stored_hash(path) {
+        if stored == hash {
+            tracing::debug!("média inchangé, traitement ignoré : {path}");
+            let _ = state.db.mark_indexed(path, mtime);
+            return Ok(None);
+        }
+    }
+
+    let taille = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let file_name = Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "media".to_string());
+    // Le serveur se sert du type MIME pour choisir son démuxeur. On le devine, sans
+    // en faire une condition : un type inconnu part quand même.
+    let mime = infer::get_from_path(path)
+        .ok()
+        .flatten()
+        .map(|k| k.mime_type().to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let video = est_video(&mime, &ext);
+
+    let mut morceaux: Vec<String> = Vec::new();
+    // Un échec passager mémorisé : il ne vaut la peine de re-tenter que si l'on n'a
+    // RIEN obtenu par ailleurs.
+    let mut passager: Option<String> = None;
+
+    // ---- 1) Description visuelle (vidéos seulement) -------------------------
+    if cfg.video.enabled && video {
+        if au_dessus_du_plafond(taille, cfg.video.max_file_mb) {
+            tracing::info!(
+                "🎬 {path} : {} Mo au-dessus du plafond de description vidéo ({} Mo), description ignorée",
+                taille / (1024 * 1024),
+                cfg.video.max_file_mb
+            );
+        } else {
+            let prompt = crate::config::prompt_or(
+                &cfg.prompts.video_describe,
+                crate::config::default_prompts::VIDEO_DESCRIBE,
+            );
+            match state.ai.video_client().describe(path, &mime, prompt).await {
+                Ok(d) if !d.trim().is_empty() => {
+                    tracing::info!("🎬 vidéo décrite : {path}");
+                    morceaux.push(format!("Description visuelle : {}", d.trim()));
+                }
+                Ok(_) => {}
+                Err(AiCallError::Permanent(e)) => {
+                    tracing::warn!("description vidéo refusée pour {path} ({e})");
+                }
+                Err(AiCallError::Transient(e)) => {
+                    passager = Some(format!("description vidéo : {e}"));
+                }
+            }
+        }
+    }
+
+    // ---- 2) Transcription de la parole --------------------------------------
+    if cfg.transcription.enabled {
+        if au_dessus_du_plafond(taille, cfg.transcription.max_file_mb) {
+            tracing::info!(
+                "🎧 {path} : {} Mo au-dessus du plafond de transcription ({} Mo), transcription ignorée",
+                taille / (1024 * 1024),
+                cfg.transcription.max_file_mb
+            );
+        } else {
+            match state
+                .ai
+                .transcription_client()
+                .transcribe(path, &file_name, &mime)
+                .await
+            {
+                Ok(t) if !t.trim().is_empty() => {
+                    tracing::info!("🎧 {} caractères transcrits : {path}", t.chars().count());
+                    morceaux.push(format!("Transcription : {}", t.trim()));
+                }
+                // Réponse vide : média sans parole (musique, ambiance, silence).
+                Ok(_) => {}
+                Err(AiCallError::Permanent(e)) => {
+                    tracing::warn!("transcription refusée pour {path} ({e})");
+                }
+                Err(AiCallError::Transient(e)) => {
+                    passager = Some(format!("transcription : {e}"));
+                }
+            }
+        }
+    }
+
+    // ---- 3) Bilan ------------------------------------------------------------
+    if morceaux.is_empty() {
+        // Rien obtenu ET une panne passagère : on re-tente tant qu'il reste des
+        // essais. Si l'on a obtenu quelque chose par ailleurs, on préfère l'indexer
+        // plutôt que de tout rejouer pour compléter.
+        if let Some(raison) = passager {
+            if retry_count + 1 < MAX_RETRIES {
+                return Err(anyhow::anyhow!(
+                    "serveur média indisponible (tentative {}/{}) : {}",
+                    retry_count + 1,
+                    MAX_RETRIES,
+                    raison
+                ));
+            }
+            tracing::warn!(
+                "serveur média toujours indisponible pour {path} après {} tentatives ({raison}), repli contextuel",
+                MAX_RETRIES
+            );
+        }
+        return index_context_only(state, path, mtime, "média").await;
+    }
+
+    let doc_type = if video { "video" } else { "audio" };
+    store_text_document(
+        state,
+        path,
+        mtime,
+        &morceaux.join("\n\n"),
+        &hash,
+        doc_type,
+        cfg.indexing.qualify_media,
+    )
+    .await
 }
 
 /// Indexation par le contexte seul : nom, dossier parent, extension, taille.

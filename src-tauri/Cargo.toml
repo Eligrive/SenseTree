@@ -28,7 +28,10 @@ r2d2_sqlite = "0.25"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs"] }
+# Televersement EN FLUX des medias : sans lui il faudrait charger un fichier de
+# plusieurs Go entierement en memoire avant de pouvoir l envoyer. Deja dans l arbre.
+tokio-util = { version = "0.7", features = ["io"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
@@ -68,7 +71,7 @@ fastembed = { version = "4", default-features = false, features = ["ort-load-dyn
 # ort en direct (même version que fastembed, load-dynamic partagé) pour pouvoir
 # demander le provider CUDA au runtime.
 ort = { version = "=2.0.0-rc.9", default-features = false }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "blocking", "multipart"] }
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"

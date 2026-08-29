@@ -16,6 +16,7 @@ import type { StageStats, Throughput } from "../lib/types";
 ///     un `fichiers/s` y serait trompeur.
 const LABELS: Record<string, { titre: string; unite: string }> = {
   vision: { titre: "Vision", unite: "img/s" },
+  media: { titre: "Média", unite: "médias/s" },
   reasoning: { titre: "Reasoning", unite: "appels/s" },
   embedding: { titre: "Embedding", unite: "chunks/s" },
 };

@@ -44,6 +44,7 @@ export interface IndexingConfig {
   qualify_documents: boolean;
   qualify_images: boolean;
   qualify_context: boolean;
+  qualify_media: boolean;
   /// Effort de raisonnement des QUALIFICATIONS d'indexation (défaut : `none`).
   qualify_effort: ReasoningEffort;
   pipeline_mode: PipelineMode;
@@ -53,7 +54,7 @@ export interface IndexingConfig {
 
 /// Débit d'un étage IA. `null` = pas encore mesuré (à ne pas confondre avec zéro).
 export interface StageStats {
-  stage: "vision" | "reasoning" | "embedding";
+  stage: "vision" | "media" | "reasoning" | "embedding";
   ops: number; // appels au modèle
   units: number; // fichiers (vision/reasoning) ou chunks (embedding)
   bytes: number;
@@ -88,6 +89,7 @@ export interface PromptsConfig {
   file_extract: string;
   vision_caption: string;
   vision_ocr: string;
+  video_describe: string;
   chat_system: string;
   reorganize: string;
 }
@@ -109,10 +111,60 @@ export interface McpServerConfig {
   enabled: boolean;
 }
 
+/// Endpoint de transcription audio/vidéo (`POST {base_url}{endpoint_path}`, en
+/// multipart). Séparé du chat : ce n'est pas la même forme d'API.
+///
+/// Tout ce qui varie d'un serveur à l'autre est réglable, pour que l'app n'ait
+/// aucune hypothèse codée en dur. Attention : Ollama n'expose PAS cet endpoint.
+export interface TranscriptionConfig {
+  base_url: string;
+  model: string;
+  api_key: string;
+  enabled: boolean;
+  /// Code ISO-639-1 (`fr`, `en`…). Vide = détection automatique par le serveur.
+  language: string;
+  /// Plafond de taille du média, en Mo. `0` = sans limite (défaut) : l'envoi se
+  /// fait en flux, la taille n'est donc pas bornée par la mémoire.
+  max_file_mb: number;
+  /// Chemin de l'endpoint, relatif à `base_url`.
+  endpoint_path: string;
+  /// Valeur de `response_format`. Vide = défaut du serveur.
+  response_format: string;
+  /// Champs multipart supplémentaires, en objet JSON `{"clé": "valeur"}`.
+  extra_fields: string;
+  /// Délai maximal d'un appel, en secondes.
+  timeout_secs: number;
+}
+
+/// Description VISUELLE d'une vidéo par un modèle multimodal : ce qu'on y voit,
+/// en complément de ce qui s'y dit. Passe par `/chat/completions` avec une part
+/// `video_url` (convention vLLM / passerelles compatibles OpenAI).
+/// Comment la vidéo parvient au serveur.
+/// - `base64` : data-URL dans le corps JSON, universel. Le corps est streamé,
+///   la vidéo n'est donc jamais chargée en mémoire.
+/// - `file_uri` : le serveur va chercher le fichier lui-même. Rien ne transite,
+///   mais il doit voir le même système de fichiers.
+export type VideoDelivery = "base64" | "file_uri";
+
+export interface VideoConfig {
+  base_url: string;
+  model: string;
+  api_key: string;
+  enabled: boolean;
+  endpoint_path: string;
+  delivery: VideoDelivery;
+  /// Plafond de taille, en Mo. `0` = sans limite (défaut) : ce chemin est
+  /// streamé comme la transcription, la taille n'est pas bornée par la mémoire.
+  max_file_mb: number;
+  timeout_secs: number;
+}
+
 export interface AppConfig {
   embedding: EmbeddingConfig;
   reasoning: ChatConfig;
   vision: ChatConfig;
+  transcription: TranscriptionConfig;
+  video: VideoConfig;
   indexing: IndexingConfig;
   retrieval: RetrievalConfig;
   mcp_servers: McpServerConfig[];

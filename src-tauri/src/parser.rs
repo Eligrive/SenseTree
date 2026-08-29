@@ -7,6 +7,7 @@ pub enum FileType {
     Text,               // Code source, Markdown, TXT -> Extraction directe
     Document,           // PDF, Word -> Extracteur de doc
     Image,              // PNG, JPG -> Module de Vision
+    Media,              // MP3, MP4 -> Module de Transcription
     RequiresAIRouting,  // 🤖 C'est ici que ton LLM interviendra !
     Ignored,            // Poubelle (node_modules, etc.)
 }
@@ -63,6 +64,11 @@ impl Parser {
                 if mime.starts_with("image/") {
                     return FileType::Image;
                 }
+                // Filet pour les conteneurs à l'extension inconnue ou absente :
+                // `infer` les reconnaît à leurs magic bytes.
+                if mime.starts_with("audio/") || mime.starts_with("video/") {
+                    return FileType::Media;
+                }
                 if mime == "application/pdf" || mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
                     return FileType::Document;
                 }
@@ -95,6 +101,22 @@ impl Parser {
             "pdf" | "docx" | "pptx" | "xlsx" => Some(FileType::Document),
             // Images raster gérées par la vision.
             "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" => Some(FileType::Image),
+            // Audio et vidéo : TOUS les conteneurs, sans exception. L'app ne
+            // décide pas de ce que le serveur sait lire — elle envoie, et c'est le
+            // serveur configuré qui accepte ou refuse. Un refus retombe sur
+            // l'indexation par contexte (voir `worker::index_media`).
+            "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "oga" | "opus" | "wma"
+            | "aiff" | "aif" | "alac" | "amr" | "ape" | "au" | "caf" | "dsf" | "mka"
+            | "mpga" | "ra" | "voc" | "wv"
+            | "mp4" | "m4v" | "mkv" | "avi" | "mov" | "webm" | "wmv" | "mpeg" | "mpg"
+            | "3gp" | "3g2" | "asf" | "divx" | "f4v" | "flv" | "m2ts" | "mts" | "mxf"
+            | "ogv" | "rm" | "rmvb" | "vob" => Some(FileType::Media),
+            // ".ts" est volontairement ABSENT : c'est aussi l'extension de
+            // TypeScript, infiniment plus fréquente ici qu'un flux MPEG-TS.
+            // Envoyer du code source à un serveur de transcription serait bien
+            // pire que rater un rare .ts vidéo, que les magic bytes rattrapent
+            // de toute façon (infer le voit en video/mp2t) s'il n'a pas
+            // d'extension trompeuse.
             // Texte / code / données lisibles → extraction directe.
             "txt" | "md" | "markdown" | "rst" | "csv" | "tsv" | "log" | "json" | "toml"
             | "yaml" | "yml" | "xml" | "html" | "htm" | "css" | "scss" | "ini" | "cfg"
@@ -151,6 +173,24 @@ mod tests {
         assert_eq!(Parser::route_by_extension(""), None);
         // Format binaire non extractible → laissé aux magic bytes (contexte).
         assert_eq!(Parser::route_by_extension("psd"), None);
+    }
+
+    #[test]
+    fn audio_et_video_vont_a_la_transcription() {
+        assert_eq!(Parser::route_by_extension("mp3"), Some(FileType::Media));
+        assert_eq!(Parser::route_by_extension("mp4"), Some(FileType::Media));
+        assert_eq!(Parser::route_by_extension("wav"), Some(FileType::Media));
+        // Conteneurs qu'aucune API hébergée n'accepte : routés quand même, car
+        // c'est le serveur de l'utilisateur qui décide, pas nous.
+        assert_eq!(Parser::route_by_extension("mkv"), Some(FileType::Media));
+        assert_eq!(Parser::route_by_extension("mov"), Some(FileType::Media));
+        assert_eq!(Parser::route_by_extension("avi"), Some(FileType::Media));
+        assert_eq!(Parser::route_by_extension("flv"), Some(FileType::Media));
+        assert_eq!(Parser::route_by_extension("opus"), Some(FileType::Media));
+        // `webm` est un conteneur vidéo ET un format accepté : il ne doit pas
+        // basculer du côté image malgré sa parenté avec `webp`.
+        assert_eq!(Parser::route_by_extension("webm"), Some(FileType::Media));
+        assert_eq!(Parser::route_by_extension("webp"), Some(FileType::Image));
     }
 
     #[test]

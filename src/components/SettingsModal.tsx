@@ -18,6 +18,9 @@ import {
 import type {
   AppConfig,
   ChatConfig,
+  TranscriptionConfig,
+  VideoConfig,
+  VideoDelivery,
   LocalModelStatus,
   ReasoningEffort,
   MemoryItem,
@@ -30,6 +33,7 @@ import {
   agentMemoryClear,
   agentMemoryDelete,
   agentMemoryList,
+  appVersion,
   deleteModel,
   downloadLocalModel,
   getConfig,
@@ -181,6 +185,7 @@ const PROMPT_FIELDS: { key: keyof PromptsConfig; label: string; rows: number }[]
   { key: "file_extract", label: "Extraction d'un fichier de type inconnu", rows: 4 },
   { key: "vision_caption", label: "Légende d'image (vision)", rows: 3 },
   { key: "vision_ocr", label: "OCR d'image (vision)", rows: 2 },
+  { key: "video_describe", label: "Description d'une vidéo (ce qu'on y voit)", rows: 3 },
   { key: "chat_system", label: "Assistant de chat (RAG + actions)", rows: 7 },
   { key: "reorganize", label: "Planificateur de réorganisation", rows: 4 },
 ];
@@ -205,6 +210,9 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   >({});
 
   const [gpuSupported, setGpuSupported] = useState(false);
+  // Version installée, affichée dans l'en-tête : sans elle, impossible de savoir
+  // quelle version tourne ni de rapporter un bug de façon exploitable.
+  const [version, setVersion] = useState("");
   const [defaultPrompts, setDefaultPrompts] = useState<PromptsConfig | null>(null);
   const [showPrompts, setShowPrompts] = useState(false);
   // Modèles locaux (fastembed) et leur état de téléchargement.
@@ -225,6 +233,7 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
     if (open) {
       getConfig().then(setCfg).catch(() => setCfg(null));
       gpuAvailable().then(setGpuSupported).catch(() => setGpuSupported(false));
+      appVersion().then(setVersion).catch(() => setVersion(""));
       getDefaultPrompts().then(setDefaultPrompts).catch(() => setDefaultPrompts(null));
       refreshLocalModels();
       refreshMemories();
@@ -301,6 +310,12 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
 
   const patchChat = (key: "reasoning" | "vision", patch: Partial<ChatConfig>) =>
     setCfg({ ...cfg, [key]: { ...cfg[key], ...patch } });
+
+  const patchTranscription = (patch: Partial<TranscriptionConfig>) =>
+    setCfg({ ...cfg, transcription: { ...cfg.transcription, ...patch } });
+
+  const patchVideo = (patch: Partial<VideoConfig>) =>
+    setCfg({ ...cfg, video: { ...cfg.video, ...patch } });
 
   const patchPrompt = (key: keyof PromptsConfig, value: string) =>
     setCfg({ ...cfg, prompts: { ...cfg.prompts, [key]: value } });
@@ -611,11 +626,271 @@ Le modèle devra être re-téléchargé pour être réutilisé.`)) {
     );
   };
 
+  // Sections dédiées plutôt que `chatSection` : ni l'une ni l'autre n'est un
+  // endpoint de chat classique. Pas d'effort de raisonnement, et surtout pas de
+  // catalogue Ollama — Ollama ne sert aucun de ces deux usages.
+  const transcriptionSection = () => (
+    <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-zinc-200">Transcription (audio / vidéo)</h3>
+        <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+          <input
+            type="checkbox"
+            checked={cfg.transcription.enabled}
+            onChange={(e) => patchTranscription({ enabled: e.target.checked })}
+          />
+          Activé
+        </label>
+      </div>
+      <p className="text-xs leading-relaxed text-zinc-500">
+        Les fichiers audio et vidéo sont envoyés <strong>tels quels</strong>, quel que soit leur
+        format et leur taille, à un serveur compatible{" "}
+        <code className="text-zinc-400">/audio/transcriptions</code> (whisper.cpp, speaches,
+        LocalAI, vLLM, OpenAI, Groq…). C'est <em>ton</em> serveur qui accepte ou refuse ; un refus
+        fait simplement retomber le fichier sur son contexte. La transcription obtenue est ensuite
+        découpée et indexée comme un document.{" "}
+        <strong>Ollama ne fait pas de transcription</strong> — il faut un serveur dédié.
+      </p>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="URL du serveur (base)">
+          <input
+            className={inputCls}
+            value={cfg.transcription.base_url}
+            onChange={(e) => patchTranscription({ base_url: e.target.value })}
+            placeholder="http://localhost:8000/v1"
+          />
+          <span className="mt-1 block text-[11px] text-zinc-500">
+            speaches : port 8000 · whisper.cpp : port 8080
+          </span>
+        </Field>
+        <Field label="Modèle">
+          <input
+            className={inputCls}
+            value={cfg.transcription.model}
+            onChange={(e) => patchTranscription({ model: e.target.value })}
+            placeholder="Systran/faster-whisper-large-v3"
+          />
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Langue">
+          <input
+            className={inputCls}
+            value={cfg.transcription.language}
+            onChange={(e) => patchTranscription({ language: e.target.value })}
+            placeholder="vide = détection automatique"
+            title="Code ISO-639-1 (fr, en…). Le préciser améliore nettement la qualité et la vitesse sur un corpus monolingue."
+          />
+        </Field>
+        <Field label="Clé API (optionnelle)">
+          <input
+            className={inputCls}
+            type="password"
+            value={cfg.transcription.api_key}
+            onChange={(e) => patchTranscription({ api_key: e.target.value })}
+            placeholder="vide pour un serveur local"
+          />
+        </Field>
+      </div>
+
+      <details className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+        <summary className="cursor-pointer text-xs font-medium text-zinc-400">
+          Format des requêtes (avancé)
+        </summary>
+        <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+          À ne toucher que si ton serveur s'écarte de la convention. Ces réglages existent pour
+          que l'app n'ait aucune hypothèse codée en dur sur lui.
+        </p>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <Field label="Chemin de l'endpoint">
+            <input
+              className={inputCls}
+              value={cfg.transcription.endpoint_path}
+              onChange={(e) => patchTranscription({ endpoint_path: e.target.value })}
+              placeholder="/audio/transcriptions"
+            />
+          </Field>
+          <Field label="response_format">
+            <input
+              className={inputCls}
+              value={cfg.transcription.response_format}
+              onChange={(e) => patchTranscription({ response_format: e.target.value })}
+              placeholder="vide = défaut du serveur"
+              title="text, json, verbose_json, srt… selon ce que ton serveur accepte."
+            />
+          </Field>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <Field label="Taille max du média (Mo)">
+            <input
+              className={inputCls}
+              type="number"
+              min={0}
+              value={cfg.transcription.max_file_mb}
+              onChange={(e) =>
+                patchTranscription({ max_file_mb: Math.max(0, Number(e.target.value) || 0) })
+              }
+              title="0 = sans limite. L'envoi se fait en flux, la taille n'est donc pas bornée par la mémoire."
+            />
+            <span className="mt-1 block text-[11px] text-zinc-500">
+              {cfg.transcription.max_file_mb === 0
+                ? "sans limite — envoi en flux"
+                : "au-delà : indexation par contexte seul"}
+            </span>
+          </Field>
+          <Field label="Délai maximal (secondes)">
+            <input
+              className={inputCls}
+              type="number"
+              min={1}
+              value={cfg.transcription.timeout_secs}
+              onChange={(e) =>
+                patchTranscription({ timeout_secs: Math.max(1, Number(e.target.value) || 1) })
+              }
+              title="Un Whisper local sur CPU transcrit souvent moins vite que le temps réel."
+            />
+          </Field>
+        </div>
+        <div className="mt-3">
+          <Field label="Champs supplémentaires (JSON)">
+            <textarea
+              className={`${inputCls} font-mono`}
+              rows={2}
+              value={cfg.transcription.extra_fields}
+              onChange={(e) => patchTranscription({ extra_fields: e.target.value })}
+              placeholder={'{"temperature": "0"}'}
+            />
+            <span className="mt-1 block text-[11px] text-zinc-500">
+              Ajoutés au multipart. Un JSON invalide est ignoré, jamais bloquant.
+            </span>
+          </Field>
+        </div>
+      </details>
+    </section>
+  );
+
+  const videoSection = () => (
+    <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-zinc-200">Description vidéo (image)</h3>
+        <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+          <input
+            type="checkbox"
+            checked={cfg.video.enabled}
+            onChange={(e) => patchVideo({ enabled: e.target.checked })}
+          />
+          Activé
+        </label>
+      </div>
+      <p className="text-xs leading-relaxed text-zinc-500">
+        Complète la transcription : celle-ci dit ce qui se <em>dit</em>, celle-là décrit ce qu'on{" "}
+        <em>voit</em>. Les deux sont combinées dans le sens du fichier, et chacune s'active
+        indépendamment. Nécessite un serveur multimodal sachant lire une vidéo — vLLM servant un
+        modèle type Qwen-VL, ou une passerelle compatible. La vidéo est envoyée en{" "}
+        <code className="text-zinc-400">video_url</code> sur{" "}
+        <code className="text-zinc-400">/chat/completions</code>.
+      </p>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="URL du serveur (base)">
+          <input
+            className={inputCls}
+            value={cfg.video.base_url}
+            onChange={(e) => patchVideo({ base_url: e.target.value })}
+            placeholder="http://localhost:8000/v1"
+          />
+        </Field>
+        <Field label="Modèle">
+          <input
+            className={inputCls}
+            value={cfg.video.model}
+            onChange={(e) => patchVideo({ model: e.target.value })}
+            placeholder="Qwen/Qwen2.5-VL-7B-Instruct"
+          />
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Clé API (optionnelle)">
+          <input
+            className={inputCls}
+            type="password"
+            value={cfg.video.api_key}
+            onChange={(e) => patchVideo({ api_key: e.target.value })}
+            placeholder="vide pour un serveur local"
+          />
+        </Field>
+        <Field label="Transmission de la vidéo">
+          <select
+            className={inputCls}
+            value={cfg.video.delivery}
+            onChange={(e) => patchVideo({ delivery: e.target.value as VideoDelivery })}
+          >
+            <option value="base64">Envoyer la vidéo (base64) — universel</option>
+            <option value="file_uri">Chemin du fichier (file://) — serveur local</option>
+          </select>
+          <span className="mt-1 block text-[11px] text-zinc-500">
+            {cfg.video.delivery === "file_uri"
+              ? "Rien ne transite : le serveur ouvre le fichier lui-même. Il doit voir le même disque et l'autoriser."
+              : "Envoi en flux : la vidéo n'est jamais chargée en mémoire, quelle que soit sa taille."}
+          </span>
+        </Field>
+      </div>
+      <details className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+        <summary className="cursor-pointer text-xs font-medium text-zinc-400">
+          Format des requêtes (avancé)
+        </summary>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <Field label="Chemin de l'endpoint">
+            <input
+              className={inputCls}
+              value={cfg.video.endpoint_path}
+              onChange={(e) => patchVideo({ endpoint_path: e.target.value })}
+              placeholder="/chat/completions"
+            />
+          </Field>
+          <Field label="Délai maximal (secondes)">
+            <input
+              className={inputCls}
+              type="number"
+              min={1}
+              value={cfg.video.timeout_secs}
+              onChange={(e) => patchVideo({ timeout_secs: Math.max(1, Number(e.target.value) || 1) })}
+            />
+          </Field>
+          <Field label="Taille max de la vidéo (Mo)">
+            <input
+              className={inputCls}
+              type="number"
+              min={0}
+              value={cfg.video.max_file_mb}
+              onChange={(e) => patchVideo({ max_file_mb: Math.max(0, Number(e.target.value) || 0) })}
+              title="0 = sans limite. L'envoi se fait en flux, la taille n'est pas bornée par la mémoire."
+            />
+            <span className="mt-1 block text-[11px] text-zinc-500">
+              {cfg.video.max_file_mb === 0
+                ? "sans limite"
+                : "au-delà : description ignorée, transcription seule"}
+            </span>
+          </Field>
+        </div>
+      </details>
+    </section>
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
       <div className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl">
         <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-3.5">
-          <h2 className="text-base font-semibold text-zinc-100">Paramètres</h2>
+          <div className="flex items-baseline gap-2">
+            <h2 className="text-base font-semibold text-zinc-100">Paramètres</h2>
+            {version && (
+              <span
+                className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[11px] text-zinc-400"
+                title="Version installée de SenseTree"
+              >
+                v{version}
+              </span>
+            )}
+          </div>
           <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300">
             <X size={18} />
           </button>
@@ -911,6 +1186,8 @@ Le modèle devra être re-téléchargé pour être réutilisé.`)) {
 
           {chatSection("reasoning", "Reasoning / Chat")}
           {chatSection("vision", "Vision (multimodal)")}
+          {transcriptionSection()}
+          {videoSection()}
 
           {/* Ordonnancement du pipeline : séquentiel vs par tranches */}
           <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
@@ -1034,6 +1311,7 @@ Le modèle devra être re-téléchargé pour être réutilisé.`)) {
               [
                 ["qualify_documents", "Documents (PDF, Word, texte, code)"],
                 ["qualify_images", "Images (en plus de la légende vision)"],
+                ["qualify_media", "Audio / vidéo (en plus de la transcription)"],
                 ["qualify_context", "Fichiers illisibles (devinette par contexte)"],
               ] as const
             ).map(([key, label]) => (

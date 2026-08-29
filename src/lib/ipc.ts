@@ -40,6 +40,9 @@ export const setConfig = (config: AppConfig) => invoke<void>("set_config", { con
 export const getDefaultPrompts = () => invoke<PromptsConfig>("get_default_prompts");
 export const aiHealth = () => invoke<HealthReport>("ai_health");
 export const gpuAvailable = () => invoke<boolean>("gpu_available");
+
+/// Version de l'app en cours d'exécution (source : Cargo.toml).
+export const appVersion = () => invoke<string>("app_version");
 export const testChatEndpoint = (baseUrl: string, apiKey: string, model: string) =>
   invoke<string>("test_chat_endpoint", { baseUrl, apiKey, model });
 export const testEmbeddingEndpoint = (baseUrl: string, apiKey: string, model: string) =>

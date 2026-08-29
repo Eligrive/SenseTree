@@ -12,7 +12,7 @@ quittent jamais ta machine.
 
 | Capacité | Description |
 |---|---|
-| **Indexation sémantique** | Chaque fichier reçoit un vecteur de sens (embedding) calculé à partir de son **contenu** (texte, PDF, DOCX, image via vision) ou, à défaut, de son **contexte** (nom + dossier + type). |
+| **Indexation sémantique** | Chaque fichier reçoit un vecteur de sens (embedding) calculé à partir de son **contenu** (texte, PDF, DOCX, image via vision, audio/vidéo via transcription) ou, à défaut, de son **contexte** (nom + dossier + type). |
 | **Recherche sémantique** | Retrouver des fichiers par leur signification, pas par mots-clés exacts : « fichiers liés à mon voyage en Corée ». |
 | **Chat IA** | Poser des questions sur un dossier, ou demander un rangement en langage naturel. |
 | **Rangement assisté (Dry-Run)** | L'IA propose déplacements / renommages / suppressions. **Rien n'est appliqué sans ta validation explicite.** |
@@ -44,12 +44,19 @@ Disque ──▶ Crawler / Watchdog ─▶ File d'attente ─▶ Worker ─▶ E
    les fichiers dont l'existence est confirmée sur le disque sont renvoyés, triés
    par pertinence.
 
-Trois voies d'« extraction du sens » selon le fichier :
+Quatre voies d'« extraction du sens » selon le fichier :
 
 - **Textuelle** : PDF, DOCX, code, `.txt`, Markdown… → contenu réel.
 - **Visuelle** : images, et PDF scannés dont aucun texte n'est extractible —
   leurs pages sont alors dessinées puis soumises à un modèle de vision, qui
   en donne une description et en transcrit le texte (si activé).
+- **Média** : fichiers audio et vidéo, **tous formats et toutes tailles**. Ils
+  sont envoyés tels quels au serveur que tu as configuré, qui accepte ou refuse ;
+  un refus fait simplement retomber le fichier sur son contexte. Deux sources de
+  sens, activables séparément et combinées : la **transcription** de la parole,
+  et la **description visuelle** de l'image pour les vidéos (ce qu'on y voit, en
+  plus de ce qui s'y dit). Le résultat est découpé et indexé comme un document,
+  ce qui rend l'enregistrement cherchable sur n'importe lequel de ses passages.
 - **Contextuelle** : fichiers illisibles (machines virtuelles, binaires, gros
   fichiers) → indexés par leur nom, dossier et type. Ils restent donc trouvables.
 

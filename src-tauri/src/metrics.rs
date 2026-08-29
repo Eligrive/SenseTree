@@ -27,6 +27,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     Vision,
+    /// Traitement d'un média audio/vidéo : transcription de la parole et/ou
+    /// description visuelle. Les deux appels tapent le même étage, parce que
+    /// c'est le même goulot d'étranglement du point de vue de l'indexation.
+    Media,
     Reasoning,
     Embedding,
 }
@@ -35,6 +39,7 @@ impl Stage {
     fn label(self) -> &'static str {
         match self {
             Stage::Vision => "vision",
+            Stage::Media => "media",
             Stage::Reasoning => "reasoning",
             Stage::Embedding => "embedding",
         }
@@ -88,6 +93,7 @@ impl Counters {
 #[derive(Default)]
 pub struct Metrics {
     vision: Counters,
+    media: Counters,
     reasoning: Counters,
     embedding: Counters,
     /// Début de la fenêtre de mesure (unix), remis à zéro par [`reset`].
@@ -98,6 +104,7 @@ impl Metrics {
     fn stage(&self, s: Stage) -> &Counters {
         match s {
             Stage::Vision => &self.vision,
+            Stage::Media => &self.media,
             Stage::Reasoning => &self.reasoning,
             Stage::Embedding => &self.embedding,
         }
@@ -134,7 +141,7 @@ pub fn record_error(stage: Stage) {
 /// Remet les compteurs à zéro (pour mesurer une indexation précise).
 pub fn reset() {
     let m = metrics();
-    for s in [Stage::Vision, Stage::Reasoning, Stage::Embedding] {
+    for s in [Stage::Vision, Stage::Media, Stage::Reasoning, Stage::Embedding] {
         let c = m.stage(s);
         c.ops.store(0, Relaxed);
         c.nanos.store(0, Relaxed);
@@ -178,6 +185,7 @@ pub fn snapshot() -> Throughput {
         wall_seconds: now().saturating_sub(since) as f64,
         stages: vec![
             m.stage(Stage::Vision).snapshot(Stage::Vision),
+            m.stage(Stage::Media).snapshot(Stage::Media),
             m.stage(Stage::Reasoning).snapshot(Stage::Reasoning),
             m.stage(Stage::Embedding).snapshot(Stage::Embedding),
         ],
