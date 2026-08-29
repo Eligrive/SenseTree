@@ -1121,8 +1121,6 @@ fn extract_text(path: &str) -> anyhow::Result<String> {
     }
 }
 
-/// Extrait les images JPEG embarquées d'un PDF (cas des PDF scannés).
-/// On ne gère que le filtre DCTDecode : le flux brut EST un JPEG valide.
 /// Décompresse un flux `FlateDecode`. `None` si le flux n'est pas exploitable.
 ///
 /// Les PDF utilisent le format zlib (en-tête `78 xx`), mais certains producteurs
@@ -1140,6 +1138,12 @@ fn inflate(data: &[u8]) -> Option<Vec<u8>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// Extrait les images JPEG embarquées d'un PDF. **Repli** derrière
+/// [`render_pdf_pages`] : on ne s'en sert que sur un PDF que le moteur de rendu
+/// n'a pas su ouvrir, car une image embarquée n'est pas une page (voir la
+/// remarque sur les couches dans la doc de `render_pdf_pages`).
+///
+/// On ne gère que le filtre DCTDecode : le flux brut EST alors un JPEG valide.
 fn extract_pdf_images(path: &str, max: usize) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut doc = match lopdf::Document::load(path) {
@@ -1176,8 +1180,8 @@ fn extract_pdf_images(path: &str, max: usize) -> Vec<Vec<u8>> {
         };
         let Some(dernier) = filtres.last() else { continue };
         // On ne sait produire un fichier image valide que pour le JPEG. Les scans en
-        // CCITTFaxDecode / JBIG2 sont des flux de pixels bruts qu'il faudrait
-        // reconstruire — hors de portée ici, on les laisse de côté.
+        // CCITTFaxDecode / JBIG2 sont des flux de pixels bruts : c'est le rendu de
+        // page qui les traite, ce repli ne cherche pas à les reconstruire.
         if dernier.as_slice() != b"DCTDecode" {
             continue;
         }
@@ -1209,12 +1213,108 @@ fn extract_pdf_images(path: &str, max: usize) -> Vec<Vec<u8>> {
     out
 }
 
-/// OCR d'un PDF scanné : envoie ses images embarquées au modèle de vision.
-async fn ocr_pdf_via_vision(state: &AppState, path: &str) -> Option<String> {
-    let path_owned = path.to_string();
-    let images = tokio::task::spawn_blocking(move || extract_pdf_images(&path_owned, 8))
-        .await
+/// Nombre de pages soumises au modèle de vision. Au-delà, le coût grimpe sans
+/// rien apporter : un document long est identifié par ses premières pages.
+const MAX_PAGES_VISION: usize = 8;
+
+/// Résolution du rendu : ~1600 px sur le grand côté. En dessous, les petits
+/// caractères (mentions légales, MRZ d'un passeport) deviennent illisibles ;
+/// au-dessus, on paie des tokens pour du détail que le modèle n'exploite pas.
+const RENDU_GRAND_COTE: f32 = 1600.0;
+
+/// Qualité JPEG des pages rendues : au-delà le poids double sans gain visible.
+const RENDU_QUALITE_JPEG: u8 = 82;
+
+/// Rend en JPEG les `max` premières pages d'un PDF.
+///
+/// C'est la seule façon fiable de donner une PAGE au modèle de vision, car un
+/// scan n'est pas « une image par page ». Les scanners produisent couramment du
+/// MRC : la page est découpée en un JPEG de fond et plusieurs couches de texte
+/// en CCITTFaxDecode. Extraire les images embarquées ne rend alors que le fond
+/// — la photo et un décalque pâle, sans une seule ligne de texte net — ce qui
+/// laissait le modèle inventer une description à partir du nom du fichier.
+/// Dessiner la page compose les couches et couvre au passage les PDF en pixels
+/// bruts, en JBIG2, en JPEG2000 et les PDF purement vectoriels.
+fn render_pdf_pages(path: &str, max: usize) -> Vec<Vec<u8>> {
+    let Ok(data) = fs::read(path) else {
+        return Vec::new();
+    };
+    // `Pdf::new` essaie le mot de passe vide : les PDF « protégés » contre la
+    // copie, fréquents sur les documents officiels, s'ouvrent donc directement.
+    let Ok(pdf) = hayro::hayro_syntax::Pdf::new(data) else {
+        tracing::debug!("rendu PDF : document illisible par hayro ({path})");
+        return Vec::new();
+    };
+
+    let cache = hayro::RenderCache::new();
+    let interpretation = hayro::hayro_interpret::InterpreterSettings::default();
+    let mut out = Vec::new();
+    for page in pdf.pages().iter().take(max) {
+        // Une page malformée peut faire paniquer l'interpréteur. Sans ce
+        // garde-fou, elle emporterait l'OCR de tout le document.
+        let rendu = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (largeur, hauteur) = page.render_dimensions();
+            let echelle = (RENDU_GRAND_COTE / largeur.max(hauteur)).clamp(1.0, 4.0);
+            let settings = hayro::RenderSettings {
+                x_scale: echelle,
+                y_scale: echelle,
+                // Fond blanc : sur un fond transparent, l'abandon du canal alpha
+                // noircit la page entière et le modèle ne voit plus rien.
+                bg_color: hayro::vello_cpu::color::palette::css::WHITE,
+                ..Default::default()
+            };
+            hayro::render(page, &cache, &interpretation, &settings)
+        }));
+        let Ok(pixmap) = rendu else {
+            tracing::debug!("rendu PDF : page ignorée (panique de l'interpréteur) — {path}");
+            continue;
+        };
+        match encode_jpeg(pixmap) {
+            Some(jpeg) => out.push(jpeg),
+            None => tracing::debug!("rendu PDF : encodage JPEG impossible ({path})"),
+        }
+    }
+    out
+}
+
+/// Encode un pixmap en JPEG. Le canal alpha est écarté : le fond ayant été peint
+/// en blanc, il vaut 255 partout.
+fn encode_jpeg(pixmap: hayro::vello_cpu::Pixmap) -> Option<Vec<u8>> {
+    let (largeur, hauteur) = (pixmap.width() as u32, pixmap.height() as u32);
+    let rgb: Vec<u8> = pixmap
+        .take_unpremultiplied()
+        .iter()
+        .flat_map(|p| [p.r, p.g, p.b])
+        .collect();
+    let brute = image::RgbImage::from_raw(largeur, hauteur, rgb)?;
+    let mut jpeg = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, RENDU_QUALITE_JPEG)
+        .encode_image(&image::DynamicImage::ImageRgb8(brute))
         .ok()?;
+    Some(jpeg.into_inner())
+}
+
+/// Images à soumettre au modèle de vision, par ordre de préférence : le rendu
+/// des pages, puis — si le moteur n'a pas su ouvrir le document — les JPEG
+/// embarqués, qui valent toujours mieux que rien.
+async fn pages_pour_vision(path: &str) -> Vec<Vec<u8>> {
+    let path_owned = path.to_string();
+    let rendues = tokio::task::spawn_blocking(move || render_pdf_pages(&path_owned, MAX_PAGES_VISION))
+        .await
+        .unwrap_or_default();
+    if !rendues.is_empty() {
+        return rendues;
+    }
+    tracing::debug!("rendu PDF vide, repli sur les images embarquées : {path}");
+    let path_owned = path.to_string();
+    tokio::task::spawn_blocking(move || extract_pdf_images(&path_owned, MAX_PAGES_VISION))
+        .await
+        .unwrap_or_default()
+}
+
+/// OCR d'un PDF scanné : envoie ses pages au modèle de vision.
+async fn ocr_pdf_via_vision(state: &AppState, path: &str) -> Option<String> {
+    let images = pages_pour_vision(path).await;
     if images.is_empty() {
         return None;
     }
@@ -1226,7 +1326,7 @@ async fn ocr_pdf_via_vision(state: &AppState, path: &str) -> Option<String> {
     );
     let client = state.ai.vision_client();
     let mut pages = Vec::new();
-    for img in images.iter().take(8) {
+    for img in images.iter() {
         let b64 = base64::engine::general_purpose::STANDARD.encode(img);
         match client.describe_image(&b64, "image/jpeg", prompt).await {
             Ok(t) if !t.trim().is_empty() => pages.push(t),
@@ -1381,6 +1481,7 @@ mod tests {
     /// ```text
     /// PDF_DIAG="C:\chemin\vers\doc.pdf" cargo test --lib diag_images_pdf -- --ignored --nocapture
     /// ```
+    /// Ajouter `PDF_DIAG_OUT=<dossier>` pour écrire les pages rendues sur disque.
     #[test]
     #[ignore = "diagnostic manuel (PDF_DIAG)"]
     fn diag_images_pdf() {
@@ -1421,11 +1522,141 @@ mod tests {
             println!("objets image vus par lopdf : {images}");
             println!("filtres                    : {filtres:?}");
         }
-        let extraites = super::extract_pdf_images(&path, 8);
-        println!("images RETENUES par extract_pdf_images : {}", extraites.len());
+        let extraites = super::extract_pdf_images(&path, super::MAX_PAGES_VISION);
+        println!("images RETENUES par extract_pdf_images (repli) : {}", extraites.len());
         for (i, img) in extraites.iter().enumerate() {
             println!("  #{i} : {} octets", img.len());
         }
+
+        // Ce que le modèle de vision reçoit réellement depuis la correction.
+        let debut = std::time::Instant::now();
+        let rendues = super::render_pdf_pages(&path, super::MAX_PAGES_VISION);
+        println!(
+            "pages RENDUES par render_pdf_pages : {} (en {:?})",
+            rendues.len(),
+            debut.elapsed()
+        );
+        for (i, page) in rendues.iter().enumerate() {
+            println!("  page {i} : {} Ko JPEG", page.len() / 1024);
+        }
+        // `PDF_DIAG_OUT=<dossier>` écrit les pages rendues pour inspection visuelle.
+        if let Ok(dir) = std::env::var("PDF_DIAG_OUT") {
+            for (i, page) in rendues.iter().enumerate() {
+                let out = std::path::Path::new(&dir).join(format!("page{i}.jpg"));
+                std::fs::write(&out, page).expect("écriture de la page rendue");
+                println!("  écrit : {}", out.display());
+            }
+        }
+    }
+
+    /// Assemble un PDF minimal d'une page — un rectangle noir sur fond blanc —
+    /// avec une table xref correcte. Généré plutôt qu'embarqué : quatre objets
+    /// écrits ici se relisent mieux qu'un binaire opaque dans le dépôt.
+    fn pdf_minimal() -> Vec<u8> {
+        // Rectangle volontairement minoritaire dans la page : le fond blanc doit
+        // rester largement majoritaire pour que l'assertion sur l'alpha ait du sens.
+        let flux = "0 0 0 rg 20 20 100 40 re f";
+        let objets = [
+            "<</Type/Catalog/Pages 2 0 R>>".to_string(),
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_string(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<<>>/Contents 4 0 R>>"
+                .to_string(),
+            format!("<</Length {}>>stream
+{flux}
+endstream", flux.len()),
+        ];
+
+        let mut pdf = b"%PDF-1.4
+".to_vec();
+        let mut offsets = Vec::new();
+        for (i, corps) in objets.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj{corps}
+endobj
+", i + 1).as_bytes());
+        }
+
+        let debut_xref = pdf.len();
+        pdf.extend_from_slice(format!("xref
+0 {}
+", objets.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f 
+");
+        for offset in &offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n 
+").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer<</Size {}/Root 1 0 R>>
+startxref
+{debut_xref}
+%%EOF
+",
+                objets.len() + 1
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    /// Écrit `contenu` dans un fichier temporaire unique et renvoie son chemin.
+    fn fichier_temporaire(suffixe: &str, contenu: &[u8]) -> std::path::PathBuf {
+        let chemin = std::env::temp_dir().join(format!(
+            "sensetree-test-{}-{suffixe}.pdf",
+            std::process::id()
+        ));
+        std::fs::write(&chemin, contenu).expect("écriture du fichier temporaire");
+        chemin
+    }
+
+    #[test]
+    fn render_pdf_pages_dessine_la_page_entiere() {
+        let chemin = fichier_temporaire("rendu", &pdf_minimal());
+        let pages = super::render_pdf_pages(chemin.to_str().unwrap(), super::MAX_PAGES_VISION);
+        let _ = std::fs::remove_file(&chemin);
+
+        assert_eq!(pages.len(), 1, "une page attendue");
+        // Marqueur SOI : ce qui part vers le modèle de vision doit être un JPEG.
+        assert!(pages[0].starts_with(&[0xFF, 0xD8]), "ce n'est pas un JPEG");
+
+        let image = image::load_from_memory(&pages[0])
+            .expect("JPEG illisible")
+            .into_rgb8();
+        // Page de 200x100 pt : l'échelle voulue (8x) est bornée à 4x.
+        assert_eq!((image.width(), image.height()), (800, 400));
+
+        // Le rectangle doit être là — sinon on a rendu une page blanche, ce qui
+        // ramènerait le bug d'origine sous une autre forme.
+        let sombres = image.pixels().filter(|p| p.0[0] < 64).count();
+        assert!(sombres > 0, "page rendue vide : rien n'a été dessiné");
+        // …et le fond doit rester blanc : sans `bg_color`, l'abandon du canal
+        // alpha noircit toute la page.
+        let clairs = image.pixels().filter(|p| p.0[0] > 200).count();
+        assert!(clairs > sombres, "fond noirci : canal alpha mal traité");
+    }
+
+    #[test]
+    fn render_pdf_pages_rend_la_main_sur_un_document_illisible() {
+        // Le contrat compte : un rendu vide est ce qui déclenche le repli sur
+        // les images embarquées dans `pages_pour_vision`.
+        let chemin = fichier_temporaire("invalide", b"ceci n'est pas un PDF");
+        let pages = super::render_pdf_pages(chemin.to_str().unwrap(), super::MAX_PAGES_VISION);
+        let _ = std::fs::remove_file(&chemin);
+        assert!(pages.is_empty(), "un fichier invalide ne doit rien produire");
+
+        assert!(
+            super::render_pdf_pages("Z:/aucun-fichier.pdf", super::MAX_PAGES_VISION).is_empty(),
+            "un chemin inexistant ne doit rien produire"
+        );
+    }
+
+    #[test]
+    fn render_pdf_pages_respecte_le_plafond_de_pages() {
+        let chemin = fichier_temporaire("plafond", &pdf_minimal());
+        let pages = super::render_pdf_pages(chemin.to_str().unwrap(), 0);
+        let _ = std::fs::remove_file(&chemin);
+        assert!(pages.is_empty(), "max = 0 doit ne rien rendre");
     }
 
     use super::{strip_html, strip_xml_into, summary_of};

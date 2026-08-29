@@ -45,6 +45,20 @@ lopdf = "0.42"
 # l'arbre de dependances : aucun cout de compilation supplementaire.
 flate2 = "1"
 zip = "8.6.0"
+# Rendu des pages PDF en images. Un scan n'est PAS « une image par page » : ses
+# pages sont souvent decoupees en couches (un JPEG de fond + le texte en
+# CCITTFaxDecode/JBIG2), quand elles ne sont pas en pixels bruts ou vectorielles.
+# Extraire les images embarquees ne donne alors rien d'exploitable au modele de
+# vision ; il faut DESSINER la page. hayro le fait en Rust pur : aucun binaire
+# natif a livrer ni a telecharger, et tout son arbre est sous licence permissive
+# (MIT / Apache-2.0 / BSD-3 / Zlib), ce que la revente de l'app impose.
+hayro = "0.7"
+# hayro 0.7.1 depend de vello_cpu 0.0.8, que glifo 0.1.1 casse (signatures du
+# trait de rendu modifiees). A relever des que hayro publie une version alignee.
+glifo = "=0.1.0"
+# Encodage JPEG des pages rendues. Deja dans l'arbre de dependances : les
+# features demandees ici s'y ajoutent sans cout de compilation supplementaire.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 arrow-array = "59.0.0"
 arrow-schema = "59.0.0"
 futures-util = "0.3.32"

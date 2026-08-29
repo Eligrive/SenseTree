@@ -47,7 +47,9 @@ Disque ──▶ Crawler / Watchdog ─▶ File d'attente ─▶ Worker ─▶ E
 Trois voies d'« extraction du sens » selon le fichier :
 
 - **Textuelle** : PDF, DOCX, code, `.txt`, Markdown… → contenu réel.
-- **Visuelle** : images → un modèle de vision génère une description (si activé).
+- **Visuelle** : images, et PDF scannés dont aucun texte n'est extractible —
+  leurs pages sont alors dessinées puis soumises à un modèle de vision, qui
+  en donne une description et en transcrit le texte (si activé).
 - **Contextuelle** : fichiers illisibles (machines virtuelles, binaires, gros
   fichiers) → indexés par leur nom, dossier et type. Ils restent donc trouvables.
 
