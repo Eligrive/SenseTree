@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRight, Check, FolderPlus, Trash2, X } from "lucide-react";
+import { ArrowRight, Check, FolderPlus, Sparkles, Trash2, X } from "lucide-react";
 import type { ActionPlan, Operation } from "../lib/types";
 
 interface Props {
@@ -15,6 +15,25 @@ function shortName(p: string | null): string {
 }
 
 function OpRow({ op }: { op: Operation }) {
+  // Requalification : le fichier n'est pas touché, seule sa description change.
+  // On montre le texte proposé EN ENTIER — c'est lui que l'utilisateur valide, et
+  // le tronquer reviendrait à lui faire approuver ce qu'il n'a pas lu.
+  if (op.kind === "requalify") {
+    return (
+      <div className="space-y-1 text-xs">
+        <div className="flex items-center gap-2">
+          <Sparkles size={13} className="shrink-0 text-violet-400" />
+          <span className="truncate text-violet-300" title={op.old_path ?? ""}>
+            {shortName(op.old_path)}
+          </span>
+          <span className="shrink-0 text-[10px] text-zinc-600">sens corrigé</span>
+        </div>
+        <p className="rounded border border-violet-500/20 bg-violet-500/5 px-2 py-1 text-[11px] leading-relaxed text-zinc-300">
+          {op.new_summary}
+        </p>
+      </div>
+    );
+  }
   if (op.kind === "delete") {
     return (
       <div className="flex items-center gap-2 text-xs">

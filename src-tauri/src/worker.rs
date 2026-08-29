@@ -567,6 +567,14 @@ async fn qualify_or_excerpt(
     text: &str,
     allow: bool,
 ) -> String {
+    // Un sens ÉPINGLÉ a été corrigé par l'utilisateur : le régénérer reproduirait
+    // l'erreur qu'il vient justement de corriger. On le préserve — et le fichier est
+    // tout de même ré-embeddé avec, c'est ce qui rend la correction effective dans la
+    // RECHERCHE et pas seulement à l'affichage.
+    if let Ok(Some(epingle)) = state.db.summary_is_pinned(path) {
+        tracing::debug!("sens épinglé conservé pour {path}");
+        return epingle;
+    }
     let trimmed = text.trim();
     // Un extrait trop court n'a pas besoin d'un appel LLM (et n'apporterait rien).
     if allow && cfg.reasoning.enabled && trimmed.chars().count() >= 120 {

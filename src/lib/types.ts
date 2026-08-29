@@ -266,12 +266,17 @@ export interface PathDetails {
   file_count: number | null;
 }
 
-export type OpKind = "move" | "rename" | "delete" | "mkdir";
+/// `requalify` ne touche PAS au fichier : il corrige le « sens extrait » stocké.
+/// Comme le sens est embarqué dans les vecteurs, la correction déclenche une
+/// ré-indexation du fichier pour devenir effective dans la recherche.
+export type OpKind = "move" | "rename" | "delete" | "mkdir" | "requalify";
 
 export interface Operation {
   kind: OpKind;
   old_path: string | null;
   new_path: string | null;
+  /// Nouveau « sens », pour `requalify` uniquement.
+  new_summary: string | null;
   reason: string;
 }
 

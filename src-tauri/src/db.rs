@@ -227,6 +227,10 @@ impl Database {
         Self::add_column_if_missing(&conn, "indexing_queue", "retry_count", "INTEGER NOT NULL DEFAULT 0");
         Self::add_column_if_missing(&conn, "indexing_queue", "last_error", "TEXT");
         Self::add_column_if_missing(&conn, "file_semantics", "extract", "TEXT");
+        // Sens ÉPINGLÉ : corrigé par l'utilisateur (ou par l'agent avec son accord).
+        // Le worker doit le respecter au lieu de le régénérer, sinon chaque
+        // réindexation reproduirait l'erreur que l'utilisateur vient de corriger.
+        Self::add_column_if_missing(&conn, "file_semantics", "pinned", "INTEGER NOT NULL DEFAULT 0");
 
         // Réconciliation versionnée (auto-guérison).
         //
@@ -616,6 +620,49 @@ impl Database {
 
     /// Comme `upsert_file_summary`, mais stocke aussi le CONTENU EXTRAIT (`extract`),
     /// pour pouvoir l'afficher à côté de la qualification (« sens ») et le comparer au document.
+    /// Sens extraits des fichiers sous `parent` : `(chemin, sens, type)`.
+    ///
+    /// Sert à l'agent de chat pour VOIR les qualifications avant d'en proposer la
+    /// correction — sans ça, il corrigerait à l'aveugle. Le résultat est borné :
+    /// un dossier de milliers de fichiers saturerait le contexte du modèle.
+    pub fn list_semantics_under(
+        &self,
+        parent: &str,
+        recursive: bool,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String)>> {
+        let conn = self.conn()?;
+        // `_` est un joker LIKE et les chemins en sont pleins : sans échappement,
+        // `Mon_Dossier` matcherait aussi `MonXDossier`.
+        let prefixe = like_prefix(parent.trim_end_matches(['/', '\\']));
+        let mut stmt = conn.prepare(
+            "SELECT path, COALESCE(summary,''), COALESCE(doc_type,'') \
+             FROM file_semantics WHERE path LIKE ?1 ESCAPE '\\' ORDER BY path",
+        )?;
+        let base_len = parent.trim_end_matches(['/', '\\']).len();
+        let mut out = Vec::new();
+        let rows = stmt.query_map(params![prefixe], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        for row in rows {
+            let (path, summary, doc_type) = row?;
+            // `LIKE 'parent%'` attrape aussi les dossiers frères dont le nom commence
+            // pareil (`Admin` et `Administratif`) : on exige un séparateur juste après.
+            let reste = &path[base_len.min(path.len())..];
+            if !reste.starts_with('/') && !reste.starts_with('\\') {
+                continue;
+            }
+            if !recursive && reste[1..].contains(['/', '\\']) {
+                continue;
+            }
+            out.push((path, summary, doc_type));
+            if out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     pub fn upsert_file_semantics(
         &self,
         path: &str,
@@ -641,14 +688,38 @@ impl Database {
 
     /// Édition manuelle du « sens » d'un fichier (crée l'entrée si absente, sinon
     /// remplace juste le texte en conservant le type). Marque le type 'manuel' à la création.
+    /// Vrai si le sens de ce fichier a été corrigé à la main et doit être préservé.
+    pub fn summary_is_pinned(&self, path: &str) -> Result<Option<String>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(summary,'') FROM file_semantics WHERE path = ?1 AND pinned = 1",
+        )?;
+        let mut rows = stmt.query(params![path])?;
+        Ok(match rows.next()? {
+            Some(r) => {
+                let s: String = r.get(0)?;
+                if s.trim().is_empty() { None } else { Some(s) }
+            }
+            None => None,
+        })
+    }
+
+    /// Retire l'épinglage : le sens redeviendra régénérable par le LLM.
+    pub fn unpin_summary(&self, path: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE file_semantics SET pinned = 0 WHERE path = ?1", params![path])?;
+        Ok(())
+    }
+
     pub fn set_file_summary(&self, path: &str, summary: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
             r#"
-            INSERT INTO file_semantics (path, summary, doc_type, updated_at)
-            VALUES (?1, ?2, 'manuel', CURRENT_TIMESTAMP)
+            INSERT INTO file_semantics (path, summary, doc_type, pinned, updated_at)
+            VALUES (?1, ?2, 'manuel', 1, CURRENT_TIMESTAMP)
             ON CONFLICT(path) DO UPDATE SET
                 summary = excluded.summary,
+                pinned = 1,
                 updated_at = CURRENT_TIMESTAMP
             "#,
             params![path, summary],

@@ -31,6 +31,13 @@ pub enum OpKind {
     Rename,
     Delete,
     Mkdir,
+    /// Corrige le « sens extrait » d'un fichier (couche sémantique, pas le disque).
+    ///
+    /// Le fichier n'est PAS touché : seule la description stockée change. Comme tout
+    /// le reste, ça passe par le plan Dry-Run — l'utilisateur voit l'avant/après et
+    /// valide, car une qualification erronée écrase une qualification correcte aussi
+    /// facilement que l'inverse.
+    Requalify,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +47,9 @@ pub struct Operation {
     pub old_path: Option<String>,
     #[serde(default)]
     pub new_path: Option<String>,
+    /// Nouveau « sens » pour une opération `requalify`. Ignoré pour les autres.
+    #[serde(default)]
+    pub new_summary: Option<String>,
     #[serde(default)]
     pub reason: String,
 }
@@ -199,15 +209,59 @@ pub async fn apply_action_plan(
         }
     }
 
+    // --- Phase sémantique : corrections de « sens », après un disque cohérent. ---
+    //
+    // Le sens n'est pas qu'un affichage : il est EMBARQUÉ dans les vecteurs (premier
+    // chunk + préfixe de contextual retrieval). Le corriger en base sans ré-embedder
+    // laisserait la recherche matcher sur l'ancienne description, fausse. On épingle
+    // donc la correction puis on remet le fichier en file : il sera ré-extrait et
+    // ré-embeddé, et la qualification LLM respectera le sens épinglé au lieu de le
+    // régénérer.
+    let mut requalifies = 0usize;
+    let mut anciens: Vec<(String, Option<String>)> = Vec::new();
+    for op in ops.iter().filter(|o| o.kind == OpKind::Requalify) {
+        let path = match op.old_path.as_ref() {
+            Some(p) => p,
+            None => continue,
+        };
+        let nouveau = op.new_summary.as_deref().unwrap_or("").trim();
+        if nouveau.is_empty() {
+            continue;
+        }
+        let ancien = state.db.get_file_semantics(path).ok().flatten().map(|(s, _, _)| s);
+        if let Err(e) = state.db.set_file_summary(path, nouveau) {
+            // Restaure ce qui a déjà été réécrit : une correction partielle serait pire
+            // que pas de correction du tout.
+            for (p, avant) in &anciens {
+                if let Some(a) = avant {
+                    let _ = state.db.set_file_summary(p, a);
+                } else {
+                    let _ = state.db.unpin_summary(p);
+                }
+            }
+            return Err(format!("correction du sens de {path} échouée ({e}) — rien conservé."));
+        }
+        anciens.push((path.clone(), ancien));
+        let _ = state.db.update_file_hash(path, "");
+        let _ = state.db.enqueue_path(path, Some("pending_extraction"), 9);
+        requalifies += 1;
+    }
+
     state
         .db
         .mark_transaction_committed(transaction_id)
         .map_err(|e| e.to_string())?;
 
-    Ok(ApplyResult {
-        applied: done.len(),
-        message: format!("{} opération(s) appliquée(s).", done.len()),
-    })
+    let total = done.len() + requalifies;
+    let detail = if requalifies > 0 {
+        format!(
+            "{} opération(s) appliquée(s), dont {requalifies} correction(s) de sens              (ré-indexation en cours pour les rendre effectives dans la recherche).",
+            total
+        )
+    } else {
+        format!("{total} opération(s) appliquée(s).")
+    };
+    Ok(ApplyResult { applied: total, message: detail })
 }
 
 #[tauri::command]
@@ -224,6 +278,10 @@ pub async fn discard_action_plan(
 
 fn execute_op(op: &Operation, trash_dir: &Path) -> Result<Option<Done>, String> {
     match op.kind {
+        // Ne touche PAS au disque : traité dans la phase sémantique, après que les
+        // opérations de fichiers ont réussi. Ainsi un échec disque n'a jamais laissé
+        // de descriptions à moitié réécrites.
+        OpKind::Requalify => Ok(None),
         OpKind::Mkdir => {
             let dir = op.new_path.as_ref().ok_or("mkdir sans new_path")?;
             fs::create_dir_all(dir).map_err(|e| format!("mkdir {dir}: {e}"))?;
@@ -324,6 +382,19 @@ fn validate_operations(ops: &[Operation], roots: &[String]) -> Result<(), String
         if let Some(p) = &op.new_path {
             if !path_within_roots(p, roots) {
                 return Err(format!("chemin hors périmètre autorisé: {p}"));
+            }
+        }
+        // Une requalification sans cible ni texte n'écrirait rien, mais serait comptée
+        // comme appliquée : on la refuse plutôt que de mentir sur le résultat.
+        if op.kind == OpKind::Requalify {
+            if op.old_path.is_none() {
+                return Err("requalify sans fichier cible".into());
+            }
+            if op.new_summary.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                return Err(format!(
+                    "requalify sans nouveau sens pour {}",
+                    op.old_path.as_deref().unwrap_or("?")
+                ));
             }
         }
     }
@@ -540,14 +611,23 @@ fn tool_schemas() -> serde_json::Value {
             },"required":["path"]}
         }},
         {"type":"function","function":{
+            "name":"read_semantics",
+            "description":"Lit le SENS EXTRAIT (la description générée à l'indexation) des fichiers d'un dossier. Indispensable avant de corriger des qualifications : c'est ce qui permet de voir quelles descriptions sont fausses et lesquelles sont correctes.",
+            "parameters":{"type":"object","properties":{
+                "path":{"type":"string","description":"Chemin absolu du dossier."},
+                "recursive":{"type":"boolean","description":"Inclure les sous-dossiers (défaut : false)."}
+            },"required":["path"]}
+        }},
+        {"type":"function","function":{
             "name":"propose_actions",
-            "description":"Propose un plan d'actions sur les fichiers (déplacer/renommer/supprimer/créer un dossier). N'EXÉCUTE RIEN : l'utilisateur validera. Utilise UNIQUEMENT des chemins exacts et existants.",
+            "description":"Propose un plan d'actions : sur les FICHIERS (déplacer/renommer/supprimer/créer un dossier) ou sur leur SENS EXTRAIT (requalify, qui corrige la description stockée sans toucher au fichier). N'EXÉCUTE RIEN : l'utilisateur validera. Utilise UNIQUEMENT des chemins exacts et existants.",
             "parameters":{"type":"object","properties":{
                 "summary":{"type":"string","description":"Résumé en une phrase du plan."},
                 "operations":{"type":"array","items":{"type":"object","properties":{
-                    "kind":{"type":"string","enum":["move","rename","delete","mkdir"]},
-                    "old_path":{"type":"string"},
+                    "kind":{"type":"string","enum":["move","rename","delete","mkdir","requalify"]},
+                    "old_path":{"type":"string","description":"Chemin concerné (source, cible à supprimer, ou fichier à requalifier)."},
                     "new_path":{"type":"string"},
+                    "new_summary":{"type":"string","description":"Pour 'requalify' UNIQUEMENT : la description corrigée, rédigée en entier."},
                     "reason":{"type":"string"}
                 },"required":["kind"]}}
             },"required":["operations"]}
@@ -677,6 +757,33 @@ async fn execute_tool(
             }
             list_dir_compact(path)
         }
+        "read_semantics" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let roots = state.config.snapshot().indexing.roots;
+            if !path_within_roots(path, &roots) {
+                return format!("Accès refusé : « {path} » est hors des dossiers indexés.");
+            }
+            let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+            match state.db.list_semantics_under(path, recursive, 60) {
+                Ok(v) if v.is_empty() => {
+                    "Aucun fichier indexé sous ce dossier (ou sens non encore extraits).".to_string()
+                }
+                Ok(v) => {
+                    let n = v.len();
+                    let mut out = format!("{n} fichier(s) avec leur sens extrait :
+");
+                    for (path, summary, kind) in v {
+                        let s = if summary.trim().is_empty() { "(aucun sens)" } else { summary.trim() };
+                        out.push_str(&format!("
+• {path}
+  [{kind}] {s}
+"));
+                    }
+                    out
+                }
+                Err(e) => format!("Lecture des sens impossible : {e}"),
+            }
+        }
         "propose_actions" => {
             let ops: Vec<Operation> =
                 serde_json::from_value(args.get("operations").cloned().unwrap_or_else(|| json!([])))
@@ -750,6 +857,10 @@ fn describe_tool_call(
             args.get("query").and_then(|v| v.as_str()).unwrap_or("").chars().take(60).collect::<String>()
         ),
         "read_file" => format!("📄 Lecture : {}", base(args.get("path").and_then(|v| v.as_str()).unwrap_or(""))),
+        "read_semantics" => format!(
+            "🧠 Lecture des sens : {}",
+            base(args.get("path").and_then(|v| v.as_str()).unwrap_or(""))
+        ),
         "list_directory" => {
             format!("📂 Exploration : {}", base(args.get("path").and_then(|v| v.as_str()).unwrap_or("")))
         }
@@ -967,8 +1078,56 @@ Réponds en français, de façon concise et factuelle.",
 
 #[cfg(test)]
 mod tests {
-    use super::{describe_tool_call, path_within_roots, read_file_bounded, tool_schemas};
+    use super::{
+        describe_tool_call, path_within_roots, read_file_bounded, tool_schemas,
+        validate_operations, OpKind, Operation,
+    };
     use crate::providers::ToolCallOut;
+
+    fn op(kind: OpKind, old: Option<&str>, sens: Option<&str>) -> Operation {
+        Operation {
+            kind,
+            old_path: old.map(String::from),
+            new_path: None,
+            new_summary: sens.map(String::from),
+            reason: String::new(),
+        }
+    }
+
+    /// Une requalification vide passerait la validation et serait comptée comme
+    /// appliquée sans rien écrire : l'utilisateur croirait sa correction enregistrée.
+    #[test]
+    fn requalify_exige_une_cible_et_un_texte() {
+        let roots = vec![r"C:\Users\v\Docs".to_string()];
+
+        let correcte = op(
+            OpKind::Requalify,
+            Some(r"C:\Users\v\Docs\a.pdf"),
+            Some("Passeport français de Virgile Thonnier."),
+        );
+        assert!(validate_operations(&[correcte], &roots).is_ok());
+
+        let sans_texte = op(OpKind::Requalify, Some(r"C:\Users\v\Docs\a.pdf"), Some("   "));
+        assert!(validate_operations(&[sans_texte], &roots).is_err());
+
+        let sans_cible = op(OpKind::Requalify, None, Some("Un passeport."));
+        assert!(validate_operations(&[sans_cible], &roots).is_err());
+
+        // Le périmètre reste contrôlé comme pour toute autre opération : l'agent ne
+        // doit pas pouvoir réécrire la description d'un fichier hors des racines.
+        let hors_perimetre = op(OpKind::Requalify, Some(r"C:\Windows\x.pdf"), Some("Texte."));
+        assert!(validate_operations(&[hors_perimetre], &roots).is_err());
+    }
+
+    /// Le modèle doit savoir que `requalify` existe et qu'il exige `new_summary`,
+    /// sinon il ne s'en servira jamais.
+    #[test]
+    fn le_schema_expose_requalify_et_read_semantics() {
+        let schemas = tool_schemas().to_string();
+        assert!(schemas.contains("read_semantics"), "outil de lecture des sens absent");
+        assert!(schemas.contains("requalify"), "type d'opération requalify absent");
+        assert!(schemas.contains("new_summary"), "champ new_summary absent du schéma");
+    }
 
     #[test]
     fn describe_tool_call_produit_des_libelles_lisibles() {
