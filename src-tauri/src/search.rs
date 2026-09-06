@@ -319,22 +319,22 @@ pub async fn semantic_tree(
         return Ok(None);
     }
 
-    let embedder = state.ai.embedder().await.map_err(|e| e.to_string())?;
-    let query_vec = embedder.embed_query(query).await.map_err(|e| e.to_string())?;
-    let hits = state
-        .vector
-        .search(query_vec, limit, Some(&root))
-        .await
-        .map_err(|e| e.to_string())?;
+    // MÊME pipeline que la liste de résultats — hybride puis reranking — et non un
+    // dense brut. Sans ça les deux vues notent le même fichier sur deux échelles
+    // incomparables (sigmoïde du reranker d'un côté, cosinus de l'autre) : la vue
+    // « côte à côte » affichait 97 % à gauche et 46 % à droite pour la même ligne.
+    let hits = run_semantic_search(&state, &query, Some(&root), limit).await?;
 
-    // Meilleur score (absolu) par fichier existant.
+    // Meilleur score par fichier (l'existence et le dédoublonnage sont déjà faits).
     let mut best: HashMap<String, f32> = HashMap::new();
     for h in hits {
-        if !Path::new(&h.path).exists() {
-            continue;
-        }
-        let s = relevance(h.score);
-        best.entry(h.path).and_modify(|v| { if s > *v { *v = s; } }).or_insert(s);
+        best.entry(h.path)
+            .and_modify(|v| {
+                if h.score > *v {
+                    *v = h.score;
+                }
+            })
+            .or_insert(h.score);
     }
     if best.is_empty() {
         return Ok(None);
