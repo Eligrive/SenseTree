@@ -430,6 +430,102 @@ impl Default for RetrievalConfig {
     }
 }
 
+/// Réglages de la BOUCLE D'AGENT (chat conversationnel).
+///
+/// Ces valeurs décident de ce qu'un modèle a le droit de faire avant de répondre.
+/// Un modèle faible s'arrête de lui-même bien avant les plafonds ; un modèle fort
+/// s'en sert. Les défauts d'origine (5 tours, 4 000 caractères par lecture, 120 s)
+/// bridaient les seconds sans aider les premiers : ils sont maintenant réglables,
+/// car le bon budget dépend de la fenêtre de contexte du modèle branché.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// Allers-retours d'outils maximum avant d'exiger une réponse finale.
+    ///
+    /// Trier un dossier réel demande couramment 15 à 40 tours (chercher, lire,
+    /// recouper, proposer). En dessous, le modèle est coupé en plein raisonnement.
+    #[serde(default = "default_agent_max_rounds")]
+    pub max_rounds: usize,
+    /// Délai d'attente d'UN appel de la boucle, en secondes.
+    ///
+    /// Distinct du timeout global du client HTTP (120 s), taillé pour les appels
+    /// courts de l'indexation : un modèle « thinking » réfléchit régulièrement plus
+    /// longtemps que ça sur une question complexe, et se faisait couper.
+    #[serde(default = "default_agent_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Caractères de contenu renvoyés par `read_file` en UN appel.
+    ///
+    /// Ce n'est plus un plafond dur : l'outil expose un `offset`, donc le modèle
+    /// pagine un long document au lieu d'en rester à son début.
+    #[serde(default = "default_agent_read_chars")]
+    pub read_chars: usize,
+    /// Plafond du `top_k` que le modèle peut demander à `search_files`.
+    #[serde(default = "default_agent_max_search_results")]
+    pub max_search_results: usize,
+    /// Budget (caractères) des échanges d'outils rejoués d'un message à l'autre.
+    ///
+    /// Sans cela l'agent est amnésique : chaque message repart de zéro et doit tout
+    /// re-chercher. Avec, une question de suivi (« et le troisième fichier ? »)
+    /// s'appuie sur ce qui a déjà été lu. À dimensionner selon la fenêtre de
+    /// contexte du modèle — 0 désactive le rejeu.
+    #[serde(default = "default_agent_transcript_chars")]
+    pub transcript_chars: usize,
+    /// Température des appels de l'agent. `null` = ne pas envoyer le champ.
+    ///
+    /// Plusieurs API récentes REFUSENT `temperature` quand un mode raisonnement est
+    /// actif : pouvoir ne rien envoyer évite un 400 sans échappatoire.
+    #[serde(default = "default_agent_temperature")]
+    pub temperature: Option<f32>,
+}
+
+fn default_agent_max_rounds() -> usize {
+    24
+}
+fn default_agent_timeout_secs() -> u64 {
+    600
+}
+fn default_agent_read_chars() -> usize {
+    16_000
+}
+fn default_agent_max_search_results() -> usize {
+    50
+}
+fn default_agent_transcript_chars() -> usize {
+    60_000
+}
+fn default_agent_temperature() -> Option<f32> {
+    Some(0.2)
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        AgentConfig {
+            max_rounds: default_agent_max_rounds(),
+            timeout_secs: default_agent_timeout_secs(),
+            read_chars: default_agent_read_chars(),
+            max_search_results: default_agent_max_search_results(),
+            transcript_chars: default_agent_transcript_chars(),
+            temperature: default_agent_temperature(),
+        }
+    }
+}
+
+impl AgentConfig {
+    /// Valeurs assainies : une config éditée à la main ne doit pas pouvoir figer
+    /// l'agent (0 tour) ni le lâcher sans limite.
+    pub fn max_rounds_sane(&self) -> usize {
+        self.max_rounds.clamp(1, 100)
+    }
+    pub fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.timeout_secs.clamp(10, 3_600))
+    }
+    pub fn read_chars_sane(&self) -> usize {
+        self.read_chars.clamp(500, 200_000)
+    }
+    pub fn max_search_results_sane(&self) -> usize {
+        self.max_search_results.clamp(1, 200)
+    }
+}
+
 /// Un serveur MCP (Model Context Protocol) externe, exposant des outils à l'agent.
 /// Transport HTTP uniquement (URL + en-tête d'auth optionnel).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -616,6 +712,9 @@ pub struct AppConfig {
     pub indexing: IndexingConfig,
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+    /// Budgets de la boucle d'agent (tours, lecture, timeout).
+    #[serde(default)]
+    pub agent: AgentConfig,
     /// Serveurs MCP externes branchés sur l'agent (vide par défaut).
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
@@ -633,6 +732,7 @@ impl Default for AppConfig {
             video: VideoConfig::default(),
             indexing: IndexingConfig::default(),
             retrieval: RetrievalConfig::default(),
+            agent: AgentConfig::default(),
             mcp_servers: Vec::new(),
             prompts: PromptsConfig::default(),
         }
@@ -791,6 +891,58 @@ mod tests {
         }"#;
         let cfg: ChatConfig = serde_json::from_str(ancien).expect("ancien format illisible");
         assert_eq!(cfg.reasoning_effort, ReasoningEffort::Auto);
+    }
+
+    /// Une `settings.json` écrite avant l'ajout des budgets d'agent doit rester
+    /// lisible, et hériter des nouveaux défauts — pas d'un agent à zéro tour.
+    #[test]
+    fn config_sans_section_agent_reste_lisible() {
+        let ancien = r#"{
+            "embedding": {
+                "mode": "local",
+                "model": "multilingual-e5-small",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "",
+                "dimensions": 384,
+                "use_gpu": false
+            },
+            "reasoning": {
+                "base_url": "http://localhost:11434/v1",
+                "model": "qwen3.5:4b",
+                "api_key": "",
+                "enabled": true
+            },
+            "vision": {
+                "base_url": "http://localhost:11434/v1",
+                "model": "moondream",
+                "api_key": "",
+                "enabled": false
+            },
+            "indexing": {
+                "roots": [],
+                "chunk_size": 1000,
+                "overlap": 200,
+                "batch_size": 32,
+                "max_file_mb": 50
+            }
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(ancien).expect("ancien format illisible");
+        assert_eq!(cfg.agent.max_rounds, 24);
+        assert_eq!(cfg.agent.read_chars, 16_000);
+        assert_eq!(cfg.agent.timeout_secs, 600);
+        assert_eq!(cfg.agent.transcript_chars, 60_000);
+        assert_eq!(cfg.agent.temperature, Some(0.2));
+    }
+
+    /// `temperature: null` doit survivre à un aller-retour JSON : c'est ce qui permet
+    /// de NE PAS envoyer le champ à une API qui le refuse en mode raisonnement.
+    #[test]
+    fn la_temperature_absente_se_persiste() {
+        let mut cfg = AppConfig::default();
+        cfg.agent.temperature = None;
+        let brut = serde_json::to_string(&cfg).expect("sérialisation");
+        let relu: AppConfig = serde_json::from_str(&brut).expect("relecture");
+        assert_eq!(relu.agent.temperature, None);
     }
 
     /// Le front compare des chaînes : le mode doit se sérialiser en minuscules.

@@ -164,6 +164,13 @@ L'écran est divisé en **trois panneaux**.
   Il dispose de six outils intégrés — chercher, lire un fichier, lister un
   dossier, lire les sens extraits, proposer un plan d'action, mémoriser — plus
   ceux des serveurs MCP que tu ajoutes.
+- **Ce qu'il lit vraiment.** Quand il ouvre un fichier, il se sert d'abord du
+  contenu **déjà extrait à l'indexation** : c'est immédiat, et ça lui donne accès
+  à ce qui n'existe pas sur le disque — la **transcription** d'un audio ou d'une
+  vidéo, l'**OCR** d'un PDF scanné, la **description** d'une image. Il ne relit et
+  ré-extrait le fichier que si l'index ne suffit pas (document modifié depuis, ou
+  passage au-delà de ce qui est conservé). Un document long se lit en plusieurs
+  fois : il enchaîne les lectures tout seul.
 - **Deux issues possibles** :
   - **Question** (« résume les documents de ce dossier », « y a-t-il un contrat
     ici ? ») → réponse en texte, avec les **fichiers cités cliquables**.
@@ -310,6 +317,31 @@ dont la réponse tient en quelques mots.
 - **Hybride** : fusionne le sens (vecteurs) et les mots-clés (BM25).
 - **Reranking** : réordonne le haut du panier avec un cross-encoder local
   (`bge-reranker-v2-m3` par défaut, multilingue).
+
+### Agent (chat)
+
+Le budget que tu accordes au modèle avant d'exiger une réponse. Les défauts
+conviennent à un modèle à grande fenêtre de contexte ; un petit modèle local
+s'arrête de lui-même bien avant ces plafonds.
+
+- **Tours d'outils max** (24) : recherches, lectures et appels MCP autorisés pour
+  un message. Trier un vrai dossier en demande couramment 15 à 40 ; trop bas, le
+  modèle est coupé en plein raisonnement. Quand le budget s'épuise, l'assistant
+  répond quand même avec ce qu'il a réuni, en signalant ce qui manque.
+- **Délai par tour** (600 s) : à monter avec un modèle « thinking », qui peut
+  réfléchir plusieurs minutes avant de répondre.
+- **Lecture par appel** (16 000 caractères) : ce que `read_file` renvoie d'un coup.
+  Ce n'est pas un plafond : l'assistant pagine et lit la suite s'il en a besoin.
+- **Résultats de recherche max** (50) : plafond du nombre de résultats que
+  l'assistant peut demander. À monter pour des demandes exhaustives.
+- **Mémoire d'outils** (60 000 caractères) : ce que l'assistant garde d'un message
+  au suivant. Sans elle il repart de zéro à chaque question et doit re-chercher ce
+  qu'il vient de lire ; à baisser si ton modèle a une petite fenêtre de contexte.
+- **Température** (0,2) : laisse le champ **vide** si ton serveur refuse ce
+  paramètre lorsqu'un mode raisonnement est actif — SenseTree ne l'enverra plus.
+
+L'**effort de raisonnement** réglé dans la section *Reasoning / Chat* s'applique
+aussi à l'agent.
 
 ### Serveurs MCP
 

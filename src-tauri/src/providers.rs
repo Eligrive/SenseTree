@@ -579,6 +579,19 @@ impl std::fmt::Display for AiCallError {
 }
 impl std::error::Error for AiCallError {}
 
+/// Paramètres d'UN tour de la boucle d'agent.
+///
+/// Ils ne sont pas figés dans le client parce qu'ils varient d'un tour à l'autre :
+/// le dernier tour d'un budget épuisé se fait sans outils, pour forcer une réponse
+/// plutôt que de jeter tout le travail exploratoire.
+#[derive(Debug, Clone)]
+pub struct AgentCallOptions {
+    /// Délai d'attente de CE tour (indépendant du timeout global du client).
+    pub timeout: Duration,
+    /// `None` = ne pas envoyer `temperature` du tout.
+    pub temperature: Option<f32>,
+}
+
 /// Client de chat compatible OpenAI, réutilisé pour le reasoning et la vision.
 pub struct OpenAiChatClient {
     http: reqwest::Client,
@@ -683,24 +696,39 @@ impl OpenAiChatClient {
     /// final, soit une liste d'appels d'outils que l'appelant doit exécuter puis
     /// réinjecter. Compatible OpenAI (`tools` + `tool_choice: auto`). Les modèles qui
     /// ne savent pas tool-caller renvoient simplement du contenu → dégradation douce.
+    ///
+    /// Contrairement aux appels courts de l'indexation, un tour d'agent porte son
+    /// PROPRE délai (`opts.timeout`) : le timeout global du client (120 s) coupait
+    /// systématiquement les modèles « thinking » sur une question complexe — donc
+    /// précisément les plus capables.
     pub async fn chat_tools(
         &self,
         messages: &[serde_json::Value],
         tools: &serde_json::Value,
+        opts: &AgentCallOptions,
     ) -> Result<AgentTurn> {
         let url = format!("{}/chat/completions", self.base_url);
         let mut body = json!({
             "model": self.model,
             "messages": messages,
-            "temperature": 0.2,
             "stream": false,
         });
+        // `None` = ne pas envoyer le champ : plusieurs API refusent `temperature`
+        // quand un mode raisonnement est actif, et renvoient un 400.
+        if let Some(t) = opts.temperature {
+            body["temperature"] = json!(t);
+        }
+        // L'effort de raisonnement était appliqué au plan d'action mais PAS au chat :
+        // le réglage de l'utilisateur n'avait donc aucun effet sur l'agent.
+        if let Some(e) = self.effort.as_param() {
+            body["reasoning_effort"] = json!(e);
+        }
         // On n'ajoute `tools` que s'il y en a (certains serveurs rejettent un tableau vide).
         if tools.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
             body["tools"] = tools.clone();
             body["tool_choice"] = json!("auto");
         }
-        let mut req = self.http.post(&url).json(&body);
+        let mut req = self.http.post(&url).json(&body).timeout(opts.timeout);
         if !self.api_key.is_empty() {
             req = req.bearer_auth(&self.api_key);
         }

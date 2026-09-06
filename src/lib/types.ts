@@ -100,6 +100,19 @@ export interface RetrievalConfig {
   reranker_model: string;
 }
 
+/// Budgets de la boucle d'agent. Ce que le modèle a le DROIT de faire avant de
+/// répondre : le bon réglage dépend de sa fenêtre de contexte et de sa vitesse.
+export interface AgentConfig {
+  max_rounds: number;
+  timeout_secs: number;
+  read_chars: number;
+  max_search_results: number;
+  transcript_chars: number;
+  /// `null` = ne pas envoyer `temperature` (certaines API la refusent en mode
+  /// raisonnement et répondent 400).
+  temperature: number | null;
+}
+
 /// Un serveur MCP (Model Context Protocol) externe exposant des outils à l'agent.
 /// Transport HTTP (`url`) OU stdio (`command` + `args`) — `command` a la priorité.
 export interface McpServerConfig {
@@ -167,6 +180,7 @@ export interface AppConfig {
   video: VideoConfig;
   indexing: IndexingConfig;
   retrieval: RetrievalConfig;
+  agent: AgentConfig;
   mcp_servers: McpServerConfig[];
   prompts: PromptsConfig;
 }
@@ -401,6 +415,10 @@ export interface ImageHit {
 export interface ChatTurn {
   role: "user" | "assistant" | "system";
   content: string;
+  /// Échanges d'outils qui ont mené à ce message (renvoyés tels quels par le
+  /// backend dans `ChatResponse.transcript`). Les redonner évite à l'agent de
+  /// repartir d'un contexte vide — et de tout re-chercher — à chaque message.
+  tool_messages?: unknown[];
 }
 
 export interface ChatSource {
@@ -414,6 +432,8 @@ export interface ChatResponse {
   answer: string | null;
   sources: ChatSource[];
   plan: ActionPlan | null;
+  /// À conserver et à renvoyer dans le `ChatTurn` correspondant au tour suivant.
+  transcript: unknown[];
 }
 
 export interface IndexingStats {

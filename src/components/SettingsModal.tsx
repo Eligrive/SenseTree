@@ -1384,6 +1384,138 @@ Le modèle devra être re-téléchargé pour être réutilisé.`)) {
             )}
           </section>
 
+          {/* Agent du chat — ce que le modèle a le droit de faire avant de répondre */}
+          <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
+            <h3 className="text-sm font-semibold text-zinc-200">Agent (chat)</h3>
+            <p className="text-[11px] text-zinc-500">
+              Le budget que tu accordes au modèle avant d'exiger une réponse. Un modèle faible
+              s'arrête bien avant ces plafonds ; un modèle à grande fenêtre de contexte s'en sert.
+              Trier un vrai dossier demande couramment <strong>15 à 40 tours</strong> (chercher,
+              lire, recouper, proposer) — trop bas, le modèle est coupé en plein raisonnement.
+            </p>
+
+            <label className="flex items-center gap-2 text-xs text-zinc-400">
+              <span className="w-44 shrink-0">Tours d'outils max</span>
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={cfg.agent.max_rounds}
+                onChange={(e) =>
+                  setCfg({
+                    ...cfg,
+                    agent: { ...cfg.agent, max_rounds: Number(e.target.value) || 1 },
+                  })
+                }
+                className="w-24 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
+              />
+              <span className="text-zinc-600">recherches, lectures et appels MCP par message</span>
+            </label>
+
+            <label className="flex items-center gap-2 text-xs text-zinc-400">
+              <span className="w-44 shrink-0">Délai par tour (s)</span>
+              <input
+                type="number"
+                min={10}
+                max={3600}
+                value={cfg.agent.timeout_secs}
+                onChange={(e) =>
+                  setCfg({
+                    ...cfg,
+                    agent: { ...cfg.agent, timeout_secs: Number(e.target.value) || 10 },
+                  })
+                }
+                className="w-24 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
+              />
+              <span className="text-zinc-600">
+                à monter avec un modèle « thinking », qui réfléchit longtemps avant de répondre
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2 text-xs text-zinc-400">
+              <span className="w-44 shrink-0">Lecture par appel (car.)</span>
+              <input
+                type="number"
+                min={500}
+                max={200000}
+                step={1000}
+                value={cfg.agent.read_chars}
+                onChange={(e) =>
+                  setCfg({
+                    ...cfg,
+                    agent: { ...cfg.agent, read_chars: Number(e.target.value) || 500 },
+                  })
+                }
+                className="w-24 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
+              />
+              <span className="text-zinc-600">l'agent pagine au-delà, il ne perd rien</span>
+            </label>
+
+            <label className="flex items-center gap-2 text-xs text-zinc-400">
+              <span className="w-44 shrink-0">Résultats de recherche max</span>
+              <input
+                type="number"
+                min={1}
+                max={200}
+                value={cfg.agent.max_search_results}
+                onChange={(e) =>
+                  setCfg({
+                    ...cfg,
+                    agent: { ...cfg.agent, max_search_results: Number(e.target.value) || 1 },
+                  })
+                }
+                className="w-24 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
+              />
+              <span className="text-zinc-600">plafond du top_k que le modèle peut demander</span>
+            </label>
+
+            <label className="flex items-center gap-2 text-xs text-zinc-400">
+              <span className="w-44 shrink-0">Mémoire d'outils (car.)</span>
+              <input
+                type="number"
+                min={0}
+                max={500000}
+                step={10000}
+                value={cfg.agent.transcript_chars}
+                onChange={(e) =>
+                  setCfg({
+                    ...cfg,
+                    agent: { ...cfg.agent, transcript_chars: Number(e.target.value) || 0 },
+                  })
+                }
+                className="w-24 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
+              />
+              <span className="text-zinc-600">
+                ce que l'agent garde d'un message au suivant — 0 = il repart de zéro à chaque fois
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2 text-xs text-zinc-400">
+              <span className="w-44 shrink-0">Température</span>
+              <input
+                type="number"
+                min={0}
+                max={2}
+                step={0.1}
+                value={cfg.agent.temperature ?? ""}
+                placeholder="auto"
+                onChange={(e) =>
+                  setCfg({
+                    ...cfg,
+                    agent: {
+                      ...cfg.agent,
+                      temperature: e.target.value === "" ? null : Number(e.target.value),
+                    },
+                  })
+                }
+                className="w-24 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
+              />
+              <span className="text-zinc-600">
+                vide = ne rien envoyer, à faire si ton API la refuse en mode raisonnement
+              </span>
+            </label>
+          </section>
+
           {/* Serveurs MCP — outils externes pour l'agent du chat */}
           <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
             <div className="flex items-center justify-between">

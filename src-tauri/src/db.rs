@@ -882,6 +882,22 @@ impl Database {
         }
     }
 
+    /// `mtime` du fichier tel qu'il était lors de sa DERNIÈRE indexation réussie.
+    ///
+    /// Sert à savoir si le contenu déjà extrait en base est encore fidèle au fichier
+    /// sur le disque. Distinct de `needs_indexing`, qui répond à une autre question
+    /// (« faut-il le remettre en file ? ») et tient compte du statut de la file.
+    pub fn indexed_mtime(&self, path: &str) -> Result<Option<i64>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT last_modified FROM indexed_files WHERE path = ?1 AND last_modified > 0")?;
+        let mut rows = stmt.query(params![path])?;
+        Ok(match rows.next()? {
+            Some(row) => Some(row.get(0)?),
+            None => None,
+        })
+    }
+
     /// Statut de file + dernière erreur d'un chemin.
     pub fn get_queue_status(&self, path: &str) -> Result<Option<(String, Option<String>)>> {
         let conn = self.conn()?;

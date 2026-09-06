@@ -15,7 +15,15 @@ interface Props {
 }
 
 type Msg =
-  | { id: number; role: "user" | "assistant"; text: string; sources?: ChatSource[] }
+  | {
+      id: number;
+      role: "user" | "assistant";
+      text: string;
+      sources?: ChatSource[];
+      /// Échanges d'outils ayant produit CE message, renvoyés au backend au tour
+      /// suivant pour que l'agent garde le fil au lieu de tout re-chercher.
+      toolMessages?: unknown[];
+    }
   | { id: number; role: "plan"; plan: ActionPlan; status: "pending" | "applied" | "discarded" };
 
 let uid = 0;
@@ -102,13 +110,19 @@ export default function ChatPanel({
 
       const history: ChatTurn[] = messages
         .filter((m): m is Extract<Msg, { role: "user" | "assistant" }> => m.role !== "plan")
-        .map((m) => ({ role: m.role, content: m.text }));
+        .map((m) => ({ role: m.role, content: m.text, tool_messages: m.toolMessages ?? [] }));
       history.push({ role: "user", content: text });
       const res = await chatWithAssistant(history, currentPath ?? undefined);
       if (res.plan) {
         push({ id: nextId(), role: "plan", plan: res.plan, status: "pending" });
       } else {
-        push({ id: nextId(), role: "assistant", text: res.answer ?? "", sources: res.sources });
+        push({
+          id: nextId(),
+          role: "assistant",
+          text: res.answer ?? "",
+          sources: res.sources,
+          toolMessages: res.transcript,
+        });
       }
     } catch (e) {
       push({ id: nextId(), role: "assistant", text: `⚠️ ${String(e)}` });

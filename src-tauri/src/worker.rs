@@ -552,7 +552,7 @@ async fn store_text_document(
 
     // On garde LES DEUX : la qualification (« sens ») ET le contenu extrait (borné), pour
     // pouvoir les afficher côte à côte et comparer au document.
-    let mut extract: String = text.trim().chars().take(16_000).collect();
+    let mut extract: String = text.trim().chars().take(EXTRACT_MAX_CHARS).collect();
     // La troncature doit être VISIBLE : sans ça, l'utilisateur croit le document
     // intégralement indexé alors que seule sa première partie est cherchable.
     if tronque {
@@ -1314,8 +1314,20 @@ fn hash_file(path: &str) -> anyhow::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// Plafond du contenu extrait conservé en base (`file_semantics.extract`).
+///
+/// L'agent s'en sert comme source PRIORITAIRE dans `read_file` : ce texte est déjà
+/// extrait, donc gratuit, là où rouvrir un PDF ou un DOCX ne l'est pas. Il doit
+/// rester partagé, sinon l'agent croirait tenir un document entier alors que la
+/// base l'a tronqué ailleurs.
+pub(crate) const EXTRACT_MAX_CHARS: usize = 16_000;
+
 /// Extraction de texte multi-formats (sync).
-fn extract_text(path: &str) -> anyhow::Result<String> {
+///
+/// Exposée au crate : l'outil `read_file` de l'agent passe par ici, sinon il lit un
+/// PDF ou un DOCX en octets bruts et n'y voit que du binaire — alors que le pipeline
+/// d'indexation, lui, sait parfaitement les lire.
+pub(crate) fn extract_text(path: &str) -> anyhow::Result<String> {
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
