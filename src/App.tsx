@@ -53,6 +53,10 @@ export default function App() {
   const [searchMode, setSearchMode] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
+  // Panne de recherche (serveur d'embedding injoignable, index abîmé…). Distinct
+  // d'une liste vide : sans ça, une panne s'affiche « aucun résultat pertinent »
+  // et laisse croire, à tort, que l'index ne contient pas le document cherché.
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [treeData, setTreeData] = useState<TreeNode | null>(null);
   const [resultView, setResultView] = useState<ResultView>("list");
   // Recherche globale par défaut ; on peut la restreindre au dossier courant.
@@ -241,11 +245,16 @@ export default function App() {
     setSearchMode(true);
     setSearching(true);
     const scope = scopeToCurrent ? currentPath ?? undefined : undefined;
+    setSearchError(null);
     semanticSearch(query, scope, 30)
-      .then(setSearchResults)
+      .then((r) => {
+        setSearchResults(r);
+        setSearchError(null);
+      })
       .catch((e) => {
         console.error("semantic_search:", e);
         setSearchResults([]);
+        setSearchError(typeof e === "string" ? e : String(e));
       })
       .finally(() => setSearching(false));
     // Arbre de pertinence (pour les vues « arbre » et « côte à côte »).
@@ -338,6 +347,7 @@ export default function App() {
           searchMode={searchMode}
           searchResults={searchResults}
           searching={searching}
+          searchError={searchError}
           onExitSearch={() => setSearchMode(false)}
           scopeToCurrent={scopeToCurrent}
           onToggleScope={setScopeToCurrent}

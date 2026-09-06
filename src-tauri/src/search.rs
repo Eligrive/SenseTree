@@ -50,6 +50,27 @@ struct Candidate {
     rrf: f32,
 }
 
+/// Branche dense : embedding de la requête puis plus proches voisins LanceDB.
+/// Isolée pour que son échec (serveur d'embedding injoignable, fragment LanceDB
+/// disparu…) soit RATTRAPABLE par la branche mots-clés au lieu de tout annuler.
+async fn dense_candidates(
+    state: &AppState,
+    query: &str,
+    scope: Option<&str>,
+    pool: usize,
+) -> Result<Vec<crate::vectordb::SearchHit>, String> {
+    let embedder = state.ai.embedder().await.map_err(|e| e.to_string())?;
+    let qvec = embedder
+        .embed_query(query.to_string())
+        .await
+        .map_err(|e| format!("embedding de la requête impossible : {e}"))?;
+    state
+        .vector
+        .search(qvec, pool, scope)
+        .await
+        .map_err(|e| format!("recherche vectorielle impossible : {e}"))
+}
+
 /// Récupère les candidats : dense seul, ou HYBRIDE (dense + BM25 fusionnés par RRF)
 /// selon la config. Trié par score de fusion décroissant.
 async fn retrieve_candidates(
@@ -58,19 +79,22 @@ async fn retrieve_candidates(
     scope: Option<&str>,
     pool: usize,
 ) -> Result<Vec<Candidate>, String> {
-    let embedder = state.ai.embedder().await.map_err(|e| e.to_string())?;
-    let qvec = embedder
-        .embed_query(query.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    let dense = state
-        .vector
-        .search(qvec, pool, scope)
-        .await
-        .map_err(|e| e.to_string())?;
+    let hybride = state.config.snapshot().retrieval.hybrid;
+
+    // L'échec dense n'est pas fatal en mode hybride : on le retient pour ne le
+    // remonter que si les mots-clés ne sauvent pas la mise.
+    let (dense, panne_dense) = match dense_candidates(state, query, scope, pool).await {
+        Ok(hits) => (hits, None),
+        Err(e) if hybride => {
+            tracing::warn!("recherche dense en panne, repli sur BM25 seul : {e}");
+            (Vec::new(), Some(e))
+        }
+        // Mode dense pur : aucun repli possible, l'erreur EST le résultat.
+        Err(e) => return Err(e),
+    };
 
     // Mode dense pur (hybride désactivé) : comportement historique conservé.
-    if !state.config.snapshot().retrieval.hybrid {
+    if !hybride {
         return Ok(dense
             .into_iter()
             .map(|h| Candidate {
@@ -89,6 +113,16 @@ async fn retrieve_candidates(
         .keyword_search(query, pool, scope)
         .await
         .unwrap_or_default();
+
+    // Les deux branches sont muettes ET le dense était en panne : c'est une panne,
+    // pas une absence de résultat. On remonte le motif pour que l'UI le dise, au
+    // lieu de laisser croire à un index vide.
+    if let Some(motif) = panne_dense {
+        if sparse.is_empty() {
+            return Err(motif);
+        }
+        tracing::warn!("résultats DÉGRADÉS : mots-clés seuls, la recherche dense est en panne");
+    }
 
     // Reciprocal Rank Fusion : score = Σ 1/(k + rang). Indépendant de l'échelle des
     // scores (cosinus vs BM25) — c'est tout l'intérêt du RRF.

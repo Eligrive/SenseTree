@@ -1,5 +1,6 @@
 import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
+  AlertTriangle,
   Boxes,
   Check,
   ChevronRight,
@@ -35,6 +36,7 @@ interface Props {
   searchMode: boolean;
   searchResults: SearchResult[];
   searching: boolean;
+  searchError: string | null;
   onExitSearch: () => void;
   scopeToCurrent: boolean;
   onToggleScope: (value: boolean) => void;
@@ -184,6 +186,7 @@ export default function Explorer({
   searchMode,
   searchResults,
   searching,
+  searchError,
   onExitSearch,
   scopeToCurrent,
   onToggleScope,
@@ -318,6 +321,7 @@ export default function Explorer({
                 <SearchResults
                   results={searchResults}
                   searching={searching}
+                  error={searchError}
                   onOpenFile={onOpenFile}
                 />
               </div>
@@ -335,6 +339,7 @@ export default function Explorer({
               <SearchResults
                 results={searchResults}
                 searching={searching}
+                error={searchError}
                 onOpenFile={onOpenFile}
               />
             </div>
@@ -403,16 +408,37 @@ export default function Explorer({
 function SearchResults({
   results,
   searching,
+  error,
   onOpenFile,
 }: {
   results: SearchResult[];
   searching: boolean;
+  error: string | null;
   onOpenFile: (path: string) => void;
 }) {
   if (searching)
     return (
       <Centered>
         <Loader2 className="animate-spin text-zinc-500" />
+      </Centered>
+    );
+  // Une panne n'est PAS une absence de résultat : le dire explicitement évite de
+  // chercher pendant des jours du côté de l'indexation alors que la requête n'a
+  // même pas atteint l'index.
+  if (error)
+    return (
+      <Centered>
+        <div className="max-w-md space-y-2 text-center">
+          <AlertTriangle className="mx-auto text-amber-500" size={20} />
+          <p className="text-sm font-medium text-amber-400">
+            La recherche n'a pas pu s'exécuter.
+          </p>
+          <p className="break-words text-xs text-zinc-500">{error}</p>
+          <p className="text-xs text-zinc-600">
+            L'index n'est pas en cause : la requête n'a pas pu l'atteindre.
+            Vérifiez le serveur d'embedding dans les réglages.
+          </p>
+        </div>
       </Centered>
     );
   if (results.length === 0)
