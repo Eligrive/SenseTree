@@ -13,14 +13,16 @@ use lancedb::arrow::arrow_array::{
     RecordBatchIterator, RecordBatchReader, StringArray,
 };
 use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
-use lancedb::index::scalar::FullTextSearchQuery;
+use lancedb::index::scalar::{FtsIndexBuilder, FullTextSearchQuery};
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{Connection, DistanceType};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+
+use crate::config::Bm25Analyzer;
 
 const TABLE: &str = "chunks";
 /// Table séparée pour les vecteurs CLIP d'images (espace visuel, dim 512).
@@ -54,6 +56,8 @@ pub struct VectorDb {
     /// De nouveaux chunks ont été écrits depuis le dernier build de l'index BM25 :
     /// la prochaine recherche par mots-clés reconstruit l'index plein-texte.
     fts_dirty: AtomicBool,
+    /// Analyse lexicale de l'index BM25 (racinisation, mots vides).
+    analyzer: Mutex<Bm25Analyzer>,
 }
 
 impl VectorDb {
@@ -66,7 +70,18 @@ impl VectorDb {
             conn,
             dim: AtomicUsize::new(dim),
             fts_dirty: AtomicBool::new(true),
+            analyzer: Mutex::new(Bm25Analyzer::default()),
         })
+    }
+
+    /// Change l'analyse lexicale du BM25. L'index est reconstruit à la prochaine
+    /// recherche par mots-clés si elle a changé.
+    pub fn set_bm25_analyzer(&self, analyzer: Bm25Analyzer) {
+        let mut cur = self.analyzer.lock().unwrap_or_else(|e| e.into_inner());
+        if *cur != analyzer {
+            *cur = analyzer;
+            self.fts_dirty.store(true, Ordering::Relaxed);
+        }
     }
 
     pub fn dim(&self) -> usize {
@@ -129,7 +144,42 @@ impl VectorDb {
             return Ok(());
         }
 
-        let n = chunks.len();
+        let batch = self.record_batch(vec![(path.to_string(), content_hash.to_string(), mtime, chunks)])?;
+        let schema = self.schema();
+        let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
+        let boxed: Box<dyn RecordBatchReader + Send> = Box::new(reader);
+        table
+            .add(boxed)
+            .execute()
+            .await
+            .context("insertion des vecteurs")?;
+        Ok(())
+    }
+
+    /// Ajoute les chunks de nombreux fichiers en une seule écriture, sans supprimer
+    /// d'éventuels chunks existants : réservé au remplissage d'une base neuve (banc de
+    /// mesure). Un ajout par fichier créerait un fragment LanceDB par fichier.
+    pub async fn append_files(&self, files: Vec<(String, Vec<ChunkVector>)>) -> Result<()> {
+        let rows: Vec<_> = files
+            .into_iter()
+            .filter(|(_, c)| !c.is_empty())
+            .map(|(p, c)| (p, String::new(), 0, c))
+            .collect();
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let table = self.table().await?;
+        self.fts_dirty.store(true, Ordering::Relaxed);
+        let batch = self.record_batch(rows)?;
+        let reader = RecordBatchIterator::new(vec![Ok(batch)], self.schema());
+        let boxed: Box<dyn RecordBatchReader + Send> = Box::new(reader);
+        table.add(boxed).execute().await.context("insertion des vecteurs")?;
+        Ok(())
+    }
+
+    /// Construit un RecordBatch à partir de (chemin, hash, mtime, chunks).
+    fn record_batch(&self, rows: Vec<(String, String, i64, Vec<ChunkVector>)>) -> Result<RecordBatch> {
+        let n: usize = rows.iter().map(|r| r.3.len()).sum();
         let mut ids = Vec::with_capacity(n);
         let mut paths = Vec::with_capacity(n);
         let mut indices = Vec::with_capacity(n);
@@ -139,28 +189,30 @@ impl VectorDb {
         let dim = self.dim();
         let mut flat: Vec<f32> = Vec::with_capacity(n * dim);
 
-        for c in chunks {
-            if c.vector.len() != dim {
-                return Err(anyhow!(
-                    "dimension du vecteur ({}) incohérente avec la table ({})",
-                    c.vector.len(),
-                    dim
-                ));
+        for (path, content_hash, mtime, chunks) in rows {
+            for c in chunks {
+                if c.vector.len() != dim {
+                    return Err(anyhow!(
+                        "dimension du vecteur ({}) incohérente avec la table ({})",
+                        c.vector.len(),
+                        dim
+                    ));
+                }
+                ids.push(Uuid::new_v4().to_string());
+                paths.push(path.clone());
+                indices.push(c.chunk_index);
+                texts.push(c.text);
+                hashes.push(content_hash.clone());
+                mtimes.push(mtime);
+                flat.extend_from_slice(&c.vector);
             }
-            ids.push(Uuid::new_v4().to_string());
-            paths.push(path.to_string());
-            indices.push(c.chunk_index);
-            texts.push(c.text);
-            hashes.push(content_hash.to_string());
-            mtimes.push(mtime);
-            flat.extend_from_slice(&c.vector);
         }
 
         let item = Arc::new(Field::new("item", DataType::Float32, true));
         let values = Float32Array::from(flat);
         let vectors = FixedSizeListArray::new(item, dim as i32, Arc::new(values), None);
 
-        let batch = RecordBatch::try_new(
+        RecordBatch::try_new(
             self.schema(),
             vec![
                 Arc::new(StringArray::from(ids)),
@@ -172,17 +224,7 @@ impl VectorDb {
                 Arc::new(vectors),
             ],
         )
-        .context("construction du RecordBatch")?;
-
-        let schema = self.schema();
-        let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
-        let boxed: Box<dyn RecordBatchReader + Send> = Box::new(reader);
-        table
-            .add(boxed)
-            .execute()
-            .await
-            .context("insertion des vecteurs")?;
-        Ok(())
+        .context("construction du RecordBatch")
     }
 
     /// Recherche les plus proches voisins, éventuellement restreinte à un préfixe de chemin.
@@ -380,8 +422,9 @@ impl VectorDb {
 
     /// (Re)construit l'index BM25 sur `text`. `replace(true)` = reconstruction à neuf.
     async fn build_fts_index(&self, table: &lancedb::Table) -> Result<()> {
+        let analyzer = *self.analyzer.lock().unwrap_or_else(|e| e.into_inner());
         table
-            .create_index(&["text"], Index::FTS(Default::default()))
+            .create_index(&["text"], Index::FTS(fts_params(analyzer)))
             .replace(true)
             .execute()
             .await
@@ -480,6 +523,19 @@ impl VectorDb {
     }
 }
 
+/// Paramètres de l'index plein-texte. Le défaut de LanceDB racinise ET retire les
+/// mots vides en ANGLAIS, quelle que soit la langue du document.
+fn fts_params(analyzer: Bm25Analyzer) -> FtsIndexBuilder {
+    let base = FtsIndexBuilder::default().ascii_folding(true).lower_case(true);
+    match analyzer {
+        Bm25Analyzer::English => base,
+        Bm25Analyzer::French => base
+            .language("French")
+            .expect("langue prise en charge par tantivy"),
+        Bm25Analyzer::Neutral => base.stem(false).remove_stop_words(false),
+    }
+}
+
 fn path_filter(path: &str) -> String {
     let escaped = path.replace('\'', "''");
     format!("path = '{escaped}'")
@@ -529,7 +585,41 @@ fn snippet(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::like_escape_datafusion;
+    use super::{like_escape_datafusion, Bm25Analyzer, ChunkVector, VectorDb};
+
+    async fn base(analyzer: Bm25Analyzer, docs: &[(&str, &str)]) -> (VectorDb, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("sensetree-fts-{}", uuid::Uuid::new_v4()));
+        let db = VectorDb::open(&dir.to_string_lossy(), 2).await.unwrap();
+        db.set_bm25_analyzer(analyzer);
+        let files = docs
+            .iter()
+            .map(|(p, t)| {
+                (p.to_string(), vec![ChunkVector { chunk_index: 0, text: t.to_string(), vector: vec![1.0, 0.0] }])
+            })
+            .collect();
+        db.append_files(files).await.unwrap();
+        (db, dir)
+    }
+
+    #[tokio::test]
+    async fn bm25_francais_rapproche_singulier_et_pluriel() {
+        let docs = [("/a", "Les factures d'électricité du trimestre"), ("/b", "Un contrat de location")];
+        let (db, dir) = base(Bm25Analyzer::French, &docs).await;
+        let hits = db.keyword_search("facture electricite", 5, None).await.unwrap();
+        assert_eq!(hits.first().map(|h| h.path.as_str()), Some("/a"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn changer_d_analyseur_reconstruit_l_index() {
+        let docs = [("/a", "running shoes"), ("/b", "a quiet evening")];
+        let (db, dir) = base(Bm25Analyzer::Neutral, &docs).await;
+        assert!(db.keyword_search("run", 5, None).await.unwrap().is_empty());
+        db.set_bm25_analyzer(Bm25Analyzer::English);
+        let hits = db.keyword_search("run", 5, None).await.unwrap();
+        assert_eq!(hits.first().map(|h| h.path.as_str()), Some("/a"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn echappe_les_metacaracteres_like() {

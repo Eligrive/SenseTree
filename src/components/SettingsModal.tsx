@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import type {
   AppConfig,
+  Bm25Analyzer,
   ChatConfig,
   TranscriptionConfig,
   VideoConfig,
@@ -40,7 +41,9 @@ import {
   getDefaultPrompts,
   gpuAvailable,
   listInstalledModels,
+  inspectLocalModel,
   listLocalModels,
+  pickFolder,
   pullModel,
   reindexAll,
   setConfig,
@@ -217,6 +220,7 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   const [showPrompts, setShowPrompts] = useState(false);
   // Modèles locaux (fastembed) et leur état de téléchargement.
   const [localModels, setLocalModels] = useState<LocalModelStatus[]>([]);
+  const [localModelError, setLocalModelError] = useState<string | null>(null);
   // Catalogue ouvert pour telle tâche (null = fermé) + téléchargements en cours.
   const [catalogTask, setCatalogTask] = useState<Task | null>(null);
   const [dlBusy, setDlBusy] = useState<Record<string, boolean>>({});
@@ -955,6 +959,29 @@ Le modèle devra être re-téléchargé pour être réutilisé.`)) {
                             );
                           })}
                         </select>
+                        <button
+                          type="button"
+                          className="mt-1 text-[11px] text-blue-400 hover:underline"
+                          onClick={async () => {
+                            const dir = await pickFolder();
+                            if (!dir) return;
+                            try {
+                              const m = await inspectLocalModel(dir);
+                              setLocalModelError(null);
+                              setCfg({
+                                ...cfg,
+                                embedding: { ...cfg.embedding, model: dir, dimensions: m.dimensions },
+                              });
+                            } catch (e) {
+                              setLocalModelError(String(e));
+                            }
+                          }}
+                        >
+                          Utiliser un modèle exporté (dossier ONNX)…
+                        </button>
+                        {localModelError && (
+                          <span className="mt-1 block text-[11px] text-red-400">{localModelError}</span>
+                        )}
                         {noneReady && (
                           <span className="mt-1 block text-[11px] text-amber-400">
                             Aucun modèle local téléchargé — celui que tu choisis sera récupéré
@@ -1379,6 +1406,25 @@ Le modèle devra être re-téléchargé pour être réutilisé.`)) {
                   <option value="jina-reranker-v2-base-multilingual">
                     jina-reranker-v2 (multilingue)
                   </option>
+                </select>
+              </label>
+            )}
+            {cfg.retrieval.hybrid && (
+              <label className="flex items-center gap-2 text-xs text-zinc-400">
+                <span className="w-32 shrink-0">Analyse des mots-clés</span>
+                <select
+                  value={cfg.retrieval.bm25_analyzer}
+                  onChange={(e) =>
+                    setCfg({
+                      ...cfg,
+                      retrieval: { ...cfg.retrieval, bm25_analyzer: e.target.value as Bm25Analyzer },
+                    })
+                  }
+                  className="flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
+                >
+                  <option value="english">Racines anglaises (« running » = « run »)</option>
+                  <option value="french">Racines françaises (« factures » = « facture »)</option>
+                  <option value="neutral">Neutre (mots exacts, casse et accents ignorés)</option>
                 </select>
               </label>
             )}

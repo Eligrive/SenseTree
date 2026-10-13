@@ -414,6 +414,22 @@ pub struct RetrievalConfig {
     /// Modèle de reranking local (fastembed/ONNX). Ex. `bge-reranker-v2-m3`.
     #[serde(default = "default_reranker_model")]
     pub reranker_model: String,
+    /// Analyse lexicale de l'index BM25 (racinisation et mots vides).
+    #[serde(default)]
+    pub bm25_analyzer: Bm25Analyzer,
+}
+
+/// Analyse lexicale appliquée par l'index BM25 aux documents et aux requêtes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Bm25Analyzer {
+    /// Racinisation et mots vides anglais (défaut historique de LanceDB).
+    #[default]
+    English,
+    /// Racinisation et mots vides français.
+    French,
+    /// Ni racinisation ni mots vides : seuls la casse et les accents sont normalisés.
+    Neutral,
 }
 
 fn default_reranker_model() -> String {
@@ -426,6 +442,7 @@ impl Default for RetrievalConfig {
             hybrid: true,
             rerank: true,
             reranker_model: default_reranker_model(),
+            bm25_analyzer: Bm25Analyzer::default(),
         }
     }
 }

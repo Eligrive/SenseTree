@@ -67,6 +67,7 @@ async fn set_config(state: State<'_, Arc<AppState>>, config: AppConfig) -> Resul
 
     st.config.replace(config.clone()).map_err(|e| e.to_string())?;
     st.ai.invalidate_embedder().await;
+    st.vector.set_bm25_analyzer(config.retrieval.bm25_analyzer);
 
     // Réindexation ou reclassement : le scan en cours travaille sur un état qu'on
     // vient d'effacer → on l'annule pour qu'il reparte proprement (voir scan_epoch).
@@ -280,6 +281,17 @@ struct LocalModelStatus {
     downloaded: bool,
     /// Vrai si le modèle gère autre chose que l'anglais (famille E5 uniquement).
     multilingual: bool,
+}
+
+/// Lit le manifeste d'un modèle d'embedding exporté dans un dossier (voir `research/`).
+#[tauri::command]
+fn inspect_local_model(path: String) -> Result<providers::LocalModelManifest, String> {
+    providers::local_model_manifest(&path).map(|(_, m)| m).ok_or_else(|| {
+        format!(
+            "{path} ne contient pas de modèle exporté (model.onnx et {} attendus)",
+            providers::LOCAL_MODEL_MANIFEST
+        )
+    })
 }
 
 /// État des modèles d'embedding LOCAUX (fastembed) : lesquels sont déjà téléchargés.
@@ -1174,6 +1186,7 @@ pub fn run() {
                 VectorDb::open(&lance_uri.to_string_lossy(), dims).await
             })
             .map_err(|e| e.to_string())?;
+            vector.set_bm25_analyzer(config.snapshot().retrieval.bm25_analyzer);
             let vector = Arc::new(vector);
 
             // --- État partagé ---
@@ -1232,6 +1245,7 @@ pub fn run() {
             test_embedding_endpoint,
             list_installed_models,
             list_local_models,
+            inspect_local_model,
             download_local_model,
             model_benchmarks,
             list_benchmark_boards,

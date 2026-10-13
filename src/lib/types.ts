@@ -94,10 +94,23 @@ export interface PromptsConfig {
   reorganize: string;
 }
 
+export type Bm25Analyzer = "english" | "french" | "neutral";
+
 export interface RetrievalConfig {
   hybrid: boolean;
   rerank: boolean;
   reranker_model: string;
+  bm25_analyzer: Bm25Analyzer;
+}
+
+/// Manifeste d'un modèle d'embedding exporté dans un dossier (`sensetree-model.json`).
+export interface LocalModelManifest {
+  dimensions: number;
+  query_prefix: string;
+  passage_prefix: string;
+  pooling: string;
+  max_length: number;
+  description: string;
 }
 
 /// Budgets de la boucle d'agent. Ce que le modèle a le DROIT de faire avant de

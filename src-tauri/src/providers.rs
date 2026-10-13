@@ -62,12 +62,71 @@ fn resolve_local_model(name: &str) -> (fastembed::EmbeddingModel, usize, bool) {
     }
 }
 
+/// Provider CUDA d'ONNX Runtime. L'arène mémoire croît de la taille demandée et non par
+/// puissances de deux : avec des lots de longueurs variables, la stratégie par défaut
+/// finissait par réserver toute la mémoire d'une carte de 8 Go.
+fn cuda_provider() -> ort::execution_providers::ExecutionProviderDispatch {
+    ort::execution_providers::CUDAExecutionProvider::default()
+        .with_arena_extend_strategy(ort::execution_providers::ArenaExtendStrategy::SameAsRequested)
+        .build()
+}
+
 /// Moteur d'embedding local basé sur fastembed (ONNX Runtime).
 pub struct LocalEmbedder {
     model: Arc<fastembed::TextEmbedding>,
     dimensions: usize,
-    needs_e5_prefix: bool,
+    query_prefix: String,
+    passage_prefix: String,
     batch_size: usize,
+}
+
+/// Nom du manifeste qui accompagne un modèle exporté dans un dossier.
+pub const LOCAL_MODEL_MANIFEST: &str = "sensetree-model.json";
+
+/// Description d'un modèle d'embedding ONNX fourni sous forme de dossier (par exemple
+/// un modèle adapté au corpus de l'utilisateur, voir `research/`). Le dossier contient
+/// `model.onnx`, les fichiers du tokenizer Hugging Face et ce manifeste.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalModelManifest {
+    pub dimensions: usize,
+    #[serde(default)]
+    pub query_prefix: String,
+    #[serde(default)]
+    pub passage_prefix: String,
+    /// `mean` ou `cls`.
+    #[serde(default = "default_pooling")]
+    pub pooling: String,
+    #[serde(default = "default_max_length")]
+    pub max_length: usize,
+    #[serde(default)]
+    pub description: String,
+}
+
+fn default_pooling() -> String {
+    "mean".to_string()
+}
+
+fn default_max_length() -> usize {
+    512
+}
+
+/// Si `name` désigne un dossier de modèle exporté, renvoie son manifeste.
+pub fn local_model_manifest(name: &str) -> Option<(std::path::PathBuf, LocalModelManifest)> {
+    let dir = std::path::Path::new(name.trim());
+    if !dir.join("model.onnx").is_file() {
+        return None;
+    }
+    let raw = std::fs::read_to_string(dir.join(LOCAL_MODEL_MANIFEST)).ok()?;
+    let manifest = serde_json::from_str(&raw).ok()?;
+    Some((dir.to_path_buf(), manifest))
+}
+
+/// Dimension des vecteurs d'un modèle local (intégré ou dossier exporté).
+pub fn local_model_dims(name: &str) -> usize {
+    match local_model_manifest(name) {
+        Some((_, m)) => m.dimensions,
+        None => resolve_local_model(name).1,
+    }
 }
 
 /// Modèles d'embedding locaux (fastembed) supportés : identifiant, dimension, et
@@ -103,6 +162,9 @@ pub fn local_cache_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
 /// Vrai si le modèle local est déjà téléchargé dans le cache (layout hf-hub :
 /// `models--{org}--{repo}`).
 pub fn is_local_model_cached(data_dir: &std::path::Path, name: &str) -> bool {
+    if local_model_manifest(name).is_some() {
+        return true;
+    }
     let (kind, _, _) = resolve_local_model(name);
     let code = fastembed::TextEmbedding::list_supported_models()
         .into_iter()
@@ -121,7 +183,15 @@ impl LocalEmbedder {
         batch_size: usize,
         cache_dir: std::path::PathBuf,
     ) -> Result<Self> {
+        if let Some((dir, manifest)) = local_model_manifest(&cfg.model) {
+            return Self::load_dir(&dir, &manifest, cfg.use_gpu, batch_size);
+        }
         let (model_kind, dimensions, needs_e5_prefix) = resolve_local_model(&cfg.model);
+        let (query_prefix, passage_prefix) = if needs_e5_prefix {
+            ("query: ".to_string(), "passage: ".to_string())
+        } else {
+            (String::new(), String::new())
+        };
 
         let mut options = fastembed::InitOptions::new(model_kind)
             .with_show_download_progress(false)
@@ -132,7 +202,7 @@ impl LocalEmbedder {
             // via ORT_DYLIB_PATH. Ici on demande le provider CUDA : s'il est
             // indisponible (lib CPU ou pas de GPU), ORT retombe sur CPU.
             options = options.with_execution_providers(vec![
-                ort::execution_providers::CUDAExecutionProvider::default().build(),
+                cuda_provider(),
                 ort::execution_providers::CPUExecutionProvider::default().build(),
             ]);
             tracing::info!("embedding local : provider CUDA demandé (repli CPU automatique)");
@@ -144,20 +214,60 @@ impl LocalEmbedder {
         Ok(LocalEmbedder {
             model: Arc::new(model),
             dimensions,
-            needs_e5_prefix,
+            query_prefix,
+            passage_prefix,
             batch_size: batch_size.max(1),
         })
     }
 
+    /// Charge un modèle exporté dans un dossier (bloquant).
+    pub fn load_dir(
+        dir: &std::path::Path,
+        manifest: &LocalModelManifest,
+        use_gpu: bool,
+        batch_size: usize,
+    ) -> Result<Self> {
+        let read = |f: &str| {
+            std::fs::read(dir.join(f)).with_context(|| format!("lecture de {}", dir.join(f).display()))
+        };
+        let tokenizer = fastembed::TokenizerFiles {
+            tokenizer_file: read("tokenizer.json")?,
+            config_file: read("config.json")?,
+            special_tokens_map_file: read("special_tokens_map.json")?,
+            tokenizer_config_file: read("tokenizer_config.json")?,
+        };
+        let pooling = match manifest.pooling.as_str() {
+            "cls" => fastembed::Pooling::Cls,
+            _ => fastembed::Pooling::Mean,
+        };
+        let user = fastembed::UserDefinedEmbeddingModel::new(read("model.onnx")?, tokenizer)
+            .with_pooling(pooling);
+        let mut options = fastembed::InitOptionsUserDefined::new().with_max_length(manifest.max_length);
+        if use_gpu {
+            options = options.with_execution_providers(vec![
+                cuda_provider(),
+                ort::execution_providers::CPUExecutionProvider::default().build(),
+            ]);
+        }
+        let model = fastembed::TextEmbedding::try_new_from_user_defined(user, options)
+            .context("chargement du modèle d'embedding exporté")?;
+        Ok(LocalEmbedder {
+            model: Arc::new(model),
+            dimensions: manifest.dimensions,
+            query_prefix: manifest.query_prefix.clone(),
+            passage_prefix: manifest.passage_prefix.clone(),
+            batch_size: batch_size.max(1),
+        })
+    }
 }
 
 #[async_trait]
 impl EmbeddingProvider for LocalEmbedder {
     async fn embed_documents(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        let inputs: Vec<String> = if self.needs_e5_prefix {
-            texts.into_iter().map(|t| format!("passage: {t}")).collect()
-        } else {
+        let inputs: Vec<String> = if self.passage_prefix.is_empty() {
             texts
+        } else {
+            texts.into_iter().map(|t| format!("{}{t}", self.passage_prefix)).collect()
         };
         // Mesuré ici plutôt qu'aux appels : le worker embedde depuis quatre endroits,
         // et un cinquième ajouté plus tard échapperait au compteur.
@@ -187,11 +297,7 @@ impl EmbeddingProvider for LocalEmbedder {
     }
 
     async fn embed_query(&self, text: String) -> Result<Vec<f32>> {
-        let input = if self.needs_e5_prefix {
-            format!("query: {text}")
-        } else {
-            text
-        };
+        let input = format!("{}{text}", self.query_prefix);
         let mut out = self.embed_documents_raw(vec![input]).await?;
         out.pop().ok_or_else(|| anyhow!("aucun vecteur produit pour la requête"))
     }
@@ -424,10 +530,17 @@ pub struct Reranker {
 
 impl Reranker {
     /// Charge le modèle (bloquant : appeler via `spawn_blocking`, ORT déjà prêt).
-    pub fn load(model_name: &str, cache_dir: std::path::PathBuf) -> Result<Self> {
-        let opts = fastembed::RerankInitOptions::new(resolve_reranker_model(model_name))
+    /// `use_gpu` demande le provider CUDA, avec repli CPU s'il est indisponible.
+    pub fn load(model_name: &str, cache_dir: std::path::PathBuf, use_gpu: bool) -> Result<Self> {
+        let mut opts = fastembed::RerankInitOptions::new(resolve_reranker_model(model_name))
             .with_show_download_progress(false)
             .with_cache_dir(cache_dir);
+        if use_gpu {
+            opts = opts.with_execution_providers(vec![
+                cuda_provider(),
+                ort::execution_providers::CPUExecutionProvider::default().build(),
+            ]);
+        }
         let model =
             fastembed::TextRerank::try_new(opts).context("chargement du reranker (fastembed)")?;
         Ok(Reranker { model: Arc::new(model) })
@@ -1410,7 +1523,9 @@ impl AiEngine {
     /// Renvoie le reranker courant (chargé paresseusement, mis en cache). Reconstruit
     /// si le modèle configuré change.
     pub async fn reranker(&self) -> Result<Arc<Reranker>> {
-        let key = self.config.snapshot().retrieval.reranker_model;
+        let cfg = self.config.snapshot();
+        let use_gpu = cfg.embedding.use_gpu;
+        let key = format!("{}|{use_gpu}", cfg.retrieval.reranker_model);
         let mut guard = self.reranker.lock().await;
         if let Some(c) = guard.as_ref() {
             if c.key == key {
@@ -1419,8 +1534,8 @@ impl AiEngine {
         }
         self.ensure_ort_ready().await?;
         let cache = local_cache_dir(&self.data_dir);
-        let name = key.clone();
-        let reranker = tokio::task::spawn_blocking(move || Reranker::load(&name, cache))
+        let name = cfg.retrieval.reranker_model.clone();
+        let reranker = tokio::task::spawn_blocking(move || Reranker::load(&name, cache, use_gpu))
             .await
             .context("tâche de chargement du reranker interrompue")??;
         let reranker = Arc::new(reranker);
@@ -1601,7 +1716,7 @@ impl AiEngine {
         // tourneraient en continu). On rapporte l'état sans instancier.
         let (embedding_ok, embedding_detail) = match cfg.embedding.mode {
             EmbeddingMode::Local => {
-                let dims = resolve_local_model(&cfg.embedding.model).1;
+                let dims = local_model_dims(&cfg.embedding.model);
                 let detail = if self.embedder_loaded().await {
                     format!("chargé ({dims} dims)")
                 } else {

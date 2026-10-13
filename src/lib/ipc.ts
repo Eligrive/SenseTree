@@ -18,6 +18,7 @@ import type {
   HealthReport,
   ImageHit,
   IndexingQueueView,
+  LocalModelManifest,
   IndexingStats,
   InstallInfo,
   LoadedModel,
@@ -50,6 +51,8 @@ export const testEmbeddingEndpoint = (baseUrl: string, apiKey: string, model: st
 export const listInstalledModels = (baseUrl: string, apiKey: string) =>
   invoke<string[]>("list_installed_models", { baseUrl, apiKey });
 export const listLocalModels = () => invoke<LocalModelStatus[]>("list_local_models");
+export const inspectLocalModel = (path: string) =>
+  invoke<LocalModelManifest>("inspect_local_model", { path });
 export const downloadLocalModel = (model: string) =>
   invoke<string>("download_local_model", { model });
 export const listBenchmarkBoards = () => invoke<BoardInfo[]>("list_benchmark_boards");
