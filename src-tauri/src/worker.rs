@@ -517,38 +517,12 @@ async fn store_text_document(
     // reasoning indisponible, ou texte trop court.
     let summary = qualify_or_excerpt(state, &cfg, path, doc_type, text, qualify).await;
 
-    // TEXTE STOCKÉ : brut (snippets/BM25/rerank propres). Le 1er chunk porte en plus la
-    // qualification complète, ce qui la rend cherchable AUSSI par mots-clés (BM25) —
-    // ex. « carte d'identité » retrouvable même absent de l'OCR.
-    let stored_texts: Vec<String> = {
-        let mut t: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-        if let Some(first) = t.first_mut() {
-            *first = format!("[{doc_type}] {summary}\n\n{first}");
-        }
-        t
-    };
-
-    // CONTEXTUAL RETRIEVAL : on situe chaque chunk dans son document (nom + sens) dans
-    // le texte EMBEDDÉ (pas stocké). Un chunk isolé « le montant est de 90€ » devient
-    // ainsi rattachable à « facture EDF » → dense bien plus robuste. Le 1er chunk
-    // contient déjà la qualification, inutile de la redoubler.
     let file_name = std::path::Path::new(path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let ctx_compact: String = summary.split_whitespace().collect::<Vec<_>>().join(" ");
-    let ctx_compact: String = ctx_compact.chars().take(180).collect();
-    let embed_texts: Vec<String> = stored_texts
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            if i == 0 {
-                t.clone()
-            } else {
-                format!("{file_name} · {ctx_compact}\n\n{t}")
-            }
-        })
-        .collect();
+    let raw: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+    let (stored_texts, embed_texts) = chunk_texts(&file_name, doc_type, &summary, raw);
 
     // On garde LES DEUX : la qualification (« sens ») ET le contenu extrait (borné), pour
     // pouvoir les afficher côte à côte et comparer au document.
@@ -572,6 +546,41 @@ async fn store_text_document(
         embed: embed_texts,
         log: format!("✅ indexé ({} car., {doc_type}) : {path}", text.len()),
     }))
+}
+
+/// Textes STOCKÉS et textes EMBEDDÉS des chunks d'un document.
+///
+/// Stocké : brut (snippets/BM25/rerank propres). Le 1er chunk porte en plus la
+/// qualification complète, ce qui la rend cherchable AUSSI par mots-clés (BM25) —
+/// ex. « carte d'identité » retrouvable même absent de l'OCR.
+///
+/// Embeddé (CONTEXTUAL RETRIEVAL) : chaque chunk est situé dans son document (nom +
+/// sens). Un chunk isolé « le montant est de 90€ » devient ainsi rattachable à
+/// « facture EDF ». Le 1er chunk contient déjà la qualification, inutile de la redoubler.
+pub fn chunk_texts(
+    file_name: &str,
+    doc_type: &str,
+    summary: &str,
+    chunks: Vec<String>,
+) -> (Vec<String>, Vec<String>) {
+    let mut stored = chunks;
+    if let Some(first) = stored.first_mut() {
+        *first = format!("[{doc_type}] {summary}\n\n{first}");
+    }
+    let ctx_compact: String = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    let ctx_compact: String = ctx_compact.chars().take(180).collect();
+    let embed = stored
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            if i == 0 {
+                t.clone()
+            } else {
+                format!("{file_name} · {ctx_compact}\n\n{t}")
+            }
+        })
+        .collect();
+    (stored, embed)
 }
 
 /// Renvoie le « sens » d'un document : qualification LLM si autorisée et possible,
@@ -1882,7 +1891,25 @@ startxref
         assert!(pages.is_empty(), "max = 0 doit ne rien rendre");
     }
 
-    use super::{strip_html, strip_xml_into, summary_of};
+    use super::{chunk_texts, strip_html, strip_xml_into, summary_of};
+
+    #[test]
+    fn chunk_texts_situe_chaque_chunk_dans_son_document() {
+        let (stored, embed) = chunk_texts(
+            "facture.pdf",
+            "pdf",
+            "Facture EDF de mars",
+            vec!["Montant : 90 €".into(), "Échéance le 12".into()],
+        );
+        assert_eq!(stored[0], "[pdf] Facture EDF de mars
+
+Montant : 90 €");
+        assert_eq!(stored[1], "Échéance le 12");
+        assert_eq!(embed[0], stored[0]);
+        assert_eq!(embed[1], "facture.pdf · Facture EDF de mars
+
+Échéance le 12");
+    }
 
     #[test]
     fn summary_of_nettoie_et_tronque() {

@@ -1,5 +1,9 @@
 //! Recherche sémantique : embedding de la requête → plus proches voisins LanceDB
 //! → vérification d'existence disque → dédoublonnage par fichier.
+//!
+//! Les étapes de classement (fusion RRF, reranking, dédoublonnage) sont des fonctions
+//! pures, partagées avec le banc de mesure `examples/retrieval_eval.rs` : les scores
+//! publiés sont ceux du code exécuté par l'application.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -9,6 +13,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::state::AppState;
+use crate::vectordb::SearchHit;
 
 #[derive(Debug, Serialize)]
 pub struct SearchResult {
@@ -37,28 +42,193 @@ const RRF_K: f32 = 60.0;
 /// Longueur max (caractères) d'un document envoyé au reranker. Les cross-encoders
 /// tronquent de toute façon vers ~512 tokens : borner en amont réduit la latence sur
 /// les gros chunks sans perte notable (l'entête d'un chunk est le plus pertinent).
-const RERANK_DOC_CHARS: usize = 800;
+pub const RERANK_DOC_CHARS: usize = 800;
+
+/// Bassin de chunks demandé à chaque branche (dense, BM25) avant fusion.
+pub fn candidate_pool(limit: usize) -> usize {
+    (limit * 6).clamp(30, 160)
+}
+
+/// Nombre de candidats fusionnés soumis au cross-encoder.
+pub fn rerank_pool(limit: usize) -> usize {
+    (limit * 3).clamp(20, 100)
+}
 
 /// Candidat au niveau CHUNK, avant reranking et dédoublonnage par fichier.
-struct Candidate {
-    path: String,
-    text: String,
-    snippet: String,
+#[derive(Debug, Clone)]
+pub struct Candidate {
+    pub path: String,
+    pub chunk_index: i32,
+    pub text: String,
+    pub snippet: String,
     /// Similarité cosinus dense, si le chunk a été trouvé par la recherche vectorielle.
-    dense: Option<f32>,
+    pub dense: Option<f32>,
     /// Score de fusion RRF (dense + BM25) — sert au classement hybride.
-    rrf: f32,
+    pub rrf: f32,
+}
+
+/// Ordre total : score décroissant, puis chemin et index de chunk. Les égalités de
+/// RRF sont fréquentes (deux chunks au même rang dans des branches différentes) ;
+/// sans ce départage, l'ordre dépendait de l'itération d'une HashMap et variait
+/// d'une exécution à l'autre.
+fn sort_candidates(cands: &mut [Candidate]) {
+    cands.sort_by(|a, b| {
+        b.rrf
+            .partial_cmp(&a.rrf)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.chunk_index.cmp(&b.chunk_index))
+    });
+}
+
+/// Mode dense pur (hybride désactivé) : le cosinus sert de score de fusion.
+pub fn dense_candidates_only(dense: Vec<SearchHit>) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = dense
+        .into_iter()
+        .map(|h| Candidate {
+            dense: Some(relevance(h.score)),
+            rrf: relevance(h.score),
+            path: h.path,
+            chunk_index: h.chunk_index,
+            text: h.text,
+            snippet: h.snippet,
+        })
+        .collect();
+    sort_candidates(&mut out);
+    out
+}
+
+/// Reciprocal Rank Fusion : score = Σ 1/(k + rang). Indépendant de l'échelle des
+/// scores (cosinus vs BM25) — c'est tout l'intérêt du RRF. Les entrées doivent être
+/// triées par pertinence décroissante.
+pub fn fuse_rrf(dense: Vec<SearchHit>, sparse: Vec<SearchHit>) -> Vec<Candidate> {
+    let mut fused: HashMap<(String, i32), Candidate> = HashMap::new();
+    for (rank, h) in dense.into_iter().enumerate() {
+        let contrib = 1.0 / (RRF_K + rank as f32 + 1.0);
+        fused
+            .entry((h.path.clone(), h.chunk_index))
+            .and_modify(|c| {
+                c.rrf += contrib;
+                c.dense = Some(relevance(h.score));
+            })
+            .or_insert(Candidate {
+                dense: Some(relevance(h.score)),
+                rrf: contrib,
+                path: h.path,
+                chunk_index: h.chunk_index,
+                text: h.text,
+                snippet: h.snippet,
+            });
+    }
+    for (rank, h) in sparse.into_iter().enumerate() {
+        let contrib = 1.0 / (RRF_K + rank as f32 + 1.0);
+        fused
+            .entry((h.path.clone(), h.chunk_index))
+            .and_modify(|c| c.rrf += contrib)
+            .or_insert(Candidate {
+                dense: None,
+                rrf: contrib,
+                path: h.path,
+                chunk_index: h.chunk_index,
+                text: h.text,
+                snippet: h.snippet,
+            });
+    }
+    let mut out: Vec<Candidate> = fused.into_values().collect();
+    sort_candidates(&mut out);
+    out
+}
+
+/// Textes envoyés au cross-encoder : les `pool` premiers candidats, tronqués.
+pub fn rerank_inputs(cands: &[Candidate], pool: usize) -> Vec<String> {
+    cands[..cands.len().min(pool)]
+        .iter()
+        .map(|c| c.text.chars().take(RERANK_DOC_CHARS).collect())
+        .collect()
+}
+
+/// Réaligne la sortie du reranker (triée par score) sur l'ordre des candidats.
+pub fn logits_by_position(order: Vec<(usize, f32)>, top: usize) -> Vec<f32> {
+    let mut logits = vec![f32::MIN; top];
+    for (idx, logit) in order {
+        if idx < top {
+            logits[idx] = logit;
+        }
+    }
+    logits
+}
+
+/// Classement final puis meilleur chunk par fichier. Si le reranker a tourné, les
+/// candidats rerankés passent en tête dans l'ordre de ses logits, suivis des autres
+/// dans l'ordre de fusion : on peut ainsi reranker moins de candidats qu'on n'en
+/// affiche sans perdre de résultats. `keep` écarte les chemins à ignorer (fichier
+/// disparu du disque).
+pub fn finalize(
+    cands: Vec<Candidate>,
+    rerank_logits: Option<Vec<f32>>,
+    limit: usize,
+    keep: impl Fn(&str) -> bool,
+) -> Vec<SearchResult> {
+    let max_rrf = cands.iter().map(|c| c.rrf).fold(f32::MIN, f32::max).max(1e-6);
+    struct Scored {
+        path: String,
+        snippet: String,
+        rank: f32,
+        display: f32,
+    }
+    let reranked = rerank_logits.as_ref().map(|l| l.len()).unwrap_or(0);
+    let mut scored: Vec<Scored> = Vec::with_capacity(cands.len());
+    for (i, c) in cands.into_iter().enumerate() {
+        let fused = c.dense.unwrap_or((c.rrf / max_rrf).clamp(0.0, 1.0));
+        let (rank, display) = match &rerank_logits {
+            Some(logits) if i < reranked => (logits[i], sigmoid(logits[i])),
+            // Queue non rerankée : sous toute la tête, ordre de fusion conservé par le
+            // tri stable.
+            Some(_) => (f32::NEG_INFINITY, fused),
+            None => (c.rrf, fused),
+        };
+        scored.push(Scored { path: c.path, snippet: c.snippet, rank, display });
+    }
+    scored.sort_by(|a, b| b.rank.partial_cmp(&a.rank).unwrap_or(std::cmp::Ordering::Equal));
+    // Un score affiché ne doit jamais remonter le long de la liste : la queue est
+    // plafonnée au dernier score de la tête.
+    if reranked > 0 && scored.len() > reranked {
+        let floor = scored[..reranked].iter().map(|s| s.display).fold(f32::MAX, f32::min);
+        for s in &mut scored[reranked..] {
+            s.display = s.display.min(floor);
+        }
+    }
+
+    let mut results: Vec<SearchResult> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for s in scored {
+        if !seen.insert(s.path.clone()) {
+            continue;
+        }
+        if !keep(&s.path) {
+            continue;
+        }
+        let name = Path::new(&s.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| s.path.clone());
+        results.push(SearchResult { path: s.path, name, score: s.display, snippet: s.snippet });
+        if results.len() >= limit {
+            break;
+        }
+    }
+    results
 }
 
 /// Branche dense : embedding de la requête puis plus proches voisins LanceDB.
 /// Isolée pour que son échec (serveur d'embedding injoignable, fragment LanceDB
 /// disparu…) soit RATTRAPABLE par la branche mots-clés au lieu de tout annuler.
-async fn dense_candidates(
+async fn dense_hits(
     state: &AppState,
     query: &str,
     scope: Option<&str>,
     pool: usize,
-) -> Result<Vec<crate::vectordb::SearchHit>, String> {
+) -> Result<Vec<SearchHit>, String> {
     let embedder = state.ai.embedder().await.map_err(|e| e.to_string())?;
     let qvec = embedder
         .embed_query(query.to_string())
@@ -83,7 +253,7 @@ async fn retrieve_candidates(
 
     // L'échec dense n'est pas fatal en mode hybride : on le retient pour ne le
     // remonter que si les mots-clés ne sauvent pas la mise.
-    let (dense, panne_dense) = match dense_candidates(state, query, scope, pool).await {
+    let (dense, panne_dense) = match dense_hits(state, query, scope, pool).await {
         Ok(hits) => (hits, None),
         Err(e) if hybride => {
             tracing::warn!("recherche dense en panne, repli sur BM25 seul : {e}");
@@ -93,18 +263,8 @@ async fn retrieve_candidates(
         Err(e) => return Err(e),
     };
 
-    // Mode dense pur (hybride désactivé) : comportement historique conservé.
     if !hybride {
-        return Ok(dense
-            .into_iter()
-            .map(|h| Candidate {
-                dense: Some(relevance(h.score)),
-                rrf: relevance(h.score),
-                path: h.path,
-                text: h.text,
-                snippet: h.snippet,
-            })
-            .collect());
+        return Ok(dense_candidates_only(dense));
     }
 
     // BM25 (best-effort : index pas prêt → on continue en dense seul).
@@ -124,42 +284,7 @@ async fn retrieve_candidates(
         tracing::warn!("résultats DÉGRADÉS : mots-clés seuls, la recherche dense est en panne");
     }
 
-    // Reciprocal Rank Fusion : score = Σ 1/(k + rang). Indépendant de l'échelle des
-    // scores (cosinus vs BM25) — c'est tout l'intérêt du RRF.
-    let mut fused: HashMap<(String, i32), Candidate> = HashMap::new();
-    for (rank, h) in dense.into_iter().enumerate() {
-        let contrib = 1.0 / (RRF_K + rank as f32 + 1.0);
-        fused
-            .entry((h.path.clone(), h.chunk_index))
-            .and_modify(|c| {
-                c.rrf += contrib;
-                c.dense = Some(relevance(h.score));
-            })
-            .or_insert(Candidate {
-                dense: Some(relevance(h.score)),
-                rrf: contrib,
-                path: h.path,
-                text: h.text,
-                snippet: h.snippet,
-            });
-    }
-    for (rank, h) in sparse.into_iter().enumerate() {
-        let contrib = 1.0 / (RRF_K + rank as f32 + 1.0);
-        fused
-            .entry((h.path.clone(), h.chunk_index))
-            .and_modify(|c| c.rrf += contrib)
-            .or_insert(Candidate {
-                dense: None,
-                rrf: contrib,
-                path: h.path,
-                text: h.text,
-                snippet: h.snippet,
-            });
-    }
-
-    let mut out: Vec<Candidate> = fused.into_values().collect();
-    out.sort_by(|a, b| b.rrf.partial_cmp(&a.rrf).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(out)
+    Ok(fuse_rrf(dense, sparse))
 }
 
 #[tauri::command]
@@ -187,76 +312,25 @@ pub(crate) async fn run_semantic_search(
         return Ok(Vec::new());
     }
 
-    // Bassin de candidats généreux avant reranking / dédoublonnage.
-    let pool = (limit * 6).clamp(30, 160);
-    let cands = retrieve_candidates(state, &query, scope, pool).await?;
+    let cands = retrieve_candidates(state, &query, scope, candidate_pool(limit)).await?;
     if cands.is_empty() {
         return Ok(Vec::new());
     }
 
     // Reranking cross-encoder du haut du panier (best-effort : indisponible → on
     // conserve l'ordre de fusion). Le score affiché devient la sigmoïde du logit.
-    let cfg = state.config.snapshot();
-    let rerank_pool = (limit * 3).clamp(20, 100);
-    let mut rerank_logits: Option<Vec<f32>> = None;
-    if cfg.retrieval.rerank {
-        let top = cands.len().min(rerank_pool);
+    let mut logits: Option<Vec<f32>> = None;
+    if state.config.snapshot().retrieval.rerank {
         if let Ok(rr) = state.ai.reranker().await {
-            let docs: Vec<String> = cands[..top]
-                .iter()
-                .map(|c| c.text.chars().take(RERANK_DOC_CHARS).collect())
-                .collect();
+            let docs = rerank_inputs(&cands, rerank_pool(limit));
+            let top = docs.len();
             if let Ok(order) = rr.rerank(query.clone(), docs).await {
-                let mut logits = vec![f32::MIN; top];
-                for (idx, logit) in order {
-                    if idx < top {
-                        logits[idx] = logit;
-                    }
-                }
-                rerank_logits = Some(logits);
+                logits = Some(logits_by_position(order, top));
             }
         }
     }
 
-    // Score de rang + score d'affichage (0–1) par candidat.
-    let max_rrf = cands.iter().map(|c| c.rrf).fold(f32::MIN, f32::max).max(1e-6);
-    struct Scored {
-        path: String,
-        snippet: String,
-        rank: f32,
-        display: f32,
-    }
-    let considered = rerank_logits.as_ref().map(|l| l.len()).unwrap_or(cands.len());
-    let mut scored: Vec<Scored> = Vec::with_capacity(considered);
-    for (i, c) in cands.into_iter().enumerate().take(considered) {
-        let (rank, display) = match &rerank_logits {
-            Some(logits) => (logits[i], sigmoid(logits[i])),
-            None => (c.rrf, c.dense.unwrap_or((c.rrf / max_rrf).clamp(0.0, 1.0))),
-        };
-        scored.push(Scored { path: c.path, snippet: c.snippet, rank, display });
-    }
-    scored.sort_by(|a, b| b.rank.partial_cmp(&a.rank).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Dédoublonnage par fichier existant : meilleur chunk par chemin.
-    let mut results: Vec<SearchResult> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for s in scored {
-        if !seen.insert(s.path.clone()) {
-            continue;
-        }
-        if !Path::new(&s.path).exists() {
-            continue;
-        }
-        let name = Path::new(&s.path)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| s.path.clone());
-        results.push(SearchResult { path: s.path, name, score: s.display, snippet: s.snippet });
-        if results.len() >= limit {
-            break;
-        }
-    }
-    Ok(results)
+    Ok(finalize(cands, logits, limit, |p| Path::new(p).exists()))
 }
 
 // =========================================================================
@@ -379,7 +453,7 @@ pub async fn semantic_tree(
 
 #[cfg(test)]
 mod tests {
-    use super::{relevance, sigmoid};
+    use super::*;
 
     #[test]
     fn relevance_est_le_cosinus_borne() {
@@ -396,5 +470,74 @@ mod tests {
         assert!(sigmoid(-8.0) < 0.001 && sigmoid(-8.0) > 0.0);
         assert!(sigmoid(8.0) > 0.999 && sigmoid(8.0) < 1.0);
         assert!(sigmoid(1.0) > sigmoid(-1.0)); // strictement monotone
+    }
+
+    fn hit(path: &str, chunk: i32, score: f32) -> SearchHit {
+        SearchHit {
+            path: path.into(),
+            chunk_index: chunk,
+            score,
+            text: format!("{path}#{chunk}"),
+            snippet: String::new(),
+        }
+    }
+
+    #[test]
+    fn rrf_favorise_un_chunk_present_dans_les_deux_branches() {
+        let dense = vec![hit("a", 0, 0.9), hit("b", 0, 0.8)];
+        let sparse = vec![hit("b", 0, 12.0), hit("c", 0, 9.0)];
+        let fused = fuse_rrf(dense, sparse);
+        let ordre: Vec<&str> = fused.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(ordre, ["b", "a", "c"]);
+        assert!((fused[0].rrf - (1.0 / 62.0 + 1.0 / 61.0)).abs() < 1e-6);
+        assert_eq!(fused[2].dense, None);
+    }
+
+    #[test]
+    fn rrf_departage_les_egalites_de_facon_deterministe() {
+        // « z » est 1er en dense, « a » 1er en BM25 : même score RRF.
+        for _ in 0..20 {
+            let fused = fuse_rrf(vec![hit("z", 0, 0.9)], vec![hit("a", 0, 3.0)]);
+            assert_eq!(fused[0].path, "a");
+            assert_eq!(fused[1].path, "z");
+        }
+    }
+
+    #[test]
+    fn finalize_garde_le_meilleur_chunk_par_fichier() {
+        let cands = fuse_rrf(vec![hit("a", 0, 0.9), hit("a", 1, 0.8), hit("b", 0, 0.7)], vec![]);
+        let res = finalize(cands, None, 10, |_| true);
+        let chemins: Vec<&str> = res.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(chemins, ["a", "b"]);
+    }
+
+    #[test]
+    fn finalize_place_la_tete_rerankee_avant_la_queue_de_fusion() {
+        let cands = fuse_rrf(
+            vec![hit("a", 0, 0.9), hit("b", 0, 0.8), hit("c", 0, 0.7), hit("d", 0, 0.6)],
+            vec![],
+        );
+        let logits = logits_by_position(vec![(1, 4.0), (0, -2.0)], 2);
+        let res = finalize(cands, Some(logits), 10, |_| true);
+        let chemins: Vec<&str> = res.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(chemins, ["b", "a", "c", "d"]);
+        assert!((res[0].score - sigmoid(4.0)).abs() < 1e-6);
+        assert!(res[2].score <= res[1].score && res[3].score <= res[2].score);
+    }
+
+    #[test]
+    fn finalize_ecarte_les_fichiers_disparus() {
+        let cands = fuse_rrf(vec![hit("a", 0, 0.9), hit("b", 0, 0.8)], vec![]);
+        let res = finalize(cands, None, 10, |p| p != "a");
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].path, "b");
+    }
+
+    #[test]
+    fn bassins_de_candidats() {
+        assert_eq!(candidate_pool(30), 160);
+        assert_eq!(candidate_pool(1), 30);
+        assert_eq!(rerank_pool(30), 90);
+        assert_eq!(rerank_pool(1), 20);
     }
 }
