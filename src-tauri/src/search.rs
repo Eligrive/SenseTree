@@ -15,7 +15,7 @@ use tauri::State;
 use crate::state::AppState;
 use crate::vectordb::SearchHit;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
     pub path: String,
     pub name: String,
@@ -49,9 +49,15 @@ pub fn candidate_pool(limit: usize) -> usize {
     (limit * 6).clamp(30, 160)
 }
 
-/// Nombre de candidats fusionnés soumis au cross-encoder.
+/// Nombre de candidats fusionnés soumis au cross-encoder ; les suivants gardent
+/// l'ordre de fusion (voir `finalize`).
+///
+/// Mesuré sur cinq jeux publics (`research/`) : reranker les 20 premiers donne le
+/// même nDCG@10 moyen que les 90 qu'on soumettait auparavant (0,474 dans les deux
+/// cas), pour un temps de calcul divisé par cinq. Sur un CPU de bureau, le
+/// cross-encoder prenait 64 s médianes par recherche à 90 candidats, 12 s à 20.
 pub fn rerank_pool(limit: usize) -> usize {
-    (limit * 3).clamp(20, 100)
+    limit.clamp(10, 20)
 }
 
 /// Candidat au niveau CHUNK, avant reranking et dédoublonnage par fichier.
@@ -537,7 +543,7 @@ mod tests {
     fn bassins_de_candidats() {
         assert_eq!(candidate_pool(30), 160);
         assert_eq!(candidate_pool(1), 30);
-        assert_eq!(rerank_pool(30), 90);
-        assert_eq!(rerank_pool(1), 20);
+        assert_eq!(rerank_pool(30), 20);
+        assert_eq!(rerank_pool(6), 10);
     }
 }

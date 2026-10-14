@@ -347,11 +347,15 @@ async fn main() -> Result<()> {
     let mut logit_cache = LogitCache::open(args.cache.join("rerank").join(format!("{dataset}-{}.tsv", sanitize(&args.reranker))))?;
 
     let pool = candidate_pool(args.limit);
-    let depth_max = rerank_pool(args.limit);
-    let mut depths: Vec<usize> = args.depths.iter().copied().filter(|d| *d <= depth_max).collect();
-    if !depths.contains(&depth_max) {
-        depths.push(depth_max);
+    // Profondeurs mesurées : celles demandées, plus celle de l'application.
+    let app_depth = rerank_pool(args.limit);
+    let mut depths: Vec<usize> = args.depths.clone();
+    if !depths.contains(&app_depth) {
+        depths.push(app_depth);
     }
+    depths.sort_unstable();
+    depths.dedup();
+    let depth_max = *depths.last().unwrap_or(&app_depth);
 
     let mut runs: BTreeMap<String, BTreeMap<String, Vec<SearchResult>>> = BTreeMap::new();
     let mut timings = Timings::default();
@@ -457,15 +461,11 @@ async fn main() -> Result<()> {
         let logits: Vec<f32> = (0..top).map(|i| logit_cache.map[&LogitCache::key(qid, &cands[i])]).collect();
         for &d in &depths {
             let order: Vec<(usize, f32)> = logits[..d.min(top)].iter().copied().enumerate().collect();
-            let name = if d == depth_max {
-                format!("hybrid-{rerank_an}-rerank")
-            } else {
-                format!("hybrid-{rerank_an}-rerank{d}")
-            };
-            runs.entry(name).or_default().insert(
-                qid.clone(),
-                finalize(cands.clone(), Some(logits_by_position(order, d.min(top))), args.limit, keep),
-            );
+            let ranked = finalize(cands.clone(), Some(logits_by_position(order, d.min(top))), args.limit, keep);
+            if d == app_depth {
+                runs.entry(format!("hybrid-{rerank_an}-rerank")).or_default().insert(qid.clone(), ranked.clone());
+            }
+            runs.entry(format!("hybrid-{rerank_an}-rerank{d}")).or_default().insert(qid.clone(), ranked);
         }
 
         if n % 25 == 24 {
@@ -487,7 +487,8 @@ async fn main() -> Result<()> {
         "overlap": args.overlap,
         "limit": args.limit,
         "candidate_pool": pool,
-        "rerank_pool": depth_max,
+        "rerank_pool": app_depth,
+        "rerank_depths": depths,
         "rerank_analyzer": rerank_an,
         "queries": qids.len(),
         "indexing": indexing,
