@@ -1,0 +1,1 @@
+{"fp32":{"min_cosine":1.0,"mean_cosine":1.0,"size_mb":448.4626},"int8":{"min_cosine":0.9644,"mean_cosine":0.9829,"size_mb":112.8225}}

@@ -1,0 +1,404 @@
+"""Builds the result tables (Markdown) and figures (PNG) from ``results/``.
+
+Every comparison is paired over the same queries: mean difference, 95% bootstrap
+interval and randomisation-test p-value (``sensetree_research.stats``).
+"""
+
+import json
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+
+from sensetree_research.data import DATASETS, HELD_OUT, IN_DOMAIN
+from sensetree_research.stats import compare
+
+ROOT = Path(__file__).resolve().parent.parent
+RES = ROOT / "results"
+FIG = ROOT / "figures"
+METRIC = "ndcg@10"
+
+# Categorical slots, fixed order (validated palette, light surface).
+COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+INK, MUTED, GRID = "#0b0b0b", "#52514e", "#e4e3df"
+
+DENSE_MODELS = [
+    ("e5-small", "multilingual-e5-small (118M, shipped)"),
+    ("e5-small-sup", "e5-small + supervised fine-tuning"),
+    ("e5-small-syn", "e5-small + synthetic queries, filtered, contrastive"),
+    ("e5-small-both", "e5-small + both"),
+    ("e5-small-syn-marginmse", "e5-small + synthetic queries, MarginMSE loss (GPL)"),
+    ("e5-base", "multilingual-e5-base (278M)"),
+    ("e5-large", "multilingual-e5-large (560M)"),
+    ("bge-m3", "bge-m3 (568M)"),
+]
+PIPELINE_STEPS = [
+    ("bm25-english", "BM25"),
+    ("dense", "Dense"),
+    ("hybrid-english", "Hybrid (RRF)"),
+    ("hybrid-english-rerank90", "Hybrid + rerank 90"),
+    ("hybrid-english-rerank20", "Hybrid + rerank 20"),
+]
+
+
+def style(ax):
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(GRID)
+    ax.tick_params(colors=MUTED, labelsize=9)
+    ax.yaxis.grid(True, color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+
+
+def fmt_delta(c) -> str:
+    star = "**" if c.p_value < 0.05 else ""
+    return f"{star}{c.delta:+.3f}{star} [{c.ci_low:+.3f}, {c.ci_high:+.3f}]"
+
+
+def load_dense(tag: str, name: str):
+    p = RES / "dense" / "test" / tag / f"{name}.json"
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def load_pipeline(model: str, name: str):
+    p = RES / "pipeline" / model / f"{name}.json"
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def dense_table() -> list[str]:
+    names = IN_DOMAIN + HELD_OUT
+    lines = ["| Model | " + " | ".join(names) + " | mean in-domain | mean held-out |",
+             "|---|" + "---:|" * (len(names) + 2)]
+    for tag, label in DENSE_MODELS:
+        rows = [load_dense(tag, n) for n in names]
+        if not any(rows):
+            continue
+        cells = [f"{r['metrics'][METRIC]:.3f}" if r else "–" for r in rows]
+        ind = [r["metrics"][METRIC] for r, n in zip(rows, names) if r and n in IN_DOMAIN]
+        held = [r["metrics"][METRIC] for r, n in zip(rows, names) if r and n in HELD_OUT]
+        lines.append(f"| {label} | " + " | ".join(cells)
+                     + f" | {np.mean(ind):.3f} | {np.mean(held):.3f} |")
+    return lines
+
+
+def finetune_table() -> list[str]:
+    lines = ["| Dataset | " + " | ".join(t for t, _ in DENSE_MODELS[1:4]) + " |", "|---|---:|---:|---:|"]
+    for n in IN_DOMAIN + HELD_OUT:
+        base = load_dense("e5-small", n)
+        if not base:
+            continue
+        cells = []
+        for tag, _ in DENSE_MODELS[1:4]:
+            other = load_dense(tag, n)
+            cells.append(fmt_delta(compare(base["per_query"][METRIC], other["per_query"][METRIC])) if other else "–")
+        lines.append(f"| {n} ({DATASETS[n].language}) | " + " | ".join(cells) + " |")
+    return lines
+
+
+HEADLINE = [
+    ("e5-small", "bm25-english", "BM25"),
+    ("e5-small", "dense", "Dense, e5-small"),
+    ("e5-small", "hybrid-english", "Hybrid (RRF)"),
+    ("e5-small", "hybrid-english-rerank90", "Hybrid + rerank top 90 (3.10)"),
+    ("e5-small", "hybrid-english-rerank20", "Hybrid + rerank top 20 (new default)"),
+    ("e5-small-syn", "hybrid-english", "Adapted without labels, hybrid"),
+    ("e5-small-syn", "hybrid-english-rerank20", "Adapted without labels, + rerank top 20"),
+    ("e5-small-both", "hybrid-english", "Adapted with labels, hybrid"),
+    ("e5-small-both", "hybrid-english-rerank20", "Adapted with labels, + rerank top 20"),
+    ("e5-small-both-int8", "hybrid-english-rerank20", "same, int8 embedding model"),
+]
+SHIPPED = ("e5-small", "hybrid-english-rerank90")
+
+
+def pooled(model: str, system: str) -> dict[str, float]:
+    """Per-query scores over the five test sets, keyed ``dataset/qid``."""
+    out = {}
+    for n in IN_DOMAIN:
+        for q, v in load_pipeline(model, n)["systems"][system]["per_query"][METRIC].items():
+            out[f"{n}/{q}"] = v
+    return out
+
+
+def headline_table() -> list[str]:
+    if not all(load_pipeline(m, n) for m, _, _ in HEADLINE for n in IN_DOMAIN):
+        return []
+    names = [n for n in IN_DOMAIN]
+    lines = ["| Configuration | " + " | ".join(DATASETS[n].name for n in names)
+             + " | mean | Δ vs shipped (pooled queries) |", "|---|" + "---:|" * (len(names) + 2)]
+    ref = pooled(*SHIPPED)
+    for model, system, label in HEADLINE:
+        vals = [load_pipeline(model, n)["systems"][system]["metrics"][METRIC] for n in names]
+        delta = "–" if (model, system) == SHIPPED else fmt_delta(compare(ref, pooled(model, system)))
+        lines.append(f"| {label} | " + " | ".join(f"{v:.3f}" for v in vals) + f" | {np.mean(vals):.3f} | {delta} |")
+    return lines
+
+
+def fig_headline() -> None:
+    rows = [(label, np.mean([load_pipeline(m, n)["systems"][s]["metrics"][METRIC] for n in IN_DOMAIN]))
+            for m, s, label in HEADLINE if all(load_pipeline(m, n) for n in IN_DOMAIN)]
+    if not rows:
+        return
+    fig, ax = plt.subplots(figsize=(7.5, 3.4), dpi=160)
+    y = np.arange(len(rows))[::-1]
+    colors = [COLORS[1] if (m, s) == SHIPPED else (COLORS[0] if m != "e5-small" else MUTED)
+              for m, s, _ in HEADLINE if all(load_pipeline(m, n) for n in IN_DOMAIN)]
+    ax.barh(y, [v for _, v in rows], height=0.62, color=colors, zorder=2)
+    for yi, (label, v) in zip(y, rows):
+        ax.text(v + 0.004, yi, f"{v:.3f}", va="center", fontsize=8, color=INK)
+    ax.set_yticks(y, [l for l, _ in rows], fontsize=8, color=INK)
+    ax.set_xlabel("mean nDCG@10 over 5 test sets", color=MUTED, fontsize=9)
+    ax.set_xlim(0.25, max(v for _, v in rows) + 0.04)
+    style(ax)
+    ax.xaxis.grid(True, color=GRID, linewidth=0.8)
+    ax.yaxis.grid(False)
+    fig.tight_layout()
+    fig.savefig(FIG / "headline.png")
+    plt.close(fig)
+
+
+def seen_documents(name: str) -> set[str]:
+    """Test queries with at least one relevant document that is a training positive."""
+    from sensetree_research.data import load_qrels
+
+    train_pos = {d for r in load_qrels(name, "train").values() for d, s in r.items() if s > 0}
+    return {q for q, r in load_qrels(name, "test").items() if any(s > 0 and d in train_pos for d, s in r.items())}
+
+
+def overlap_table() -> list[str]:
+    tags = [t for t, _ in DENSE_MODELS[1:4]]
+    lines = ["| Dataset | subset | queries | e5-small | " + " | ".join(f"Δ {t}" for t in tags) + " |",
+             "|---|---|---:|---:|" + "---:|" * len(tags)]
+    for n in IN_DOMAIN:
+        base = load_dense("e5-small", n)
+        if not base:
+            continue
+        a = base["per_query"][METRIC]
+        seen = seen_documents(n)
+        for subset, keys in [("seen", seen), ("unseen", set(a) - seen)]:
+            if len(keys) < 20:
+                continue
+            cells = []
+            for t in tags:
+                other = load_dense(t, n)
+                if not other:
+                    cells.append("–")
+                    continue
+                b = other["per_query"][METRIC]
+                cells.append(fmt_delta(compare({k: a[k] for k in keys}, {k: b[k] for k in keys})))
+            lines.append(f"| {n} | {subset} | {len(keys)} | {np.mean([a[k] for k in keys]):.3f} | " + " | ".join(cells) + " |")
+    return lines
+
+
+def pipeline_table(model: str) -> list[str]:
+    lines = ["| Dataset | " + " | ".join(l for _, l in PIPELINE_STEPS) + " | rerank 90 vs hybrid | rerank 20 vs hybrid | hybrid vs dense |",
+             "|---|" + "---:|" * (len(PIPELINE_STEPS) + 3)]
+    for n in IN_DOMAIN:
+        r = load_pipeline(model, n)
+        if not r:
+            continue
+        s = r["systems"]
+        cells = [f"{s[k]['metrics'][METRIC]:.3f}" for k, _ in PIPELINE_STEPS]
+        hyb = s["hybrid-english"]["per_query"][METRIC]
+        r90 = compare(hyb, s["hybrid-english-rerank90"]["per_query"][METRIC])
+        r20 = compare(hyb, s["hybrid-english-rerank20"]["per_query"][METRIC])
+        hd = compare(s["dense"]["per_query"][METRIC], hyb)
+        lines.append(f"| {n} | " + " | ".join(cells) + f" | {fmt_delta(r90)} | {fmt_delta(r20)} | {fmt_delta(hd)} |")
+    return lines
+
+
+def analyzer_table(model: str) -> list[str]:
+    an = ["english", "french", "neutral"]
+    lines = ["| Dataset | lang | " + " | ".join(f"BM25 {a}" for a in an) + " | "
+             + " | ".join(f"hybrid {a}" for a in an) + " |", "|---|---|" + "---:|" * 6]
+    for n in IN_DOMAIN:
+        r = load_pipeline(model, n)
+        if not r:
+            continue
+        s = r["systems"]
+        cells = [f"{s[f'bm25-{a}']['metrics'][METRIC]:.3f}" for a in an]
+        cells += [f"{s[f'hybrid-{a}']['metrics'][METRIC]:.3f}" for a in an]
+        lines.append(f"| {n} | {DATASETS[n].language} | " + " | ".join(cells) + " |")
+    return lines
+
+
+def chunk_table() -> list[str]:
+    variants = [("e5-small-c500", "500"), ("e5-small", "1000"), ("e5-small-c2000", "2000")]
+    lines = ["| Dataset | " + " | ".join(f"dense {c}" for _, c in variants) + " | "
+             + " | ".join(f"hybrid {c}" for _, c in variants) + " |", "|---|" + "---:|" * 6]
+    for n in IN_DOMAIN:
+        rows = [load_pipeline(m, n) for m, _ in variants]
+        if not all(rows):
+            continue
+        cells = [f"{r['systems']['dense']['metrics'][METRIC]:.3f}" for r in rows]
+        cells += [f"{r['systems']['hybrid-english']['metrics'][METRIC]:.3f}" for r in rows]
+        lines.append(f"| {n} | " + " | ".join(cells) + " |")
+    return lines
+
+
+def depth_table(model: str) -> list[str]:
+    depths = [10, 20, 30, 50, 90]
+    lines = ["| Dataset | no rerank | " + " | ".join(f"top {d}" for d in depths) + " |", "|---|" + "---:|" * 6]
+    means = np.zeros(len(depths) + 1)
+    names = [n for n in IN_DOMAIN if load_pipeline(model, n)]
+    for n in names:
+        s = load_pipeline(model, n)["systems"]
+        keys = ["hybrid-english"] + [f"hybrid-english-rerank{d}" for d in depths]
+        vals = [s[k]["metrics"][METRIC] for k in keys]
+        means += np.array(vals) / len(names)
+        lines.append(f"| {n} | " + " | ".join(f"{v:.3f}" for v in vals) + " |")
+    lines.append("| **mean** | " + " | ".join(f"**{v:.3f}**" for v in means) + " |")
+    return lines
+
+
+def load_latency(group: str, name: str):
+    p = RES / "latency" / group / f"{name}.json"
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def p50(values) -> float:
+    return float(np.median(values)) if values else float("nan")
+
+
+def latency_table() -> list[str]:
+    lines = ["| Dataset | chunks | query embedding | dense kNN | BM25 | RRF | rerank 10 | rerank 30 | rerank 90 |",
+             "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for n in IN_DOMAIN:
+        m = load_latency("query", n)
+        if not m:
+            continue
+        t, rr = m["timings"], m["timings"]["rerank_ms"]
+        lines.append(f"| {n} | {m['indexing']['chunks']:,} | {p50(t['embed_query_ms']):.0f} | {p50(t['dense_ms']):.0f} | "
+                     f"{p50(t['bm25_ms']):.0f} | {p50(t['fusion_ms']):.2f} | {p50(rr.get('10')):,.0f} | "
+                     f"{p50(rr.get('30')):,.0f} | {p50(rr.get('90')):,.0f} |")
+    return lines
+
+
+def model_cost_table() -> list[str]:
+    variants = [("index-e5-small", "e5-small (fastembed)"), ("index-both-fp32", "adapted, ONNX fp32"),
+                ("index-both-int8", "adapted, ONNX int8")]
+    lines = ["| Model | file size | indexing, chunks/s | query embedding, ms | nDCG@10 hybrid + rerank 20, mean of 5 |",
+             "|---|---:|---:|---:|---:|"]
+    sizes = {"index-e5-small": "449 MB", "index-both-fp32": None, "index-both-int8": None}
+    parity = RES / "export" / "e5-small-both.json"
+    if parity.exists():
+        par = json.loads(parity.read_text())
+        sizes["index-both-fp32"] = f"{par['fp32']['size_mb']:.0f} MB"
+        sizes["index-both-int8"] = f"{par['int8']['size_mb']:.0f} MB"
+    quality = {"index-e5-small": "e5-small", "index-both-fp32": "e5-small-both", "index-both-int8": "e5-small-both-int8"}
+    for key, label in variants:
+        m = load_latency(key, "nfcorpus")
+        if not m:
+            continue
+        rows = [load_pipeline(quality[key], n) for n in IN_DOMAIN]
+        q = np.mean([r["systems"]["hybrid-english-rerank20"]["metrics"][METRIC] for r in rows]) if all(rows) else float("nan")
+        lines.append(f"| {label} | {sizes[key] or '–'} | {m['indexing']['chunks_per_second']:.0f} | "
+                     f"{p50(m['timings']['embed_query_ms']):.0f} | {q:.3f} |")
+    return lines
+
+
+def fig_pipeline(model: str) -> None:
+    names = [n for n in IN_DOMAIN if load_pipeline(model, n)]
+    if not names:
+        return
+    fig, ax = plt.subplots(figsize=(8, 3.6), dpi=160)
+    width = 0.8 / len(PIPELINE_STEPS)
+    x = np.arange(len(names))
+    for i, (key, label) in enumerate(PIPELINE_STEPS):
+        vals = [load_pipeline(model, n)["systems"][key]["metrics"][METRIC] for n in names]
+        ax.bar(x + (i - 1.5) * width, vals, width * 0.92, color=COLORS[i], label=label, zorder=2)
+    ax.set_xticks(x, names)
+    ax.set_ylabel("nDCG@10", color=MUTED, fontsize=9)
+    style(ax)
+    ax.legend(frameon=False, fontsize=8, ncol=4, loc="upper center", bbox_to_anchor=(0.5, 1.13), labelcolor=INK)
+    fig.tight_layout()
+    fig.savefig(FIG / "pipeline_ablation.png")
+    plt.close(fig)
+
+
+def fig_depth(model: str) -> None:
+    metas = {n: m for n in IN_DOMAIN if (m := load_latency("query", n))}
+    if not metas:
+        return
+    depths = sorted({int(d) for m in metas.values() for d in m["timings"]["rerank_ms"]})
+    fig, ax = plt.subplots(figsize=(5.5, 3.6), dpi=160)
+    for i, n in enumerate(metas):
+        r = load_pipeline(model, n)["systems"]
+        lat, q = [], []
+        for d in depths:
+            key = f"hybrid-english-rerank{d}"
+            if key in r and str(d) in metas[n]["timings"]["rerank_ms"]:
+                lat.append(np.median(metas[n]["timings"]["rerank_ms"][str(d)]) / 1000)
+                q.append(r[key]["metrics"][METRIC])
+        base = r["hybrid-english"]["metrics"][METRIC]
+        ax.plot([0] + lat, [base] + q, color=COLORS[i], linewidth=2, marker="o", markersize=5, label=n, zorder=2)
+    ax.set_xlabel("cross-encoder time per query on CPU, s (median)", color=MUTED, fontsize=9)
+    ax.set_ylabel("nDCG@10", color=MUTED, fontsize=9)
+    style(ax)
+    ax.legend(frameon=False, fontsize=8, labelcolor=INK)
+    fig.tight_layout()
+    fig.savefig(FIG / "rerank_depth.png")
+    plt.close(fig)
+
+
+def fig_models() -> None:
+    sizes = {"e5-small": 118, "e5-small-sup": 118, "e5-small-syn": 118, "e5-small-both": 118,
+             "e5-small-syn-marginmse": 118,
+             "e5-base": 278, "e5-large": 560, "bge-m3": 568}
+    fig, ax = plt.subplots(figsize=(5.5, 3.6), dpi=160)
+    pts = []
+    for tag, label in DENSE_MODELS:
+        rows = [load_dense(tag, n) for n in IN_DOMAIN]
+        if not all(rows):
+            continue
+        pts.append((tag, sizes[tag], np.mean([r["metrics"][METRIC] for r in rows])))
+    for i, (tag, size, score) in enumerate(pts):
+        if tag == "e5-small-syn-marginmse":
+            continue
+        color = COLORS[0] if tag.startswith("e5-small") else MUTED
+        ax.scatter(size, score, s=40, color=color, zorder=3, edgecolor="white", linewidth=1.5)
+        dy = -9 if tag == "e5-small-sup" else -3
+        ax.annotate(tag, (size, score), textcoords="offset points", xytext=(7, dy), fontsize=8, color=INK)
+    ax.set_xlim(60, 720)
+    ax.set_xticks([118, 278, 560], ["118M", "278M", "560M"])
+    ax.minorticks_off()
+    ax.set_xlabel("parameters", color=MUTED, fontsize=9)
+    ax.set_ylabel("mean nDCG@10, 5 in-domain sets", color=MUTED, fontsize=9)
+    style(ax)
+    fig.tight_layout()
+    fig.savefig(FIG / "model_size.png")
+    plt.close(fig)
+
+
+def main() -> None:
+    FIG.mkdir(exist_ok=True)
+    model = "e5-small"
+    sections = [
+        ("SenseTree pipeline, nDCG@10 on the test splits", headline_table()),
+        ("Dense retrieval, document level (nDCG@10, test splits)", dense_table()),
+        ("Fine-tuning vs. e5-small (Δ nDCG@10, 95% CI; bold = p < 0.05)", finetune_table()),
+        ("Gain by whether a relevant document was a training positive (Δ nDCG@10)", overlap_table()),
+        ("SenseTree pipeline, e5-small (nDCG@10)", pipeline_table(model)),
+        ("Reranking depth (nDCG@10; reranked head, fused tail)", depth_table(model)),
+        ("BM25 analyzer (nDCG@10)", analyzer_table(model)),
+        ("Chunk size in characters, 20% overlap (nDCG@10)", chunk_table()),
+        ("CPU latency per query, median ms (Intel i7-9700K, 8 threads)", latency_table()),
+        ("Cost of the adapted model on CPU (NFCorpus, 3,633 documents)", model_cost_table()),
+    ]
+    if (RES / "pipeline" / "e5-small-both").exists():
+        sections.insert(3, ("SenseTree pipeline, adapted e5-small (nDCG@10)", pipeline_table("e5-small-both")))
+    with open(RES / "tables.md", "w", encoding="utf-8") as f:
+        for title, lines in sections:
+            f.write(f"### {title}\n\n" + "\n".join(lines) + "\n\n")
+    fig_headline()
+    fig_pipeline(model)
+    fig_depth(model)
+    fig_models()
+    print((RES / "tables.md").read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    main()
