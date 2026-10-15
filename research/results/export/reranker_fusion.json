@@ -1,0 +1,52 @@
+{
+ "fusions": {
+  "EmbedLayerNormalization": 0,
+  "Attention": 12,
+  "MultiHeadAttention": 0,
+  "Gelu": 0,
+  "FastGelu": 0,
+  "BiasGelu": 12,
+  "GemmFastGelu": 0,
+  "LayerNormalization": 1,
+  "SimplifiedLayerNormalization": 0,
+  "SkipLayerNormalization": 24,
+  "SkipSimplifiedLayerNormalization": 0,
+  "RotaryEmbedding": 0,
+  "QOrderedAttention": 0,
+  "QOrderedGelu": 0,
+  "QOrderedLayerNormalization": 0,
+  "QOrderedMatMul": 0
+ },
+ "variants": {
+  "exported": {
+   "max_abs_diff": 0.0,
+   "rank_correlation": 1.0,
+   "median_ms_per_20": 2081.17210000637,
+   "size_mb": 449.0013427734375
+  },
+  "eager": {
+   "max_abs_diff": 2.5033950805664062e-06,
+   "rank_correlation": 1.0,
+   "median_ms_per_20": 1449.988400010625,
+   "size_mb": 448.981707572937
+  },
+  "fused": {
+   "max_abs_diff": 5.245208740234375e-06,
+   "rank_correlation": 1.0,
+   "median_ms_per_20": 1005.0897499895655,
+   "size_mb": 448.8085012435913
+  },
+  "fused-int8": {
+   "max_abs_diff": 0.6409502029418945,
+   "rank_correlation": 0.9938345864661653,
+   "median_ms_per_20": 871.8867999996291,
+   "size_mb": 112.67859077453613
+  },
+  "exported-int8": {
+   "max_abs_diff": 1.0309906005859375,
+   "rank_correlation": 0.9897744360902255,
+   "median_ms_per_20": 1704.579899989767,
+   "size_mb": 112.99574279785156
+  }
+ }
+}

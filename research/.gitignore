@@ -6,3 +6,5 @@ runs/
 models/
 cache/
 .pytest_cache/
+cache-laptop/
+cache-laptop-index/

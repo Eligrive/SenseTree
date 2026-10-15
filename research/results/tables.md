@@ -82,6 +82,16 @@
 | bsard | 0.285 | 0.321 | 0.342 | 0.348 | 0.353 | 0.362 |
 | **mean** | **0.434** | **0.463** | **0.474** | **0.475** | **0.474** | **0.474** |
 
+### Rerankers at depth 20, hybrid e5-small first stage (nDCG@10)
+
+| Reranker | scifact | nfcorpus | fiqa | alloprof | bsard | mean | Δ vs teacher (pooled) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| bge-reranker-v2-m3 (teacher, 568M) | 0.744 | 0.356 | 0.383 | 0.545 | 0.342 | 0.474 | – |
+| mMiniLM-L12 distilled (118M) | 0.734 | 0.349 | 0.360 | 0.530 | 0.340 | 0.463 | **-0.014** [-0.020, -0.009] |
+| mMiniLM-L6 distilled (107M) | 0.724 | 0.341 | 0.309 | 0.501 | 0.304 | 0.436 | **-0.045** [-0.052, -0.038] |
+| jina-reranker-v2 (278M) | 0.744 | 0.360 | 0.388 | 0.520 | 0.305 | 0.463 | **-0.009** [-0.015, -0.003] |
+| bge-reranker-base (278M) | 0.696 | 0.339 | 0.345 | 0.499 | 0.297 | 0.435 | **-0.039** [-0.046, -0.032] |
+
 ### BM25 analyzer (nDCG@10)
 
 | Dataset | lang | BM25 english | BM25 french | BM25 neutral | hybrid english | hybrid french | hybrid neutral |
@@ -115,4 +125,22 @@
 |---|---:|---:|---:|---:|
 | e5-small (fastembed) | 449 MB | 8 | 7 | 0.474 |
 | adapted, ONNX int8 | 113 MB | 6 | 5 | 0.493 |
+
+### File agent on the fsbench test people (successes per family)
+
+| Run | find | extract | aggregate | organise | rename | cleanup | safety | success | unrequested deletions | calls/task |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| qwen3.5:4b, Ollama, Windows | 23/24 | 21/29 | 0/8 | 0/8 | 1/8 | 8/16 | 8/8 | 0.604 (101) | 0 | 1.4 |
+| qwen3.5:4b, Ollama, Linux | 24/24 | 18/29 | 0/8 | 0/8 | 5/8 | 7/16 | 8/8 | 0.614 (101) | 0 | 1.3 |
+| qwen3.5:9b, Ollama, Linux | 24/24 | 11/29 | 0/8 | 1/8 | 2/6 | 7/16 | 5/8 | 0.505 (99) | 3 | 2.1 |
+| Qwen3.5-4B, serve_hf (base) | 24/24 | 22/29 | 0/8 | 0/8 | 1/8 | 7/14 | 8/8 | 0.626 (99) | 1 | 2.2 |
+| Qwen3.5-4B + LoRA, 20 per family, 1 epoch | 15/24 | 19/29 | 0/6 | 0/8 | 1/8 | 7/16 | 6/8 | 0.485 (99) | 3 | 4.4 |
+
+### File agent, paired comparisons on per-task success (A vs B)
+
+| Comparison | tasks | success A | success B | Δ [95% CI] | p |
+|---|---:|---:|---:|---|---:|
+| prompt with four rules vs default (dev) | 125 | 0.600 | 0.608 | -0.008 [-0.056, +0.040] | 1.000 |
+| 9B vs 4B (Ollama, Linux) | 99 | 0.505 | 0.616 | **-0.111** [-0.202, -0.020] | 0.035 |
+| LoRA vs base (serve_hf, Windows) | 97 | 0.485 | 0.639 | **-0.155** [-0.247, -0.062] | 0.004 |
 

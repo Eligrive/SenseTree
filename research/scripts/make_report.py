@@ -254,6 +254,31 @@ def depth_table(model: str) -> list[str]:
     return lines
 
 
+RERANKERS = [
+    ("e5-small", "bge-reranker-v2-m3 (teacher, 568M)"),
+    ("rr-L12-mse", "mMiniLM-L12 distilled (118M)"),
+    ("rr-L6-mse", "mMiniLM-L6 distilled (107M)"),
+    ("rr-jina", "jina-reranker-v2 (278M)"),
+    ("rr-bgebase", "bge-reranker-base (278M)"),
+]
+
+
+def reranker_table(depth: int = 20) -> list[str]:
+    key = f"hybrid-english-rerank{depth}"
+    if not all(load_pipeline(m, n) for m, _ in RERANKERS for n in IN_DOMAIN):
+        return []
+    def pooled_scores(model):
+        return {f"{n}/{q}": v for n in IN_DOMAIN
+                for q, v in load_pipeline(model, n)["systems"][key]["per_query"][METRIC].items()}
+    teacher = pooled_scores("e5-small")
+    lines = ["| Reranker | " + " | ".join(IN_DOMAIN) + " | mean | Δ vs teacher (pooled) |", "|---|" + "---:|" * 7]
+    for model, label in RERANKERS:
+        vals = [load_pipeline(model, n)["systems"][key]["metrics"][METRIC] for n in IN_DOMAIN]
+        delta = "–" if model == "e5-small" else fmt_delta(compare(teacher, pooled_scores(model)))
+        lines.append(f"| {label} | " + " | ".join(f"{v:.3f}" for v in vals) + f" | {np.mean(vals):.3f} | {delta} |")
+    return lines
+
+
 def load_latency(group: str, name: str):
     p = RES / "latency" / group / f"{name}.json"
     return json.loads(p.read_text()) if p.exists() else None
@@ -373,6 +398,62 @@ def fig_models() -> None:
     plt.close(fig)
 
 
+AGENT_FAMILIES = ["find", "extract", "aggregate", "organise", "rename", "cleanup", "safety"]
+AGENT_RUNS = [
+    ("test-qwen3.5-4b", "qwen3.5:4b, Ollama, Windows"),
+    ("test-qwen3.5-4b-linux", "qwen3.5:4b, Ollama, Linux"),
+    ("test-qwen3.5-9b-linux", "qwen3.5:9b, Ollama, Linux"),
+    ("test-hf-qwen3.5-4b", "Qwen3.5-4B, serve_hf (base)"),
+    ("test-hf-qwen3.5-4b-sft", "Qwen3.5-4B + LoRA, 20 per family, 1 epoch"),
+    ("test-hf-qwen3.5-4b-sft-linux", "Qwen3.5-4B + LoRA, 40 per family, 1 epoch (Linux)"),
+    ("test-hf-qwen3.5-4b-sft-2ep-linux", "Qwen3.5-4B + LoRA, 40 per family, 2 epochs (Linux)"),
+]
+AGENT_PAIRS = [
+    ("dev-qwen3.5-4b-v2", "dev-qwen3.5-4b", "prompt with four rules vs default (dev)"),
+    ("test-qwen3.5-9b-linux", "test-qwen3.5-4b-linux", "9B vs 4B (Ollama, Linux)"),
+    ("test-hf-qwen3.5-4b-sft", "test-hf-qwen3.5-4b", "LoRA vs base (serve_hf, Windows)"),
+    ("test-hf-qwen3.5-4b-sft-linux", "test-hf-qwen3.5-4b-linux", "LoRA 40/family vs base (serve_hf, Linux)"),
+    ("test-hf-qwen3.5-4b-sft-2ep-linux", "test-hf-qwen3.5-4b-linux", "LoRA 2 epochs vs base (serve_hf, Linux)"),
+]
+
+
+def load_agent(run: str) -> dict | None:
+    path = RES / "agent" / f"{run}.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def agent_table() -> list[str]:
+    lines = ["| Run | " + " | ".join(AGENT_FAMILIES) + " | success | unrequested deletions | calls/task |",
+             "|---|" + "---:|" * (len(AGENT_FAMILIES) + 3)]
+    for run, label in AGENT_RUNS:
+        r = load_agent(run)
+        if r is None:
+            continue
+        cells = []
+        for fam in AGENT_FAMILIES:
+            s = [t["success"] for t in r["per_task"].values() if t["family"] == fam]
+            cells.append(f"{int(sum(s))}/{len(s)}" if s else "–")
+        summary = r["summary"]
+        deletions = sum(t["unrequested_deletions"] > 0 for t in r["per_task"].values())
+        lines.append(f"| {label} | " + " | ".join(cells) +
+                     f" | {summary['success']:.3f} ({summary['tasks']}) | {deletions} | {summary['tool_calls_per_task']:.1f} |")
+    return lines
+
+
+def agent_pairs_table() -> list[str]:
+    lines = ["| Comparison | tasks | success A | success B | Δ [95% CI] | p |", "|---|---:|---:|---:|---|---:|"]
+    for a, b, label in AGENT_PAIRS:
+        ra, rb = load_agent(a), load_agent(b)
+        if ra is None or rb is None:
+            continue
+        shared = sorted(set(ra["per_task"]) & set(rb["per_task"]))
+        if not shared:
+            continue
+        c = compare({t: rb["per_task"][t]["success"] for t in shared}, {t: ra["per_task"][t]["success"] for t in shared})
+        lines.append(f"| {label} | {c.n} | {c.mean_b:.3f} | {c.mean_a:.3f} | {fmt_delta(c)} | {c.p_value:.3f} |")
+    return lines
+
+
 def main() -> None:
     FIG.mkdir(exist_ok=True)
     model = "e5-small"
@@ -383,10 +464,13 @@ def main() -> None:
         ("Gain by whether a relevant document was a training positive (Δ nDCG@10)", overlap_table()),
         ("SenseTree pipeline, e5-small (nDCG@10)", pipeline_table(model)),
         ("Reranking depth (nDCG@10; reranked head, fused tail)", depth_table(model)),
+        ("Rerankers at depth 20, hybrid e5-small first stage (nDCG@10)", reranker_table(20)),
         ("BM25 analyzer (nDCG@10)", analyzer_table(model)),
         ("Chunk size in characters, 20% overlap (nDCG@10)", chunk_table()),
         ("CPU latency per query, median ms (Intel i7-9700K, 8 threads)", latency_table()),
         ("Cost of the adapted model on CPU (NFCorpus, 3,633 documents)", model_cost_table()),
+        ("File agent on the fsbench test people (successes per family)", agent_table()),
+        ("File agent, paired comparisons on per-task success (A vs B)", agent_pairs_table()),
     ]
     if (RES / "pipeline" / "e5-small-both").exists():
         sections.insert(3, ("SenseTree pipeline, adapted e5-small (nDCG@10)", pipeline_table("e5-small-both")))
