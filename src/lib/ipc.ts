@@ -53,6 +53,8 @@ export const listInstalledModels = (baseUrl: string, apiKey: string) =>
 export const listLocalModels = () => invoke<LocalModelStatus[]>("list_local_models");
 export const inspectLocalModel = (path: string) =>
   invoke<LocalModelManifest>("inspect_local_model", { path });
+export const inspectLocalReranker = (path: string) =>
+  invoke<number>("inspect_local_reranker", { path });
 export const downloadLocalModel = (model: string) =>
   invoke<string>("download_local_model", { model });
 export const listBenchmarkBoards = () => invoke<BoardInfo[]>("list_benchmark_boards");

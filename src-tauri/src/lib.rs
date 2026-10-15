@@ -294,6 +294,14 @@ fn inspect_local_model(path: String) -> Result<providers::LocalModelManifest, St
     })
 }
 
+/// Vérifie qu'un dossier contient un reranker exporté ; renvoie sa longueur maximale.
+#[tauri::command]
+fn inspect_local_reranker(path: String) -> Result<usize, String> {
+    providers::local_reranker_dir(&path)
+        .map(|(_, max_length)| max_length)
+        .ok_or_else(|| format!("{path} ne contient pas de reranker exporté (model.onnx et tokenizer.json attendus)"))
+}
+
 /// État des modèles d'embedding LOCAUX (fastembed) : lesquels sont déjà téléchargés.
 /// Permet de ne proposer dans le menu déroulant que ce qui est réellement utilisable.
 #[tauri::command]
@@ -1246,6 +1254,7 @@ pub fn run() {
             list_installed_models,
             list_local_models,
             inspect_local_model,
+            inspect_local_reranker,
             download_local_model,
             model_benchmarks,
             list_benchmark_boards,

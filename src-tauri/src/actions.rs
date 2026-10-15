@@ -560,6 +560,13 @@ pub struct ChatResponse {
     /// Échanges d'outils de CE tour, à renvoyer tels quels dans le prochain appel
     /// (`ChatTurn::tool_messages`) pour donner une continuité à la conversation.
     pub transcript: Vec<serde_json::Value>,
+    /// Conversation complète envoyée au modèle (prompt système compris) et schémas
+    /// d'outils : pour le banc de mesure et la constitution de données
+    /// d'entraînement. Jamais transmis à l'interface.
+    #[serde(skip)]
+    pub conversation: Vec<serde_json::Value>,
+    #[serde(skip)]
+    pub tools: serde_json::Value,
 }
 
 /// Arborescence d'un dossier (2 niveaux, bornée) avec chemins exacts — pour que
@@ -1134,6 +1141,22 @@ pub async fn chat_with_assistant(
     scope: Option<String>,
 ) -> Result<ChatResponse, String> {
     let state = state.inner().clone();
+    run_agent(&state, messages, scope, |label| {
+        let _ = app.emit("agent-step", AgentStep { label });
+    })
+    .await
+}
+
+/// Boucle d'agent complète (pré-RAG, outils, réponse ou plan), indépendante de Tauri :
+/// le banc `examples/agent_eval.rs` l'exécute telle quelle. `on_step` reçoit le
+/// libellé de chaque appel d'outil avant son exécution.
+pub async fn run_agent(
+    state: &Arc<AppState>,
+    messages: Vec<ChatTurn>,
+    scope: Option<String>,
+    on_step: impl Fn(String),
+) -> Result<ChatResponse, String> {
+    let state = state.clone();
 
     // Requête = dernier message utilisateur (pour le pré-RAG d'amorçage).
     let query = messages
@@ -1255,11 +1278,14 @@ Réponds en français, de façon concise et factuelle.",
                     sources,
                     plan: None,
                     transcript,
+                    conversation: msgs,
+                    tools,
                 })
             }
         };
 
         if turn.tool_calls.is_empty() {
+            msgs.push(turn.raw_message.clone());
             answer = turn.content;
             break;
         }
@@ -1269,7 +1295,7 @@ Réponds en français, de façon concise et factuelle.",
         transcript.push(turn.raw_message.clone());
         for tc in &turn.tool_calls {
             // Trace live : on annonce l'action AVANT de l'exécuter.
-            let _ = app.emit("agent-step", AgentStep { label: describe_tool_call(tc, &mcp_index) });
+            on_step(describe_tool_call(tc, &mcp_index));
             let observation =
                 execute_tool(&state, tc, &scope, &mut sources, &mut plan, &mcp_index).await;
             let obs_msg = json!({"role": "tool", "tool_call_id": tc.id, "content": observation});
@@ -1284,7 +1310,7 @@ Réponds en français, de façon concise et factuelle.",
     }
 
     if plan.is_some() {
-        return Ok(ChatResponse { answer: None, sources, plan, transcript });
+        return Ok(ChatResponse { answer: None, sources, plan, transcript, conversation: msgs, tools });
     }
 
     // Budget de tours épuisé sans conclusion : on redemande une réponse SANS outils
@@ -1294,7 +1320,10 @@ Réponds en français, de façon concise et factuelle.",
     if answer.is_none() {
         msgs.push(json!({"role": "system", "content": RELANCE_SANS_OUTILS}));
         match client.chat_tools(&msgs, &json!([]), &opts).await {
-            Ok(t) => answer = t.content,
+            Ok(t) => {
+                msgs.push(t.raw_message.clone());
+                answer = t.content;
+            }
             Err(e) => tracing::warn!("réponse finale forcée impossible : {e}"),
         }
     }
@@ -1306,6 +1335,8 @@ Réponds en français, de façon concise et factuelle.",
         sources,
         plan: None,
         transcript,
+        conversation: msgs,
+        tools,
     })
 }
 

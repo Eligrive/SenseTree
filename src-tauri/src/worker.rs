@@ -1336,7 +1336,7 @@ pub(crate) const EXTRACT_MAX_CHARS: usize = 16_000;
 /// Exposée au crate : l'outil `read_file` de l'agent passe par ici, sinon il lit un
 /// PDF ou un DOCX en octets bruts et n'y voit que du binaire — alors que le pipeline
 /// d'indexation, lui, sait parfaitement les lire.
-pub(crate) fn extract_text(path: &str) -> anyhow::Result<String> {
+pub fn extract_text(path: &str) -> anyhow::Result<String> {
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())

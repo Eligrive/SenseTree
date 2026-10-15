@@ -110,6 +110,34 @@ fn default_max_length() -> usize {
     512
 }
 
+/// Fichiers du tokenizer Hugging Face d'un modèle exporté dans un dossier.
+fn tokenizer_files(dir: &std::path::Path) -> Result<fastembed::TokenizerFiles> {
+    let read = |f: &str| {
+        std::fs::read(dir.join(f)).with_context(|| format!("lecture de {}", dir.join(f).display()))
+    };
+    Ok(fastembed::TokenizerFiles {
+        tokenizer_file: read("tokenizer.json")?,
+        config_file: read("config.json")?,
+        special_tokens_map_file: read("special_tokens_map.json")?,
+        tokenizer_config_file: read("tokenizer_config.json")?,
+    })
+}
+
+/// Si `name` désigne un dossier de reranker exporté (cross-encoder ONNX à sortie
+/// `logits`), renvoie le dossier et la longueur maximale en tokens.
+pub fn local_reranker_dir(name: &str) -> Option<(std::path::PathBuf, usize)> {
+    let dir = std::path::Path::new(name.trim());
+    if !dir.join("model.onnx").is_file() || !dir.join("tokenizer.json").is_file() {
+        return None;
+    }
+    let max_length = std::fs::read_to_string(dir.join(LOCAL_MODEL_MANIFEST))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|m| m.get("max_length").and_then(|v| v.as_u64()))
+        .unwrap_or(512) as usize;
+    Some((dir.to_path_buf(), max_length))
+}
+
 /// Si `name` désigne un dossier de modèle exporté, renvoie son manifeste.
 pub fn local_model_manifest(name: &str) -> Option<(std::path::PathBuf, LocalModelManifest)> {
     let dir = std::path::Path::new(name.trim());
@@ -230,12 +258,7 @@ impl LocalEmbedder {
         let read = |f: &str| {
             std::fs::read(dir.join(f)).with_context(|| format!("lecture de {}", dir.join(f).display()))
         };
-        let tokenizer = fastembed::TokenizerFiles {
-            tokenizer_file: read("tokenizer.json")?,
-            config_file: read("config.json")?,
-            special_tokens_map_file: read("special_tokens_map.json")?,
-            tokenizer_config_file: read("tokenizer_config.json")?,
-        };
+        let tokenizer = tokenizer_files(dir)?;
         let pooling = match manifest.pooling.as_str() {
             "cls" => fastembed::Pooling::Cls,
             _ => fastembed::Pooling::Mean,
@@ -532,6 +555,17 @@ impl Reranker {
     /// Charge le modèle (bloquant : appeler via `spawn_blocking`, ORT déjà prêt).
     /// `use_gpu` demande le provider CUDA, avec repli CPU s'il est indisponible.
     pub fn load(model_name: &str, cache_dir: std::path::PathBuf, use_gpu: bool) -> Result<Self> {
+        if let Some((dir, max_length)) = local_reranker_dir(model_name) {
+            let user = fastembed::UserDefinedRerankingModel::new(dir.join("model.onnx"), tokenizer_files(&dir)?);
+            let mut opts = fastembed::RerankInitOptionsUserDefined::default();
+            opts.max_length = max_length;
+            if use_gpu {
+                opts.execution_providers = vec![cuda_provider(), ort::execution_providers::CPUExecutionProvider::default().build()];
+            }
+            let model = fastembed::TextRerank::try_new_from_user_defined(user, opts)
+                .context("chargement du reranker exporté")?;
+            return Ok(Reranker { model: Arc::new(model) });
+        }
         let mut opts = fastembed::RerankInitOptions::new(resolve_reranker_model(model_name))
             .with_show_download_progress(false)
             .with_cache_dir(cache_dir);

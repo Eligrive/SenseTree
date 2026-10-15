@@ -42,6 +42,7 @@ import {
   gpuAvailable,
   listInstalledModels,
   inspectLocalModel,
+  inspectLocalReranker,
   listLocalModels,
   pickFolder,
   pullModel,
@@ -221,6 +222,7 @@ export default function SettingsModal({ open, onClose, onSaved }: Props) {
   // Modèles locaux (fastembed) et leur état de téléchargement.
   const [localModels, setLocalModels] = useState<LocalModelStatus[]>([]);
   const [localModelError, setLocalModelError] = useState<string | null>(null);
+  const [localRerankerError, setLocalRerankerError] = useState<string | null>(null);
   // Catalogue ouvert pour telle tâche (null = fermé) + téléchargements en cours.
   const [catalogTask, setCatalogTask] = useState<Task | null>(null);
   const [dlBusy, setDlBusy] = useState<Record<string, boolean>>({});
@@ -1401,6 +1403,9 @@ Le modèle devra être re-téléchargé pour être réutilisé.`)) {
                   }
                   className="flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
                 >
+                  {!["bge-reranker-v2-m3", "bge-reranker-base", "jina-reranker-v2-base-multilingual"].includes(
+                    cfg.retrieval.reranker_model
+                  ) && <option value={cfg.retrieval.reranker_model}>{cfg.retrieval.reranker_model}</option>}
                   <option value="bge-reranker-v2-m3">bge-reranker-v2-m3 (multilingue, recommandé)</option>
                   <option value="bge-reranker-base">bge-reranker-base (léger, anglais)</option>
                   <option value="jina-reranker-v2-base-multilingual">
@@ -1408,6 +1413,28 @@ Le modèle devra être re-téléchargé pour être réutilisé.`)) {
                   </option>
                 </select>
               </label>
+            )}
+            {cfg.retrieval.rerank && (
+              <div className="pl-34 text-[11px]">
+                <button
+                  type="button"
+                  className="text-blue-400 hover:underline"
+                  onClick={async () => {
+                    const dir = await pickFolder();
+                    if (!dir) return;
+                    try {
+                      await inspectLocalReranker(dir);
+                      setLocalRerankerError(null);
+                      setCfg({ ...cfg, retrieval: { ...cfg.retrieval, reranker_model: dir } });
+                    } catch (e) {
+                      setLocalRerankerError(String(e));
+                    }
+                  }}
+                >
+                  Utiliser un reranker exporté (dossier ONNX)…
+                </button>
+                {localRerankerError && <span className="ml-2 text-red-400">{localRerankerError}</span>}
+              </div>
             )}
             {cfg.retrieval.hybrid && (
               <label className="flex items-center gap-2 text-xs text-zinc-400">

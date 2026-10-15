@@ -35,6 +35,12 @@ pub fn gpu_present() -> bool {
 /// variante GPU a été retenue. Doit être appelé AVANT toute utilisation de
 /// fastembed (donc avant le worker d'indexation).
 pub fn ensure_ort(data_dir: &Path, use_gpu: bool) -> Result<bool> {
+    // Une bibliothèque fournie par l'environnement (autre OS, build CUDA maison) prime.
+    if let Some(existing) = std::env::var_os("ORT_DYLIB_PATH") {
+        if Path::new(&existing).is_file() {
+            return Ok(use_gpu);
+        }
+    }
     let want_gpu = use_gpu && gpu_present();
     let (subdir, url, label) = if want_gpu {
         ("gpu", GPU_URL, "GPU")
