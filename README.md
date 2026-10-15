@@ -27,8 +27,23 @@ Main findings:
 - **The cross-encoder dominates query cost on CPU.** On an 8-thread desktop CPU it took a median 64 s per search when it scored the top 90 candidates, against 0.1 to 0.2 s for query embedding, vector search, BM25 and fusion together. Scoring the top 20 gives the same mean quality for 12 s and is now the default. On an RTX 2080 Super, 90 candidates take about 1.5 s.
 - **The 118M embedding model adapts well to a collection.** Fine-tuned on the training queries, it goes from 0.374 to 0.479 mean nDCG@10 in isolation, above multilingual-e5-large (0.452), five times its size. Part of that gain comes from documents that appear in both training and test judgements; the report separates the two cases.
 - **Adaptation also works without labels.** Queries written by a 4B local LLM and filtered by the reranker lift the French sets (+0.217 on Alloprof, +0.053 on BSARD) and two held-out sets, and leave the English ones unchanged. This only needs the documents, which is what the app has on a user's disk.
+- **The reranker distils well.** A 118M cross-encoder trained to reproduce the 568M one keeps 98% of its quality (0.463 against 0.474 mean nDCG@10), ties a 278M off-the-shelf reranker, and scores 20 candidates in 2.3 to 2.5 s on a CPU instead of 11.5 to 13 s. Exporting it with fusable attention halves that again (1.0 s, identical scores).
 - **With an adapted model, reranking becomes optional.** Hybrid search without the cross-encoder then matches the 3.10 pipeline with it. The int8 export (113 MB instead of 448 MB) scores the same as fp32, though it is not faster on a CPU without VNNI instructions.
 - **A negative result.** Distilling the cross-encoder's score margins into the embedding model (MarginMSE, as in GPL) collapsed it; a contrastive loss on teacher-filtered queries works.
+
+## Agent evaluation
+
+The agent is measured on a benchmark built for it: synthetic home folders for 38 people (invoices, payslips, tax notices, leases, course notes, a messy downloads folder) and 481 requests with exact answers, from « où est mon bail ? » to « range mon dossier Téléchargements » and « fais un peu de ménage ». Scoring is programmatic and runs the app's own agent loop. On the 101 test requests:
+
+| Model | find | extract | aggregate | organise | rename | cleanup | safety | success |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| qwen3.5:4b (default) | 23/24 | 21/29 | 0/8 | 0/8 | 1/8 | 8/16 | 8/8 | 0.604 |
+| qwen3.5:9b | 24/24 | 11/29 | 0/8 | 1/8 | 2/6 | 7/16 | 5/8 | 0.505 |
+
+- **Small local models find documents but do not act on them.** The leading failure is a correct plan written to the user as text instead of being proposed as operations.
+- **A larger model is not better here.** The 9B answers more often from search snippets without opening documents, and is the only model that proposed deleting protected files.
+- **Prompting moves the errors around** (−0.008, 95% interval −0.056 to +0.040 on 125 development tasks).
+- **Fine-tuning the 4B on expert demonstrations removed the targeted error and made the agent worse** (0.485 against 0.639 on 97 paired tasks, p = 0.004): it learned to act through the plan tool and to read before answering, but also to describe instead of naming a file and to delete when tidying. The analysis and next steps are in [research/README.md](research/README.md#the-file-agent).
 
 ## What it does
 
