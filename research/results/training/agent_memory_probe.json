@@ -1,0 +1,308 @@
+{
+ "peak_in_history_gib": 7.343451887369156,
+ "at_peak_by_site_gib": {
+  "?": 1.9000720977783203,
+  "ops.py:392 _ <- functional.py:929 quantize_4bit <- modules.py:383 _quantize": 1.6619873046875,
+  "core_model_loading.py:1240 _materialize_copy <- core_model_loading.py:1262 _job <- core_model_loading.py:973 <listcomp>": 1.185873031616211,
+  "modeling_qwen3_5.py:902 forward <- checkpoint.py:678 _checkpoint_impl <- checkpoint.py:606 checkpoint": 1.102290153503418,
+  "train_agent.py:125 chunk_loss <- checkpoint.py:1962 recompute_fn <- checkpoint.py:1336 _run_fn_with_dynamo_disabled": 0.9552001953125,
+  "optimizer.py:218 patched_step <- optimizer.py:173 step <- trainer.py:1918 _run_epoch": 0.24188417196273804,
+  "tuners_utils.py:2762 cast_adapter_dtype <- tuners_utils.py:641 _cast_adapter_dtype <- peft_model.py:180 __init__": 0.120941162109375,
+  "modeling_qwen3_5.py:841 forward <- modeling_qwen3_5.py:1292 forward <- output_capturing.py:287 wrapper": 0.07111549377441406,
+  "ops.py:311 _ <- functional.py:658 quantize_blockwise <- functional.py:940 quantize_4bit": 0.051937103271484375,
+  "modeling_qwen3_5.py:1244 forward <- output_capturing.py:287 wrapper <- generic.py:1081 wrapper": 0.03555774688720703,
+  "ops.py:916 _dequant_linear_fallback <- ops.py:967 _ <- _functions.py:334 forward": 0.0079345703125,
+  "train_agent.py:122 compute_loss <- trainer.py:2065 training_step <- trainer.py:1892 _run_epoch": 0.005549505352973938,
+  "modeling_qwen3_5.py:192 forward <- modeling_rope_utils.py:128 wrapper <- modeling_qwen3_5.py:1279 forward": 0.0017778873443603516,
+  "ops.py:310 _ <- functional.py:658 quantize_blockwise <- functional.py:940 quantize_4bit": 0.0008115172386169434,
+  "functional.py:677 quantize_blockwise <- functional.py:940 quantize_4bit <- modules.py:383 _quantize": 0.00023651123046875,
+  "operations.py:160 send_to_device <- operations.py:186 <dictcomp> <- operations.py:185 send_to_device": 0.00016667693853378296,
+  "modeling_qwen3_5.py:1252 forward <- output_capturing.py:287 wrapper <- generic.py:1081 wrapper": 5.5558979511260986e-05,
+  "modeling_qwen3_5.py:838 _norm <- modeling_qwen3_5.py:841 forward <- modeling_qwen3_5.py:1292 forward": 2.7779489755630493e-05,
+  "functional.py:854 get_4bit_type <- functional.py:936 quantize_4bit <- modules.py:383 _quantize": 1.4781951904296875e-05,
+  "modeling_qwen3_5.py:844 forward <- modeling_qwen3_5.py:1292 forward <- output_capturing.py:287 wrapper": 9.5367431640625e-06,
+  "train_agent.py:121 compute_loss <- trainer.py:2065 training_step <- trainer.py:1892 _run_epoch": 6.943941116333008e-06,
+  "functional.py:655 quantize_blockwise <- functional.py:940 quantize_4bit <- modules.py:383 _quantize": 9.5367431640625e-07,
+  "functional.py:939 quantize_4bit <- modules.py:383 _quantize <- modules.py:428 to": 9.238719940185547e-07,
+  "modeling_utils.py:4778 _move_missing_keys_from_meta_to_device <- modeling_utils.py:4507 _finalize_model_loading <- modeling_utils.py:4339 from_pretrained": 2.384185791015625e-07,
+  "accelerator.py:2857 backward <- trainer.py:2101 training_step <- trainer.py:1892 _run_epoch": 1.1175870895385742e-08
+ },
+ "live_now_gib": 3.285012722015381,
+ "largest_live_now": [
+  {
+   "bytes": 1271398400,
+   "frames": [
+    "core_model_loading.py:1240 _materialize_copy",
+    "core_model_loading.py:1262 _job",
+    "core_model_loading.py:973 <listcomp>",
+    "core_model_loading.py:973 materialize_tensors",
+    "core_model_loading.py:1008 convert",
+    "core_model_loading.py:1754 convert_and_load_state_dict_in_model"
+   ]
+  },
+  {
+   "bytes": 12582912,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 12582912,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 12582912,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 12582912,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 12582912,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  },
+  {
+   "bytes": 11796480,
+   "frames": [
+    "ops.py:392 _",
+    "functional.py:929 quantize_4bit",
+    "modules.py:383 _quantize",
+    "modules.py:428 to",
+    "bitsandbytes.py:58 convert",
+    "core_model_loading.py:1019 convert"
+   ]
+  }
+ ]
+}

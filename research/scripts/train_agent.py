@@ -139,25 +139,39 @@ class PeakMemory(TrainerCallback):
         torch.cuda.reset_peak_memory_stats()
 
 
+def _site(frames: list[dict]) -> list[str]:
+    """The frames of an allocation outside torch's own internals, innermost first."""
+    keep = [f for f in frames if "/torch/" not in f["filename"].replace("\\", "/")
+            or "checkpoint" in f["filename"] or "autograd" in f["filename"]]
+    return [f"{Path(f['filename']).name}:{f['line']} {f['name']}" for f in keep[:6]]
+
+
 def write_memory_report(path: Path, top: int = 25) -> None:
-    """Largest live CUDA blocks at the time of the failure, with the frames that allocated them."""
-    blocks = []
-    for segment in torch.cuda.memory._snapshot()["segments"]:
-        for b in segment["blocks"]:
-            if b["state"] == "active_allocated":
-                frames = [f"{Path(f['filename']).name}:{f['line']} {f['name']}" for f in b.get("frames", [])
-                          if "torch/" not in f["filename"].replace("\\", "/") or "autograd" in f["filename"]]
-                blocks.append({"bytes": b["size"], "frames": frames[:8]})
-    blocks.sort(key=lambda b: -b["bytes"])
+    """What was live at the peak of the recorded allocation history, grouped by the code
+    that allocated it, plus the blocks live now (at a failure, the ones that filled the card)."""
+    snap = torch.cuda.memory._snapshot()
+    live, total, peak, at_peak = {}, 0, 0, {}
+    for event in snap["device_traces"][0] if snap.get("device_traces") else []:
+        if event["action"] == "alloc":
+            live[event["addr"]] = (event["size"], event.get("frames", []))
+            total += event["size"]
+            if total > peak:
+                peak, at_peak = total, dict(live)
+        elif event["action"] in ("free_requested", "free_completed") and event["addr"] in live:
+            total -= live.pop(event["addr"])[0]
     by_site: dict[str, int] = {}
-    for b in blocks:
-        site = b["frames"][0] if b["frames"] else "?"
-        by_site[site] = by_site.get(site, 0) + b["bytes"]
-    report = {"allocated_gib": sum(b["bytes"] for b in blocks) / 2**30, "largest": blocks[:top],
-              "by_site_gib": {k: v / 2**30 for k, v in sorted(by_site.items(), key=lambda kv: -kv[1])[:top]}}
+    for size, frames in at_peak.values():
+        site = " <- ".join(_site(frames)[:3]) or "?"
+        by_site[site] = by_site.get(site, 0) + size
+    now = [{"bytes": b["size"], "frames": _site(b.get("frames", []))}
+           for s in snap["segments"] for b in s["blocks"] if b["state"] == "active_allocated"]
+    now.sort(key=lambda b: -b["bytes"])
+    report = {"peak_in_history_gib": peak / 2**30,
+              "at_peak_by_site_gib": {k: v / 2**30 for k, v in sorted(by_site.items(), key=lambda kv: -kv[1])[:top]},
+              "live_now_gib": sum(b["bytes"] for b in now) / 2**30, "largest_live_now": now[:top]}
     path.parent.mkdir(parents=True, exist_ok=True)
     json.dump(report, open(path, "w"), indent=1)
-    print(json.dumps(report["by_site_gib"], indent=1), flush=True)
+    print(json.dumps({k: report[k] for k in ("peak_in_history_gib", "at_peak_by_site_gib")}, indent=1), flush=True)
 
 
 def main() -> None:
@@ -176,7 +190,7 @@ def main() -> None:
     parser.add_argument("--memory-report", help="record CUDA allocations; on out-of-memory, write the largest live blocks here")
     args = parser.parse_args()
     if args.memory_report:
-        torch.cuda.memory._record_memory_history(max_entries=200_000)
+        torch.cuda.memory._record_memory_history(max_entries=2_000_000)
 
     records = []
     for run in args.trajectories:
@@ -235,6 +249,8 @@ def main() -> None:
         if args.memory_report:
             write_memory_report(Path(args.memory_report))
         raise
+    if args.memory_report:
+        write_memory_report(Path(args.memory_report))
     model.save_pretrained(str(out / "adapter"))
     tokenizer.save_pretrained(str(out / "adapter"))
     json.dump({"args": vars(args), "trajectories": len(records), "examples": len(data),
