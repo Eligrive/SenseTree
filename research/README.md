@@ -195,9 +195,9 @@ On the 97 tasks both runs completed, success falls from 0.639 to 0.485 (differen
 
 The model copied the surface of the expert's behaviour (read before answering, act through `propose_actions`, delete when tidying) without the conditions under which each applies. Three causes are plausible and the experiments so far do not separate them:
 
-- **Too little training.** 18 optimisation steps on 139 sequences, ending at a training loss of 2.6. A replicate on Kaggle with twice the data and two epochs is running.
+- **Too little training.** 18 optimisation steps on 139 sequences, ending at a training loss of 2.6. Two replicates on Kaggle test it, with 40 trajectories per family for one and for two epochs, evaluated against the base model on Linux. Their first runs ended on GPU memory (see Setup, attention on Turing); they are running again with sequences capped at 6,144 tokens.
 - **The demonstrations are imitated without their reasons.** The expert chooses files from the ground truth, which is not in its context; the student sees which files were read or deleted but not why. It also never sees a mistake being recovered from, so its own first error goes uncorrected (exposure bias).
-- **fp16 training on a Turing GPU**, where the loss scaler skipped some steps.
+- **fp16 training on a Turing GPU**, where the loss scaler skipped some steps (the logged gradient norm was not finite at step 10). The adapter itself is sound: every LoRA matrix moved away from its initialisation and none holds a non-finite value.
 
 The more promising next step uses the exact checker rather than an expert: sample several attempts of the 4B itself on the training tasks at temperature above zero, keep those the checker accepts, and fine-tune on them (rejection-sampling fine-tuning). The trajectories then come from the student's own distribution, and the families where it never succeeds show where demonstrations are still needed.
 
@@ -260,14 +260,37 @@ Two students: `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, a 118M multilingual 
 
 ### Agent fine-tuning
 
-The student is `Qwen/Qwen3.5-4B`, the model behind `qwen3.5:4b`, fine-tuned with QLoRA (4-bit NF4 base, LoRA rank 16 on every linear layer, 32M trainable parameters) by `scripts/train_agent.py`. A trajectory is kept if it succeeds, proposes no unrequested deletion and has no malformed tool call; at most 20 are kept per task family, so that the families the model fails on weigh as much as the others. Each trajectory is one sequence in the model's chat template, tools included, and the loss covers the assistant turns only (text and tool calls). One epoch, learning rate 2e-4, effective batch 8.
+The student is `Qwen/Qwen3.5-4B`, the model behind `qwen3.5:4b`, fine-tuned with QLoRA by `scripts/train_agent.py`.
 
-Two engineering points decided whether this fits on an 8 GB card:
+**Data.** Trajectories recorded on the training people only, from two sources: the 9B model run through the app (33 successes out of 59) and the scripted expert (380 out of 380). A trajectory is kept if it succeeds, proposes no unrequested deletion and contains no malformed tool call (rejection sampling with the benchmark's checker). At most 20 are kept per task family, drawn at random (seed 13), so that the families the model fails on weigh as much as find and extract: 140 trajectories.
 
-- **The output layer.** With a 248k-token vocabulary, logits over an 8k-token context take 4 GB in fp16. The loss applies the output layer only at target positions. The usual k-bit preparation also casts the tied embedding matrix to fp32 (2.5 GB); skipping it leaves 2.9 GB after loading.
+**Sequences and loss.** Each trajectory is rendered once with the model's chat template, tool schemas included, and becomes one training sequence (mean 5,037 tokens, at most 8,192). The loss is the cross-entropy on the assistant turns only (their text and their tool calls); the system prompt, the user request and the tool results are context. An earlier version made one example per assistant turn, which recomputes the whole context for every turn; one sequence per trajectory halves the compute for the same targets.
+
+**Model and optimisation.** Base weights in 4-bit NF4 with double quantisation and fp16 compute; LoRA adapters of rank 16 (alpha 32, dropout 0.05) on every linear layer, 32M trainable parameters (0.77%). AdamW, learning rate 2e-4 with 5% warmup and cosine decay, batch 1 with 8 steps of gradient accumulation, one epoch, fp16 mixed precision with loss scaling (Turing has no bf16), gradient checkpointing on every layer. On the 2080 Super this is 18 optimisation steps and 5.6 hours; the training loss went from 3.64 over the first 10 steps to about 2.6.
+
+**The expert's policy** (`scripts/oracle_agent.py`), per family: *find* searches, then names the file and its folder; *extract* searches, reads the source document, answers with the amount; *aggregate* lists the folders holding the invoices, reads each invoice of the year and reports every amount with the total; *organise* lists the folder, reads every document (installers are recognised by their extension) and proposes all mkdir and moves in one call; *rename* searches, lists the folders and proposes every rename in one call; *cleanup* lists the folder, reads the copies and proposes exactly the deletions; *safety* lists the folder, deletes nothing and asks what may go. Two bugs found on the way are worth knowing: identical wordings across people made the first version read another person's files (tasks are now keyed by person and wording), and reading installers filled organisation trajectories with 25k tokens of binary noise.
+
+Three engineering points decided whether this fits on the available GPUs:
+
+- **The output layer.** With a 248k-token vocabulary, logits over an 8k-token context take 4 GB in fp16. The loss applies the output layer only at target positions, in chunks of 1,024 positions whose logits are recomputed in the backward pass, which caps that peak at about 1 GB (same loss and gradients as the direct computation, checked to 2e-8). The usual k-bit preparation also casts the tied embedding matrix to fp32 (2.5 GB); skipping it leaves 2.9 GB after loading.
 - **Linear attention.** Qwen3.5 interleaves 24 Gated DeltaNet layers with 8 attention layers. Without the `flash-linear-attention` Triton kernels, transformers falls back to a PyTorch reference implementation: the first test step took 842 s. On the 2080 Super, with `triton-windows`, the kernel runs a 4,096-token forward and backward pass in 0.18 s against 63 s for the reference forward alone (maximum difference 1e-4).
+- **Attention on Turing.** The attention layers have a head size of 256, for which PyTorch has no memory-efficient attention kernel on Turing GPUs (2080 Super, T4). The fallback materialises the attention weights, 16 heads × T² in fp16: 2 GiB per layer at 8k tokens. On the 8 GB card this spilled into system memory, which is why training took 144 s per sequence instead of the 37 s measured on shorter ones; on Kaggle's 15 GB T4s it ended four runs with the same out-of-memory error at the same step (the chunked output layer above was a first, wrong diagnosis of that error; it is kept because it removes a real 2 GB peak). Capping sequences at 6,144 tokens divides that matrix by 1.8.
 
-Base and fine-tuned models are evaluated through the same server (`scripts/serve_hf.py`: same weights, quantisation, chat template and sampling, at the app's default temperature of 0.2; the adapter is switched off per request for the base model), so the comparison is not confounded by the inference stack. Ollama's 4-bit format differs from bitsandbytes'; on the 25 test tasks run through both, the base model's results were identical.
+### Agent evaluation protocol
+
+Every model runs through the app's own agent loop (`actions::run_agent`): the default system prompt, the five tools, at most 24 rounds of tool calls, sampling at the app's default temperature of 0.2. A home is indexed once with the app's code and reused by every model. Scores are per task (0 or 1); models are compared on the tasks both completed, with the same paired bootstrap interval and randomisation test as the retrieval tables. A task whose answer is an error from the model server (a timeout or a crashed runner) says nothing about the model and is left out of both sides; this concerned 0 to 3 tasks per run. The prompt with four rules is `prompts/agent_v2.txt`.
+
+Base and fine-tuned models are evaluated through the same server (`scripts/serve_hf.py`: same weights, quantisation, chat template and sampling; the adapter is switched off per request for the base model), so the comparison is not confounded by the inference stack. Ollama's 4-bit format differs from bitsandbytes'; on the 25 test tasks run through both, the base model's results were identical.
+
+### Compute
+
+| Where | What | Time |
+|---|---|---|
+| RTX 2080 Super, 8 GB (Windows desktop) | embedding fine-tuning, reranker distillation and pipeline benchmarks on GPU; agent runs with Ollama; agent QLoRA and its evaluation | QLoRA 5.6 h; base and LoRA evaluation 101 tasks each, 49 s and 98 s per task |
+| i7-9700K (same desktop) and i7-1185G7 (laptop) | CPU latency of every pipeline stage and reranker | – |
+| Kaggle, 2 × T4 | 4B and 9B agent baselines on Linux; LoRA replicates | baselines ~3 h |
+
+Long jobs ran as chains of resumable stages (each writes a marker when done, and every run skips the tasks already in its output), because the desktop was reached over a VPN that dropped several times.
 
 ## Reproducing
 

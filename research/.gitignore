@@ -8,3 +8,4 @@ cache/
 .pytest_cache/
 cache-laptop/
 cache-laptop-index/
+laptop_latency.log

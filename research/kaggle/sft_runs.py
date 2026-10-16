@@ -32,6 +32,9 @@ PER_FAMILY = int(os.environ.get("SENSETREE_PER_FAMILY", "40"))
 EPOCHS = float(os.environ.get("SENSETREE_EPOCHS", "1"))
 SKIP_BASE = os.environ.get("SENSETREE_SKIP_BASE") == "1"   # base already evaluated by another run
 TAG = os.environ.get("SENSETREE_TAG", "sft")
+# On a T4 (Turing) SDPA has no memory-efficient kernel for head size 256: the attention
+# matrix is materialised (16 heads x T^2 in fp16, 2 GiB at 8k tokens) and overflows 15 GB.
+MAX_LEN = int(os.environ.get("SENSETREE_MAX_LEN", "6144"))
 
 
 def sh(cmd: str, **kw) -> None:
@@ -140,7 +143,7 @@ def main() -> None:
     # the base server) exceeded the VM's memory and killed the session without a log.
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="0")
     sh(f"cd {RESEARCH} && {sys.executable} scripts/train_agent.py --trajectories train-oracle --model {BASE} "
-       f"--out {OUT / 'models/agent-sft'} --per-family {PER_FAMILY} --epochs {EPOCHS} "
+       f"--out {OUT / 'models/agent-sft'} --per-family {PER_FAMILY} --epochs {EPOCHS} --max-length {MAX_LEN} "
        f"> {OUT / 'logs/train.log'} 2>&1", env=env)
 
     adapter = ["--model", BASE, "--adapter", str(OUT / "models/agent-sft/adapter")]
