@@ -195,7 +195,7 @@ On the 97 tasks both runs completed, success falls from 0.639 to 0.485 (differen
 
 The model copied the surface of the expert's behaviour (read before answering, act through `propose_actions`, delete when tidying) without the conditions under which each applies. Three causes are plausible and the experiments so far do not separate them:
 
-- **Too little training.** 18 optimisation steps on 139 sequences, ending at a training loss of 2.6. Two replicates on Kaggle test it, with 40 trajectories per family for one and for two epochs, evaluated against the base model on Linux. Their first runs ended on GPU memory (see Setup, attention on Turing); they are running again with sequences capped at 6,144 tokens.
+- **Too little training.** 18 optimisation steps on 139 sequences, ending at a training loss of 2.6. Two replicates with 40 trajectories per family, for one and for two epochs, were meant to test it on Kaggle. They did not complete: every run ended at the start of training on the same GPU memory error (see Setup) and the account's weekly GPU quota ran out. This hypothesis is untested.
 - **The demonstrations are imitated without their reasons.** The expert chooses files from the ground truth, which is not in its context; the student sees which files were read or deleted but not why. It also never sees a mistake being recovered from, so its own first error goes uncorrected (exposure bias).
 - **fp16 training on a Turing GPU**, where the loss scaler skipped some steps (the logged gradient norm was not finite at step 10). The adapter itself is sound: every LoRA matrix moved away from its initialisation and none holds a non-finite value.
 
@@ -301,7 +301,7 @@ Three engineering points decided whether this fits on the available GPUs:
 
 - **The output layer.** With a 248k-token vocabulary, logits over an 8k-token context take 4 GB in fp16. The loss applies the output layer only at target positions, in chunks of 1,024 positions whose logits are recomputed in the backward pass, which caps that peak at about 1 GB (same loss and gradients as the direct computation, checked to 2e-8). The usual k-bit preparation also casts the tied embedding matrix to fp32 (2.5 GB); skipping it leaves 2.9 GB after loading.
 - **Linear attention.** Qwen3.5 interleaves 24 Gated DeltaNet layers with 8 attention layers. Without the `flash-linear-attention` Triton kernels, transformers falls back to a PyTorch reference implementation: the first test step took 842 s. On the 2080 Super, with `triton-windows`, the kernel runs a 4,096-token forward and backward pass in 0.18 s against 63 s for the reference forward alone (maximum difference 1e-4).
-- **Attention on Turing.** The attention layers have a head size of 256, for which PyTorch has no memory-efficient attention kernel on Turing GPUs (2080 Super, T4). The fallback materialises the attention weights, 16 heads × T² in fp16: 2 GiB per layer at 8k tokens. On the 8 GB card this spilled into system memory, which is why training took 144 s per sequence instead of the 37 s measured on shorter ones; on Kaggle's 15 GB T4s it ended four runs with the same out-of-memory error at the same step (the chunked output layer above was a first, wrong diagnosis of that error; it is kept because it removes a real 2 GB peak). Capping sequences at 6,144 tokens divides that matrix by 1.8.
+- **An unexplained memory peak.** On the 8 GB card, training spilled into system memory: 144 s per sequence instead of the 37 s measured on shorter ones. On Kaggle's 15 GB T4s, six runs ended at the start of training with the same out-of-memory error, to the byte: 2.03 GiB requested while 11.09 GiB were allocated and 1.08 GiB reserved but unused. Three explanations were tested and ruled out, since the error did not move: the output layer's logits (the chunked loss above, kept because it removes a real 2 GB peak), the attention mask (attention on Turing has no memory-efficient kernel for this head size of 256), and the sequence length (capping at 6,144 tokens). The constant size and the 1.08 GiB of reserved memory point to allocator fragmentation, which expandable segments would address; `kaggle/sft_probe.py` records every allocation over four steps on the longest sequences to settle it.
 
 ### Agent evaluation protocol
 
@@ -315,7 +315,7 @@ Base and fine-tuned models are evaluated through the same server (`scripts/serve
 |---|---|---|
 | RTX 2080 Super, 8 GB (Windows desktop) | embedding fine-tuning, reranker distillation and pipeline benchmarks on GPU; agent runs with Ollama; agent QLoRA and its evaluation | QLoRA 5.6 h; base and LoRA evaluation 101 tasks each, 49 s and 98 s per task |
 | i7-9700K (same desktop) and i7-1185G7 (laptop) | CPU latency of every pipeline stage and reranker | – |
-| Kaggle, 2 × T4 | 4B and 9B agent baselines on Linux; LoRA replicates | baselines ~3 h |
+| Kaggle, 2 × T4 | 4B and 9B agent baselines on Linux; LoRA replicates (not completed, see above) | baselines ~3 h; 30 h weekly quota used |
 
 Long jobs ran as chains of resumable stages (each writes a marker when done, and every run skips the tasks already in its output), because the desktop was reached over a VPN that dropped several times.
 

@@ -21,7 +21,8 @@ import torch
 import torch.utils.checkpoint
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model
-from transformers import (AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Trainer, TrainingArguments)
+from transformers import (AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Trainer, TrainerCallback,
+                          TrainingArguments)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -103,6 +104,12 @@ class TargetLossTrainer(Trainer):
     target tokens take 2 GB in fp32, and as much again for their gradient."""
 
     chunk = 1024
+    sequential = False
+
+    def _get_train_sampler(self, *args, **kwargs):
+        if self.sequential:
+            return torch.utils.data.SequentialSampler(self.train_dataset)
+        return super()._get_train_sampler(*args, **kwargs)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         base = model.get_base_model()
@@ -124,6 +131,35 @@ class TargetLossTrainer(Trainer):
         return (loss, None) if return_outputs else loss
 
 
+class PeakMemory(TrainerCallback):
+    """Logs the peak GPU memory of every optimiser step."""
+
+    def on_step_end(self, args, state, control, **kwargs):
+        print(f"step {state.global_step}: peak {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB", flush=True)
+        torch.cuda.reset_peak_memory_stats()
+
+
+def write_memory_report(path: Path, top: int = 25) -> None:
+    """Largest live CUDA blocks at the time of the failure, with the frames that allocated them."""
+    blocks = []
+    for segment in torch.cuda.memory._snapshot()["segments"]:
+        for b in segment["blocks"]:
+            if b["state"] == "active_allocated":
+                frames = [f"{Path(f['filename']).name}:{f['line']} {f['name']}" for f in b.get("frames", [])
+                          if "torch/" not in f["filename"].replace("\\", "/") or "autograd" in f["filename"]]
+                blocks.append({"bytes": b["size"], "frames": frames[:8]})
+    blocks.sort(key=lambda b: -b["bytes"])
+    by_site: dict[str, int] = {}
+    for b in blocks:
+        site = b["frames"][0] if b["frames"] else "?"
+        by_site[site] = by_site.get(site, 0) + b["bytes"]
+    report = {"allocated_gib": sum(b["bytes"] for b in blocks) / 2**30, "largest": blocks[:top],
+              "by_site_gib": {k: v / 2**30 for k, v in sorted(by_site.items(), key=lambda kv: -kv[1])[:top]}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    json.dump(report, open(path, "w"), indent=1)
+    print(json.dumps(report["by_site_gib"], indent=1), flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--trajectories", nargs="+", required=True, help="scored runs: results/agent/<run>.json + runs/agent/<run>.jsonl")
@@ -136,7 +172,11 @@ def main() -> None:
     parser.add_argument("--rank", type=int, default=16)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--max-steps", type=int, default=-1, help="stop after this many optimiser steps (smoke test)")
+    parser.add_argument("--longest-first", action="store_true", help="train on the longest sequences first (memory probe)")
+    parser.add_argument("--memory-report", help="record CUDA allocations; on out-of-memory, write the largest live blocks here")
     args = parser.parse_args()
+    if args.memory_report:
+        torch.cuda.memory._record_memory_history(max_entries=200_000)
 
     records = []
     for run in args.trajectories:
@@ -152,6 +192,8 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     data = examples(tokenizer, records, args.max_length)
     random.Random(13).shuffle(data)
+    if args.longest_first:
+        data.sort(key=lambda d: -len(d["input_ids"]))
     print(f"{len(data)} sequences, {sum(len(d['input_ids']) for d in data) / max(1, len(data)):.0f} tokens on average",
           flush=True)
 
@@ -183,9 +225,16 @@ def main() -> None:
         train_dataset=Dataset.from_list(data),
         data_collator=lambda b: collate(b, tokenizer.pad_token_id),
     )
+    trainer.sequential = args.longest_first
+    trainer.add_callback(PeakMemory())
     # checkpoints every 25 optimiser steps: an interrupted run resumes from the last one
     resume = any((out / "checkpoints").glob("checkpoint-*"))
-    trainer.train(resume_from_checkpoint=resume or None)
+    try:
+        trainer.train(resume_from_checkpoint=resume or None)
+    except torch.OutOfMemoryError:
+        if args.memory_report:
+            write_memory_report(Path(args.memory_report))
+        raise
     model.save_pretrained(str(out / "adapter"))
     tokenizer.save_pretrained(str(out / "adapter"))
     json.dump({"args": vars(args), "trajectories": len(records), "examples": len(data),
