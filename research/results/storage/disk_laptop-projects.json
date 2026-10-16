@@ -1,0 +1,187 @@
+{
+ "label": "laptop-projects",
+ "scan_seconds": 2.2353272438049316,
+ "extract_seconds": 99.83125686645508,
+ "by_kind": {
+  "other": {
+   "files": 6282,
+   "bytes": 16820989081,
+   "over_cap": 0
+  },
+  "text": {
+   "files": 5355,
+   "bytes": 1089817149,
+   "over_cap": 4
+  },
+  "image": {
+   "files": 4556,
+   "bytes": 150355042,
+   "over_cap": 0
+  },
+  "media": {
+   "files": 38,
+   "bytes": 86940462,
+   "over_cap": 0
+  },
+  "document": {
+   "files": 222,
+   "bytes": 473574963,
+   "over_cap": 0
+  }
+ },
+ "textual_estimates": {
+  "text": {
+   "files_under_cap": 5351,
+   "total_chunks": 787601,
+   "mean_chunks": 147.18762848065782,
+   "mean_extract_chars": 5900.950102784526,
+   "share_without_text": 0.0,
+   "method": "exact, from file sizes"
+  },
+  "document": {
+   "sampled_files": 61,
+   "mean_chars": 64886.016393442624,
+   "mean_chunks": 81.39344262295081,
+   "share_without_text": 0.0,
+   "mean_extract_chars": 11388.622950819672,
+   "files_under_cap": 222,
+   "mean_chunks_ci95": [
+    31.34426229508197,
+    152.59016393442624
+   ],
+   "total_chunks": 18069.344262295082
+  },
+  "blocks": {
+   "depth": 2,
+   "folders": 8,
+   "chunks_replaced": 787600
+  }
+ },
+ "top_extensions_by_bytes": [
+  {
+   "ext": "onnx",
+   "files": 9,
+   "bytes": 2654039106
+  },
+  {
+   "ext": "ova",
+   "files": 1,
+   "bytes": 2634515456
+  },
+  {
+   "ext": "raw",
+   "files": 3,
+   "bytes": 2280059288
+  },
+  {
+   "ext": "data",
+   "files": 1,
+   "bytes": 2271088656
+  },
+  {
+   "ext": "rlib",
+   "files": 819,
+   "bytes": 2152990900
+  },
+  {
+   "ext": "lib",
+   "files": 98,
+   "bytes": 1035259448
+  },
+  {
+   "ext": "rmeta",
+   "files": 817,
+   "bytes": 995768779
+  },
+  {
+   "ext": "exe",
+   "files": 212,
+   "bytes": 649020099
+  },
+  {
+   "ext": "pdb",
+   "files": 241,
+   "bytes": 598241280
+  },
+  {
+   "ext": "csv",
+   "files": 73,
+   "bytes": 538479058
+  },
+  {
+   "ext": "pdf",
+   "files": 213,
+   "bytes": 464026555
+  },
+  {
+   "ext": "html",
+   "files": 85,
+   "bytes": 291164196
+  },
+  {
+   "ext": "zip",
+   "files": 22,
+   "bytes": 284760972
+  },
+  {
+   "ext": "dll",
+   "files": 68,
+   "bytes": 183853152
+  },
+  {
+   "ext": "jsonl",
+   "files": 389,
+   "bytes": 183509643
+  },
+  {
+   "ext": "",
+   "files": 587,
+   "bytes": 178588604
+  },
+  {
+   "ext": "json",
+   "files": 952,
+   "bytes": 172558223
+  },
+  {
+   "ext": "lance",
+   "files": 158,
+   "bytes": 141846451
+  },
+  {
+   "ext": "h5",
+   "files": 1,
+   "bytes": 121449816
+  },
+  {
+   "ext": "jpg",
+   "files": 4294,
+   "bytes": 114232010
+  },
+  {
+   "ext": "pyd",
+   "files": 23,
+   "bytes": 83833856
+  },
+  {
+   "ext": "so",
+   "files": 23,
+   "bytes": 76286894
+  },
+  {
+   "ext": "ipynb",
+   "files": 32,
+   "bytes": 69021598
+  },
+  {
+   "ext": "iso",
+   "files": 1,
+   "bytes": 59699200
+  },
+  {
+   "ext": "wav",
+   "files": 24,
+   "bytes": 50063500
+  }
+ ]
+}

@@ -210,6 +210,33 @@ The more promising next step uses the exact checker rather than an expert: sampl
 - The fine-tuned model sometimes writes a stray « user / assistant » before its tool calls. The supervised spans were checked and contain no role markers; the artefact affects the text around calls, not the calls or the scored answers.
 - Two to three requests per run timed out on the server side (out of 202 on the PC); they are left out of both sides of every comparison.
 
+## What indexing a disk costs
+
+Indexing a whole disk to find out would take days, so the cost is estimated in three steps that run in about a minute and use no model:
+
+1. **Cost of a stored row** (`scripts/storage_index.py`). LanceDB tables with the app's schema are filled with real chunks (1,000 characters, 200 overlap) and random vectors, whose values do not change their size, then given the app's full-text index. A full chunk costs 2.49 KB with the default 384-d model: 1.54 KB of vector, 0.67 KB of text and metadata, 0.28 KB of full-text index. One megabyte of extracted text becomes about 1,250 chunks, so about 3.1 MB of index. With a 1,024-d embedding model the vector alone is 4 KB per row.
+2. **What the disk holds** (`scripts/storage_disk.py`). A walk of the folders with the crawler's rules routes each file like `parser.rs` (sizes and counts only). The chunk count of text files follows exactly from their sizes; for PDF and Office files the text of a random sample is extracted, which gives chunks per file with a bootstrap interval.
+3. **Rows and time** (`scripts/storage_report.py`), with the app's defaults: chunks for documents and text, one row for an image (plus its 512-d CLIP vector), a video, an archive, a file over 50 MB or with no extractable text; a catalogue row in SQLite for every file.
+
+On the personal folders of the laptop used for this project (Desktop, Documents, Downloads, Pictures, Videos, Music, OneDrive; 12,394 files, 68.9 GB):
+
+| | default model (384-d) | 1,024-d model |
+|---|---:|---:|
+| rows | 212,000 chunks (95% interval 86,000 to 443,000) + 6,200 single rows | same |
+| index on disk | 535 MB | 1.0 GB |
+| scaled to 500 GB, same mix | 3.8 GB (0.8% of the disk) | 7.6 GB (1.5%) |
+| embedding time for 500 GB, laptop CPU | 40 to 50 h | slower, not measured |
+
+What this says:
+
+- **Disk space is not the constraint; time is.** 96% of this disk's bytes are videos, photos, archives and virtual machines, which cost one row each whatever their size; the index follows the amount of text, not the size of the disk. On a 500 GB disk of the same kind the index is under 1% of the data. The time is in the models: 40 to 50 hours of CPU embedding, and, if LLM descriptions are on, about 100,000 calls, which at an assumed 2 to 4 s each on a GPU is another 57 to 114 hours.
+- **Most of the index is vectors** (60% at 384 d, 80% at 1,024 d). The embedding dimension is the main lever on size: switching from the default model to a 1,024-d one doubles the index.
+- **Code folders are what makes an index explode, and block mode is the fix.** The `Projects` folder (17 GB, 5,355 text files) produces 788,000 chunks, 1.9 GB of index, more than all the personal folders together. Indexed as blocks at depth 2 (one row per project, the « bloc sémantique » mode), the same folder is 8 rows.
+- **The app never compacts its index.** The real index of the app on this laptop holds 51,231 chunks of 1,024 dimensions in 406 MB (8.3 KB per row): 1,259 version manifests and fragmented files are never cleaned. Compacting a copy with LanceDB's `optimize` took 9 s and brought it to 295 MB (−27%, 6.0 KB per row). Calling it after each indexing batch is a one-line fix.
+- **iPhone photos are not indexed as images.** `.heic` is not in the list of image extensions: 2,555 photos (6.2 GB) on this disk would only be found by their name.
+
+Checks and limits. The model's cost of a row (5.0 KB at 1,024 d) is 16% below what the real index measures after compaction (6.0 KB), probably because its full-text index is larger on real text; the figures above are therefore slightly low. The interval on chunks is wide because a few long PDFs (books, theses) dominate the document sample. The tables are written with the Python `lancedb` package while the app uses the Rust crate, which shares the format but not necessarily every byte. Transcription and video description are off by default; turned on, media would add one chunk per ~800 characters of transcript. The LLM time per call is an assumption, not a measurement. One disk is one disk: the method takes a minute to rerun on another (`storage_disk.py --root <folders> --label <name>`).
+
 ## Setup
 
 ### Datasets

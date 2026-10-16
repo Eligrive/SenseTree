@@ -1,0 +1,177 @@
+{
+ "label": "laptop-profile",
+ "scan_seconds": 5.41496467590332,
+ "extract_seconds": 41.15980839729309,
+ "by_kind": {
+  "text": {
+   "files": 9798,
+   "bytes": 1121058728,
+   "over_cap": 4
+  },
+  "other": {
+   "files": 9333,
+   "bytes": 72016712361,
+   "over_cap": 0
+  },
+  "image": {
+   "files": 6294,
+   "bytes": 1537018718,
+   "over_cap": 0
+  },
+  "media": {
+   "files": 1351,
+   "bytes": 14500124373,
+   "over_cap": 0
+  },
+  "document": {
+   "files": 2091,
+   "bytes": 3492867174,
+   "over_cap": 3
+  }
+ },
+ "textual_estimates": {
+  "document": {
+   "sampled_files": 70,
+   "mean_chars": 48943.2,
+   "mean_chunks": 61.44285714285714,
+   "share_without_text": 0.04285714285714286,
+   "mean_extract_chars": 8787.542857142857,
+   "files_under_cap": 2088
+  },
+  "text": {
+   "sampled_files": 329,
+   "mean_chars": 80622.47112462006,
+   "mean_chunks": 101.0,
+   "share_without_text": 0.0,
+   "mean_extract_chars": 3726.164133738602,
+   "files_under_cap": 9794
+  }
+ },
+ "top_extensions_by_bytes": [
+  {
+   "ext": "vmdk",
+   "files": 43,
+   "bytes": 23431147887
+  },
+  {
+   "ext": "zip",
+   "files": 42,
+   "bytes": 17850337500
+  },
+  {
+   "ext": "mp4",
+   "files": 1244,
+   "bytes": 9268313194
+  },
+  {
+   "ext": "heic",
+   "files": 2555,
+   "bytes": 6653334653
+  },
+  {
+   "ext": "7z",
+   "files": 1,
+   "bytes": 3828905267
+  },
+  {
+   "ext": "mov",
+   "files": 24,
+   "bytes": 3250714243
+  },
+  {
+   "ext": "pdf",
+   "files": 1918,
+   "bytes": 3158269590
+  },
+  {
+   "ext": "onnx",
+   "files": 9,
+   "bytes": 2654039106
+  },
+  {
+   "ext": "ova",
+   "files": 1,
+   "bytes": 2634515456
+  },
+  {
+   "ext": "raw",
+   "files": 7,
+   "bytes": 2298998152
+  },
+  {
+   "ext": "data",
+   "files": 1,
+   "bytes": 2271088656
+  },
+  {
+   "ext": "rlib",
+   "files": 819,
+   "bytes": 2152990900
+  },
+  {
+   "ext": "vmem",
+   "files": 1,
+   "bytes": 2147483648
+  },
+  {
+   "ext": "wav",
+   "files": 71,
+   "bytes": 1930132616
+  },
+  {
+   "ext": "exe",
+   "files": 228,
+   "bytes": 1074858252
+  },
+  {
+   "ext": "jpg",
+   "files": 5821,
+   "bytes": 1036966858
+  },
+  {
+   "ext": "lib",
+   "files": 98,
+   "bytes": 1035259448
+  },
+  {
+   "ext": "rmeta",
+   "files": 817,
+   "bytes": 995768779
+  },
+  {
+   "ext": "iso",
+   "files": 2,
+   "bytes": 850325504
+  },
+  {
+   "ext": "pdb",
+   "files": 241,
+   "bytes": 598241280
+  },
+  {
+   "ext": "csv",
+   "files": 87,
+   "bytes": 539062918
+  },
+  {
+   "ext": "png",
+   "files": 450,
+   "bytes": 468862911
+  },
+  {
+   "ext": "pptx",
+   "files": 20,
+   "bytes": 315512431
+  },
+  {
+   "ext": "html",
+   "files": 87,
+   "bytes": 292988402
+  },
+  {
+   "ext": "",
+   "files": 711,
+   "bytes": 216952224
+  }
+ ]
+}

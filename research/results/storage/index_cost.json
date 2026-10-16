@@ -1,0 +1,52 @@
+{
+ "tables": [
+  {
+   "chunks": 5000,
+   "text_bytes": 3090337,
+   "data": 9755287,
+   "indices": 1020700,
+   "other": 2576,
+   "total": 10778563
+  },
+  {
+   "chunks": 20000,
+   "text_bytes": 12386977,
+   "data": 39242228,
+   "indices": 2926586,
+   "other": 2587,
+   "total": 42171401
+  },
+  {
+   "chunks": 78183,
+   "text_bytes": 48389132,
+   "data": 153051190,
+   "indices": 10333382,
+   "other": 2586,
+   "total": 163387158
+  }
+ ],
+ "linear_fit_bytes": {
+  "data": {
+   "per_chunk": 1957.4893615880064,
+   "fixed": 23026.73442155546
+  },
+  "indices": {
+   "per_chunk": 127.26592201838768,
+   "fixed": 382996.1227922307
+  },
+  "total": {
+   "per_chunk": 2084.7553771426183,
+   "fixed": 408602.64009771583
+  }
+ },
+ "dim": 384,
+ "source": "fiqa chunks, 1000/200 windows",
+ "full_chunks_alloprof": {
+  "chunks": 9758,
+  "text_bytes": 10088657,
+  "data": 21513389,
+  "indices": 2746867,
+  "other": 2581,
+  "total": 24262837
+ }
+}
