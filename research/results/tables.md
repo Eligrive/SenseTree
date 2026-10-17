@@ -135,6 +135,7 @@
 | qwen3.5:9b, Ollama, Linux | 24/24 | 11/29 | 0/8 | 1/8 | 2/6 | 7/16 | 5/8 | 0.505 (99) | 3 | 2.1 |
 | Qwen3.5-4B, serve_hf (base) | 24/24 | 22/29 | 0/8 | 0/8 | 1/8 | 7/14 | 8/8 | 0.626 (99) | 1 | 2.2 |
 | Qwen3.5-4B + LoRA, 20 per family, 1 epoch | 15/24 | 19/29 | 0/6 | 0/8 | 1/8 | 7/16 | 6/8 | 0.485 (99) | 3 | 4.4 |
+| Qwen3.5-4B + LoRA, 40 per family, 2 epochs | 18/24 | 13/29 | 0/8 | 0/8 | 0/8 | 2/16 | 8/8 | 0.406 (101) | 12 | 5.4 |
 
 ### File agent, paired comparisons on per-task success (A vs B)
 
@@ -143,4 +144,6 @@
 | prompt with four rules vs default (dev) | 125 | 0.600 | 0.608 | -0.008 [-0.056, +0.040] | 1.000 |
 | 9B vs 4B (Ollama, Linux) | 99 | 0.505 | 0.616 | **-0.111** [-0.202, -0.020] | 0.035 |
 | LoRA vs base (serve_hf, Windows) | 97 | 0.485 | 0.639 | **-0.155** [-0.247, -0.062] | 0.004 |
+| LoRA 40/family, 2 epochs vs base (serve_hf, Windows) | 99 | 0.414 | 0.626 | **-0.212** [-0.313, -0.101] | 0.000 |
+| LoRA 2 epochs vs LoRA 1 epoch (serve_hf, Windows) | 99 | 0.414 | 0.485 | -0.071 [-0.192, +0.051] | 0.340 |
 

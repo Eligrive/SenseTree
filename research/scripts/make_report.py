@@ -405,15 +405,14 @@ AGENT_RUNS = [
     ("test-qwen3.5-9b-linux", "qwen3.5:9b, Ollama, Linux"),
     ("test-hf-qwen3.5-4b", "Qwen3.5-4B, serve_hf (base)"),
     ("test-hf-qwen3.5-4b-sft", "Qwen3.5-4B + LoRA, 20 per family, 1 epoch"),
-    ("test-hf-qwen3.5-4b-sft-linux", "Qwen3.5-4B + LoRA, 40 per family, 1 epoch (Linux)"),
-    ("test-hf-qwen3.5-4b-sft-2ep-linux", "Qwen3.5-4B + LoRA, 40 per family, 2 epochs (Linux)"),
+    ("test-hf-qwen3.5-4b-sft-2ep", "Qwen3.5-4B + LoRA, 40 per family, 2 epochs"),
 ]
 AGENT_PAIRS = [
     ("dev-qwen3.5-4b-v2", "dev-qwen3.5-4b", "prompt with four rules vs default (dev)"),
     ("test-qwen3.5-9b-linux", "test-qwen3.5-4b-linux", "9B vs 4B (Ollama, Linux)"),
     ("test-hf-qwen3.5-4b-sft", "test-hf-qwen3.5-4b", "LoRA vs base (serve_hf, Windows)"),
-    ("test-hf-qwen3.5-4b-sft-linux", "test-hf-qwen3.5-4b-linux", "LoRA 40/family vs base (serve_hf, Linux)"),
-    ("test-hf-qwen3.5-4b-sft-2ep-linux", "test-hf-qwen3.5-4b-linux", "LoRA 2 epochs vs base (serve_hf, Linux)"),
+    ("test-hf-qwen3.5-4b-sft-2ep", "test-hf-qwen3.5-4b", "LoRA 40/family, 2 epochs vs base (serve_hf, Windows)"),
+    ("test-hf-qwen3.5-4b-sft-2ep", "test-hf-qwen3.5-4b-sft", "LoRA 2 epochs vs LoRA 1 epoch (serve_hf, Windows)"),
 ]
 
 

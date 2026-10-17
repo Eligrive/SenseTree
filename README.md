@@ -44,7 +44,7 @@ The agent is measured on a benchmark built for it: synthetic home folders for 38
 - **Small local models find documents but do not act on them.** The leading failure is a correct plan written to the user as text instead of being proposed as operations.
 - **A larger model is not better here.** The 9B answers more often from search snippets without opening documents, and is the only model that proposed deleting protected files.
 - **Prompting moves the errors around** (−0.008, 95% interval −0.056 to +0.040 on 125 development tasks).
-- **Fine-tuning the 4B on expert demonstrations removed the targeted error and made the agent worse** (0.485 against 0.639 on 97 paired tasks, p = 0.004): it learned to act through the plan tool and to read before answering, but also to describe instead of naming a file and to delete when tidying. The analysis and next steps are in [research/README.md](research/README.md#the-file-agent).
+- **Fine-tuning the 4B on expert demonstrations removed the targeted error and made the agent worse** (0.485 against 0.639 on 97 paired tasks, p = 0.004): it learned to act through the plan tool and to read before answering, but also to describe instead of naming a file and to delete when tidying. Training longer (62 steps instead of 18, loss from 3.9 to about 0.2) made it worse again (0.414 against 0.626, p < 0.001), mostly through deleting files nobody asked about during cleanup, so the shortfall is not a lack of training. The analysis and next steps are in [research/README.md](research/README.md#the-file-agent).
 
 ## What it does
 

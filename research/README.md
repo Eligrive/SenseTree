@@ -190,12 +190,13 @@ Training demonstrations therefore come from a scripted expert (`scripts/oracle_a
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | base | 24/24 | 22/29 | 0/8 | 0/8 | 1/8 | 7/14 | 8/8 | 0.626 | 12 | 2.2 |
 | + LoRA | 15/24 | 19/29 | 0/6 | 0/8 | 1/8 | 7/16 | 6/8 | 0.485 | 0 | 4.4 |
+| + LoRA, 40 per family, 2 epochs | 18/24 | 13/29 | 0/8 | 0/8 | 0/8 | 2/16 | 8/8 | 0.406 | 9 | 5.4 |
 
 On the 97 tasks both runs completed, success falls from 0.639 to 0.485 (difference −0.155, 95% interval −0.247 to −0.062, p = 0.004). The error the training targeted is gone: no plan is written as text any more, every plan goes through `propose_actions`. Everything else moved the wrong way. On find requests the fine-tuned model opens the document and describes it instead of naming it (15/24). It refuses more often (5 tasks against 1), proposes deleting protected documents on two « fais du ménage » requests, and no multi-step family improves. It makes twice as many tool calls and takes twice as long per task (98 s against 49 s).
 
-The model copied the surface of the expert's behaviour (read before answering, act through `propose_actions`, delete when tidying) without the conditions under which each applies. Three causes are plausible and the experiments so far do not separate them:
+The model copied the surface of the expert's behaviour (read before answering, act through `propose_actions`, delete when tidying) without the conditions under which each applies. Three causes were plausible; a longer second run rules out the first:
 
-- **Too little training.** 18 optimisation steps on 139 sequences, ending at a training loss of 2.6. The replicates planned on Kaggle never trained (see Setup); the test now runs on the PC: 40 trajectories per family, two epochs (about 60 steps), evaluated against the same base model.
+- **Too little training: ruled out.** The first run took 18 optimisation steps on 139 sequences and ended at a training loss of 2.6. A second run on the PC (the Kaggle replicates never trained, see Setup) used 245 sequences, up to 40 per family, for two epochs: 62 steps, with the loss going from 3.9 at step 10 to 0.15–0.25 from step 50. The model fits the demonstrations and the agent gets worse again: 0.414 against 0.626 for the base model on the 99 tasks both completed (difference −0.212, 95% interval −0.313 to −0.101, p < 0.001), and 0.414 against 0.485 for the one-epoch adapter (−0.071, interval −0.192 to +0.051, p = 0.34, not significant). Find requests recover in part (18/24, against 15/24 after one epoch), the protected files are no longer touched (8/8), but cleanup falls to 2/16: on 12 of the 16 cleanup requests the agent proposes deleting files nobody asked about. Plans written as text come back on organise and rename (9 tasks). Tasks take four times as long as with the base model (208 s against 49 s). Fitting the expert more closely amplifies the behaviour it copies without its reasons, which points to the next cause.
 - **The demonstrations are imitated without their reasons.** The expert chooses files from the ground truth, which is not in its context; the student sees which files were read or deleted but not why. It also never sees a mistake being recovered from, so its own first error goes uncorrected (exposure bias).
 - **fp16 training on a Turing GPU**, where the loss scaler skipped some steps (the logged gradient norm was not finite at step 10). The adapter itself is sound: every LoRA matrix moved away from its initialisation and none holds a non-finite value.
 
@@ -209,6 +210,7 @@ The more promising next step uses the exact checker rather than an expert: sampl
 - Test has 101 tasks and 8 people; per-family counts are small (8 to 29), so only the pooled comparison has useful power.
 - The fine-tuned model sometimes writes a stray « user / assistant » before its tool calls. The supervised spans were checked and contain no role markers; the artefact affects the text around calls, not the calls or the scored answers.
 - Two to three requests per run timed out on the server side (out of 202 on the PC); they are left out of both sides of every comparison.
+- The process memory of `serve_hf` grows over an evaluation (14.5 GB after a few dozen tasks) and crashed the two-epoch run once. The 45 failed requests were rerun with the server restarted for each test person, so that run has no missing task.
 
 ## What indexing a disk costs
 
@@ -313,7 +315,7 @@ Base and fine-tuned models are evaluated through the same server (`scripts/serve
 
 | Where | What | Time |
 |---|---|---|
-| RTX 2080 Super, 8 GB (Windows desktop) | embedding fine-tuning, reranker distillation and pipeline benchmarks on GPU; agent runs with Ollama; agent QLoRA and its evaluation | QLoRA 5.6 h; base and LoRA evaluation 101 tasks each, 49 s and 98 s per task |
+| RTX 2080 Super, 8 GB (Windows desktop) | embedding fine-tuning, reranker distillation and pipeline benchmarks on GPU; agent runs with Ollama; agent QLoRA and its evaluation | QLoRA 5.6 h (one epoch) and 2.2 h (two epochs, after the fused kernels); evaluation 101 tasks per model, 49 s (base), 98 s and 208 s per task (adapters) |
 | i7-9700K (same desktop) and i7-1185G7 (laptop) | CPU latency of every pipeline stage and reranker | – |
 | Kaggle, 2 × T4 | 4B and 9B agent baselines on Linux; LoRA replicates (not completed, see above) | baselines ~3 h; 30 h weekly quota used |
 
