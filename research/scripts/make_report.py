@@ -401,6 +401,7 @@ def fig_models() -> None:
 AGENT_FAMILIES = ["find", "extract", "aggregate", "organise", "rename", "cleanup", "safety"]
 AGENT_RUNS = [
     ("test-qwen3.5-4b", "qwen3.5:4b, Ollama, Windows"),
+    ("test-qwen3.5-4b-think", "qwen3.5:4b, thinking on, Ollama, Windows"),
     ("test-qwen3.5-4b-linux", "qwen3.5:4b, Ollama, Linux"),
     ("test-qwen3.5-9b-linux", "qwen3.5:9b, Ollama, Linux"),
     ("test-hf-qwen3.5-4b", "Qwen3.5-4B, serve_hf (base)"),
@@ -410,6 +411,7 @@ AGENT_RUNS = [
 AGENT_PAIRS = [
     ("dev-qwen3.5-4b-v2", "dev-qwen3.5-4b", "prompt with four rules vs default (dev)"),
     ("test-qwen3.5-9b-linux", "test-qwen3.5-4b-linux", "9B vs 4B (Ollama, Linux)"),
+    ("test-qwen3.5-4b-think", "test-qwen3.5-4b", "thinking on vs off (Ollama, Windows)"),
     ("test-hf-qwen3.5-4b-sft", "test-hf-qwen3.5-4b", "LoRA vs base (serve_hf, Windows)"),
     ("test-hf-qwen3.5-4b-sft-2ep", "test-hf-qwen3.5-4b", "LoRA 40/family, 2 epochs vs base (serve_hf, Windows)"),
     ("test-hf-qwen3.5-4b-sft-2ep", "test-hf-qwen3.5-4b-sft", "LoRA 2 epochs vs LoRA 1 epoch (serve_hf, Windows)"),

@@ -131,6 +131,7 @@
 | Run | find | extract | aggregate | organise | rename | cleanup | safety | success | unrequested deletions | calls/task |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | qwen3.5:4b, Ollama, Windows | 23/24 | 21/29 | 0/8 | 0/8 | 1/8 | 8/16 | 8/8 | 0.604 (101) | 0 | 1.4 |
+| qwen3.5:4b, thinking on, Ollama, Windows | 18/24 | 24/29 | 2/8 | 1/8 | 7/8 | 8/16 | 6/8 | 0.653 (101) | 3 | 3.4 |
 | qwen3.5:4b, Ollama, Linux | 24/24 | 18/29 | 0/8 | 0/8 | 5/8 | 7/16 | 8/8 | 0.614 (101) | 0 | 1.3 |
 | qwen3.5:9b, Ollama, Linux | 24/24 | 11/29 | 0/8 | 1/8 | 2/6 | 7/16 | 5/8 | 0.505 (99) | 3 | 2.1 |
 | Qwen3.5-4B, serve_hf (base) | 24/24 | 22/29 | 0/8 | 0/8 | 1/8 | 7/14 | 8/8 | 0.626 (99) | 1 | 2.2 |
@@ -143,6 +144,7 @@
 |---|---:|---:|---:|---|---:|
 | prompt with four rules vs default (dev) | 125 | 0.600 | 0.608 | -0.008 [-0.056, +0.040] | 1.000 |
 | 9B vs 4B (Ollama, Linux) | 99 | 0.505 | 0.616 | **-0.111** [-0.202, -0.020] | 0.035 |
+| thinking on vs off (Ollama, Windows) | 101 | 0.653 | 0.604 | +0.050 [-0.030, +0.129] | 0.359 |
 | LoRA vs base (serve_hf, Windows) | 97 | 0.485 | 0.639 | **-0.155** [-0.247, -0.062] | 0.004 |
 | LoRA 40/family, 2 epochs vs base (serve_hf, Windows) | 99 | 0.414 | 0.626 | **-0.212** [-0.313, -0.101] | 0.000 |
 | LoRA 2 epochs vs LoRA 1 epoch (serve_hf, Windows) | 99 | 0.414 | 0.485 | -0.071 [-0.192, +0.051] | 0.340 |
