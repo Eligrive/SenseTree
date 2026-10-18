@@ -1,0 +1,38 @@
+{
+ "st-base/0": {
+  "ollama": -14.573321513520568,
+  "hf_base": -16.62787628173828,
+  "hf_lora": -16.441387176513672,
+  "text": "En tant qu'intelligence artificielle, je n'ai pas accès à vos documents personnels ni à votre espace client EDF. Je ne peux donc pas vous dire où se trouve physiquement ou numériquement votre facture "
+ },
+ "st-base/1": {
+  "ollama": -19.71996085581486,
+  "hf_base": -34.02677917480469,
+  "hf_lora": -33.732967376708984,
+  "text": "Je ne peux pas effectuer de tâches physiques comme faire du ménage. Cependant, je peux vous aider à **organiser vos fichiers** dans le dossier Téléchargements en analysant leur contenu et en proposant"
+ },
+ "st-base/2": {
+  "ollama": -0.9837271057885033,
+  "hf_base": -1.1977643966674805,
+  "hf_lora": -1.3093268871307373,
+  "text": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   User asks: \"Combien ai-je payé d'électricité en 2025 ?\" (How much did I pay for electricity"
+ },
+ "st-r3/0": {
+  "ollama": -16.232652903076428,
+  "hf_base": -21.651655197143555,
+  "hf_lora": -21.20223617553711,
+  "text": "En tant qu'intelligence artificielle, je n'ai pas accès à vos documents personnels ni aux systèmes de votre fournisseur d'énergie. Par conséquent, **je ne peux pas vous dire où se trouve physiquement "
+ },
+ "st-r3/1": {
+  "ollama": -19.40887277049842,
+  "hf_base": -32.08498764038086,
+  "hf_lora": -31.51418113708496,
+  "text": "Je ne peux pas effectuer de tâches physiques comme faire du ménage. Cependant, je peux vous aider à **organiser vos fichiers** dans le dossier Téléchargements en analysant leur contenu et en proposant"
+ },
+ "st-r3/2": {
+  "ollama": -0.886950601585113,
+  "hf_base": -1.1977643966674805,
+  "hf_lora": -1.3093268871307373,
+  "text": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   User asks: \"Combien ai-je payé d'électricité en 2025 ?\" (How much did I pay for electricity"
+ }
+}

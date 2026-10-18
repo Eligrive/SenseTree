@@ -7,6 +7,9 @@
 //!     --out runs/agent/qwen3.5-4b.jsonl --model qwen3.5:4b --split test
 //! ```
 //!
+//! Options : `--effort` (mode réflexion), `--temperature` (0,2 par défaut, celle de
+//! l'application), `--system-extra`, `--state`, `--base-url`, `--gpu`.
+//!
 //! L'arborescence est indexée comme le ferait l'application (extraction PDF/DOCX,
 //! découpage, contextual retrieval, LanceDB), avec l'extrait comme « sens ».
 
@@ -137,6 +140,11 @@ async fn main() -> Result<()> {
     cfg.reasoning.model = model.clone();
     cfg.reasoning.reasoning_effort = serde_json::from_value::<ReasoningEffort>(json!(effort))
         .map_err(|_| anyhow!("effort inconnu : {effort}"))?;
+    // Température d'échantillonnage de l'agent (0,2 par défaut dans l'application) :
+    // l'apprentissage par renforcement tire plusieurs tentatives par tâche à 0,7.
+    if let Some(t) = args.get("temperature") {
+        cfg.agent.temperature = Some(t.parse().map_err(|_| anyhow!("température invalide : {t}"))?);
+    }
     cfg.mcp_servers.clear();
     // Consignes ajoutées au prompt système, par le réglage utilisateur de l'application.
     cfg.prompts.chat_system = match args.get("system-extra") {
