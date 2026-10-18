@@ -137,6 +137,8 @@
 | Qwen3.5-4B, serve_hf (base) | 24/24 | 22/29 | 0/8 | 0/8 | 1/8 | 7/14 | 8/8 | 0.626 (99) | 1 | 2.2 |
 | Qwen3.5-4B + LoRA, 20 per family, 1 epoch | 15/24 | 19/29 | 0/6 | 0/8 | 1/8 | 7/16 | 6/8 | 0.485 (99) | 3 | 4.4 |
 | Qwen3.5-4B + LoRA, 40 per family, 2 epochs | 18/24 | 13/29 | 0/8 | 0/8 | 0/8 | 2/16 | 8/8 | 0.406 (101) | 12 | 5.4 |
+| qwen3.5:4b + GRPO, 1 update, thinking on, Ollama, Windows | 20/24 | 23/29 | 4/8 | 0/8 | 7/8 | 7/16 | 8/8 | 0.683 (101) | 1 | 3.3 |
+| qwen3.5:4b + GRPO, 2 updates, thinking on, Ollama, Windows | 20/24 | 25/29 | 4/8 | 0/8 | 6/8 | 7/16 | 6/8 | 0.673 (101) | 2 | 3.1 |
 | qwen3.5:4b + GRPO, 3 updates, thinking on, Ollama, Windows | 22/24 | 25/29 | 5/8 | 0/8 | 7/8 | 7/16 | 8/8 | 0.733 (101) | 0 | 2.8 |
 
 ### File agent, paired comparisons on per-task success (A vs B)
@@ -151,6 +153,8 @@
 | LoRA 2 epochs vs LoRA 1 epoch (serve_hf, Windows) | 99 | 0.414 | 0.485 | -0.071 [-0.192, +0.051] | 0.340 |
 | GRPO, 3 updates vs thinking on (Ollama, Windows) | 101 | 0.733 | 0.653 | +0.079 [+0.010, +0.149] | 0.057 |
 | GRPO, 3 updates vs thinking off (Ollama, Windows) | 101 | 0.733 | 0.604 | **+0.129** [+0.050, +0.208] | 0.003 |
+| GRPO, 1 update vs thinking on (Ollama, Windows) | 101 | 0.683 | 0.653 | +0.030 [-0.040, +0.099] | 0.595 |
+| GRPO, 2 updates vs thinking on (Ollama, Windows) | 101 | 0.673 | 0.653 | +0.020 [-0.069, +0.109] | 0.821 |
 
 ### File agent, GRPO rounds on training tasks (4 attempts per task, temperature 0.7, thinking on)
 
