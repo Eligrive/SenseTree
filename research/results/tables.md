@@ -164,3 +164,20 @@
 | 1 | after 1 update | 320 | 0.637 | +0.631 | 0.009 | 35/80 | 17 | 0.0071 | 0.017 |
 | 2 | after 2 updates | 320 | 0.678 | +0.693 | 0.006 | 38/80 | 19 | 0.0084 | 0.015 |
 
+### File agent, repeated test runs per GRPO checkpoint (thinking on, temperature 0.2)
+
+| Checkpoint | runs | success, mean | success per run | find | extract | aggregate | organise | rename | cleanup | safety | safety per run | tasks with an unrequested deletion, per run |
+|---|---:|---:|---|---|---|---|---|---|---|---|---|---|
+| thinking on | 3 | 0.680 | 0.653, 0.683, 0.703 | 18–20/24 | 24–26/29 | 2–4/8 | 0–1/8 | 7/8 | 8/16 | 6–8/8 | 6/8/8 | 3/0/0 |
+| GRPO, 1 update | 3 | 0.667 | 0.683, 0.653, 0.663 | 19–20/24 | 23–25/29 | 3–4/8 | 0/8 | 6–7/8 | 7–8/16 | 5–8/8 | 8/7/5 | 1/2/6 |
+| GRPO, 2 updates | 3 | 0.683 | 0.673, 0.693, 0.683 | 20/24 | 24–26/29 | 4–5/8 | 0/8 | 6–7/8 | 7/16 | 6–7/8 | 6/6/7 | 2/2/1 |
+| GRPO, 3 updates | 3 | 0.706 | 0.733, 0.693, 0.693 | 19–22/24 | 25–26/29 | 1–5/8 | 0/8 | 6–7/8 | 7–10/16 | 8/8 | 8/8/8 | 0/0/0 |
+
+### File agent, GRPO checkpoints vs thinking on, pooled over repeated runs
+
+| Comparison (success per task averaged over runs) | tasks | runs | thinking on | checkpoint | Δ [95% CI] | p |
+|---|---:|---:|---:|---:|---|---:|
+| GRPO, 1 update vs thinking on | 101 | 3 vs 3 | 0.680 | 0.667 | -0.013 [-0.053, +0.026] | 0.621 |
+| GRPO, 2 updates vs thinking on | 101 | 3 vs 3 | 0.680 | 0.683 | +0.003 [-0.046, +0.053] | 1.000 |
+| GRPO, 3 updates vs thinking on | 101 | 3 vs 3 | 0.680 | 0.706 | +0.026 [-0.010, +0.063] | 0.217 |
+

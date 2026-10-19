@@ -204,7 +204,7 @@ The model copied the surface of the expert's behaviour (read before answering, a
 
 The more promising next step uses the exact checker rather than an expert: sample several attempts of the 4B itself on the training tasks at temperature above zero, keep those the checker accepts, and fine-tune on them (rejection-sampling fine-tuning). The trajectories then come from the student's own distribution, and the families where it never succeeds show where demonstrations are still needed.
 
-### Reinforcement learning on the agent's own attempts improves it
+### Reinforcement learning on the agent's own attempts: no reliable gain at this scale
 
 The next step went one further than rejection sampling: it keeps the failed attempts too, and trains the thinking model with group relative policy optimisation (GRPO). For each training task the model makes several attempts, the benchmark's checker scores them, and each attempt is pushed up or down according to how it did against the other attempts at the same task. Nothing is imitated, and a deletion nobody asked for can be penalised directly.
 
@@ -220,21 +220,27 @@ The next step went one further than rejection sampling: it keeps the failed atte
 
 Each round draws different tasks, so the rows are not a paired comparison; the test set is. Only 29 to 38 tasks per round have attempts with different rewards; most find, extract and safety tasks always succeed, and most organisation tasks always fail, so they carry no signal. The updates stay close to the base model: the mean KL per target token is below 0.01 at the end of each update, and 1.5 to 1.7% of target tokens hit the clip.
 
-On the 101 test tasks, at the app's temperature (0.2), same machine, server, prompt and starting state as the two baselines:
+Each checkpoint was evaluated three times on the 101 test tasks, at the app's temperature (0.2), on the same machine, server and prompt, each run starting from the same agent state. The thinking-only model is served from the same weights as `qwen3.5:4b` through the same harness as the GRPO checkpoints. Ranges are over the three runs:
 
-| Test, 101 tasks (Ollama, Windows) | find | extract | aggregate | organise | rename | cleanup | safety | success | tasks with an unrequested deletion | calls per task | median time |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| thinking off | 23/24 | 21/29 | 0/8 | 0/8 | 1/8 | 8/16 | 8/8 | 0.604 | 0 | 1.4 | 7.1 s |
-| thinking on | 18/24 | 24/29 | 2/8 | 1/8 | 7/8 | 8/16 | 6/8 | 0.653 | 3 | 3.4 | 13.0 s |
-| thinking on + GRPO, 1 update | 20/24 | 23/29 | 4/8 | 0/8 | 7/8 | 7/16 | 8/8 | 0.683 | 1 | 3.3 | 12 s |
-| thinking on + GRPO, 2 updates | 20/24 | 25/29 | 4/8 | 0/8 | 6/8 | 7/16 | 6/8 | 0.673 | 2 | 3.1 | 11 s |
-| thinking on + GRPO, 3 updates | 22/24 | 25/29 | 5/8 | 0/8 | 7/8 | 7/16 | 8/8 | 0.733 | 0 | 2.8 | 12.3 s |
+| Test, 101 tasks (Ollama, Windows) | runs | success, mean | success per run | find | extract | aggregate | organise | rename | cleanup | safety | tasks with an unrequested deletion, per run |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|
+| thinking off | 1 | 0.604 | 0.604 | 23/24 | 21/29 | 0/8 | 0/8 | 1/8 | 8/16 | 8/8 | 0 |
+| thinking on | 3 | 0.680 | 0.653, 0.683, 0.703 | 18–20/24 | 24–26/29 | 2–4/8 | 0–1/8 | 7/8 | 8/16 | 6–8/8 | 3, 0, 0 |
+| thinking on + GRPO, 1 update | 3 | 0.667 | 0.683, 0.653, 0.663 | 19–20/24 | 23–25/29 | 3–4/8 | 0/8 | 6–7/8 | 7–8/16 | 5–8/8 | 1, 2, 6 |
+| thinking on + GRPO, 2 updates | 3 | 0.683 | 0.673, 0.693, 0.683 | 20/24 | 24–26/29 | 4–5/8 | 0/8 | 6–7/8 | 7/16 | 6–7/8 | 2, 2, 1 |
+| thinking on + GRPO, 3 updates | 3 | 0.706 | 0.733, 0.693, 0.693 | 19–22/24 | 25–26/29 | 1–5/8 | 0/8 | 6–7/8 | 7–10/16 | 8/8 | 0, 0, 0 |
 
-Against the thinking model it starts from, success rises from 0.653 to 0.733 (difference +0.079, 95% interval +0.010 to +0.149, randomisation test p = 0.057; 11 tasks gained, 3 lost). Against the shipped configuration with thinking off, the gain is +0.129 (interval +0.050 to +0.208, p = 0.003; 16 gained, 3 lost). The gains are where thinking had cost something or had not been enough: find requests come back from 18/24 to 22/24, aggregation goes from 2/8 to 5/8, and in this run no « fais du ménage » request proposes deleting a protected document (safety 8/8, no unrequested deletion on any test task), which is what the −1 reward targeted. Renaming keeps the 7/8 that thinking brought. Organisation stays at 0/8: the model almost never solves an organisation task (6 of 113 training attempts over the three rounds), and partial credit was not enough to give a usable signal. Tasks are no slower than with thinking alone: fewer tool calls (2.8 against 3.4) and a shorter reasoning (median 830 characters per task against 940).
+The same model and settings move by up to 5 points from one run to the next (thinking alone: 0.653 to 0.703), and single families by up to 4 tasks (aggregation after 3 updates: 1/8 to 5/8). Comparisons therefore average each task's success over the three runs of a checkpoint and pair the checkpoints by task, with the same bootstrap interval and randomisation test as elsewhere. Pairing by run index instead would be arbitrary, since the runs of two checkpoints are independent samples; the task is the unit both sides share.
 
-The policies after one and two updates, evaluated the same way, do not climb steadily: 0.683 and 0.673 (differences +0.030, p = 0.60, and +0.020, p = 0.82, against thinking alone). Aggregation is at 4/8 after one update and stays above the starting 2/8 at every checkpoint, and find requests are at 20/24 or better; but the policy after two updates proposes deleting protected documents on two « fais du ménage » requests again (safety 6/8), and renaming dips to 6/8. Repeated runs of the same model at temperature 0.2 have moved single families by up to four tasks (rename 1/8 and 5/8 for the 4B above), so the jump from 0.673 to 0.733 at the last update is within the run-to-run variation, and the 8/8 on safety is not established by one run.
+| Against thinking on (0.680, 3 runs) | Δ success [95% interval] | p |
+|---|---|---:|
+| GRPO, 1 update | −0.013 [−0.053, +0.026] | 0.62 |
+| GRPO, 2 updates | +0.003 [−0.046, +0.053] | 1.00 |
+| GRPO, 3 updates | +0.026 [−0.010, +0.063] | 0.22 |
 
-What holds across the three checkpoints is a gain of 2 to 8 points over thinking alone, carried by aggregation and find, with no loss on any family beyond one task, unlike supervised fine-tuning on the expert's trajectories (0.485 and 0.414 against 0.626). The model learns from its own behaviour and is judged on outcomes, so it is never asked to reproduce steps whose purpose it cannot see. The test set is small and only the final checkpoint reaches an interval that excludes zero, so the size of the gain is uncertain. Several evaluation runs per checkpoint would separate the effect of training from sampling noise; this was not done for lack of time.
+No checkpoint is reliably better than the thinking model it starts from. The first evaluation suggested otherwise (0.733 against 0.653, p = 0.057), but that compared the lowest of the thinking model's three runs with the highest of the final policy's. The only difference that holds in every run concerns deletions: after three updates the agent proposed no unrequested deletion in any of its 303 test tasks, and safety is 8/8 in all three runs. That is the behaviour the −1 reward targeted, but it is weak evidence: the thinking model was also clean in two of its three runs (3 tasks in one run), and after one update deletions went up (1, 2 and 6 tasks), so the penalty did not act monotonically. Per-task time and tool calls, from the first runs, which ran one task at a time like the baselines: median 12.3 s and 2.8 calls after three updates, against 13.0 s and 3.4 calls with thinking alone.
+
+Compared with supervised fine-tuning on the expert's trajectories (0.485 and 0.414 against 0.626), learning from the model's own attempts at least did no harm: no checkpoint loses on any family beyond the run-to-run range. At this scale (three updates of 14 to 19 steps on 108 to 147 attempts, a KL to the base model below 0.01) it did not move the success rate either. A test of 101 tasks evaluated once cannot measure a change of a few points; three runs per checkpoint can bound it, and the interval after three updates excludes a gain larger than 6 points.
 
 Limitations specific to this experiment:
 

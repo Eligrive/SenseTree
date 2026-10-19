@@ -462,6 +462,62 @@ def agent_pairs_table() -> list[str]:
     return lines
 
 
+# Repeated test runs of each GRPO checkpoint (thinking on, temperature 0.2): the first run,
+# then rep2 and rep3 through the same harness.
+AGENT_REPEATS = [
+    ("thinking on", "test-qwen3.5-4b-think"),
+    ("GRPO, 1 update", "test-qwen3.5-4b-grpo-r1"),
+    ("GRPO, 2 updates", "test-qwen3.5-4b-grpo-r2"),
+    ("GRPO, 3 updates", "test-qwen3.5-4b-grpo"),
+]
+
+
+def repeat_runs(run: str) -> list[dict]:
+    return [r["per_task"] for r in (load_agent(n) for n in (run, f"{run}-rep2", f"{run}-rep3")) if r]
+
+
+def repeats_table() -> list[str]:
+    lines = ["| Checkpoint | runs | success, mean | success per run | " + " | ".join(AGENT_FAMILIES) +
+             " | safety per run | tasks with an unrequested deletion, per run |",
+             "|---|---:|---:|---|" + "---|" * len(AGENT_FAMILIES) + "---|---|"]
+    for label, run in AGENT_REPEATS:
+        runs = repeat_runs(run)
+        if not runs:
+            continue
+        rates = [np.mean([t["success"] for t in r.values()]) for r in runs]
+        cells = []
+        for fam in AGENT_FAMILIES:
+            counts = [int(sum(t["success"] for t in r.values() if t["family"] == fam)) for r in runs]
+            total = sum(1 for t in runs[0].values() if t["family"] == fam)
+            cells.append(f"{min(counts)}–{max(counts)}/{total}" if min(counts) != max(counts) else f"{counts[0]}/{total}")
+        safety = "/".join(str(int(sum(t["success"] for t in r.values() if t["family"] == "safety"))) for r in runs)
+        deletions = "/".join(str(sum(t["unrequested_deletions"] > 0 for t in r.values())) for r in runs)
+        lines.append(f"| {label} | {len(runs)} | {np.mean(rates):.3f} | " + ", ".join(f"{x:.3f}" for x in rates) +
+                     " | " + " | ".join(cells) + f" | {safety} | {deletions} |")
+    return lines
+
+
+def repeats_pairs() -> list[str]:
+    """Each task's success averaged over the runs of a checkpoint, then paired by task:
+    runs of two checkpoints are independent samples, so pairing them by run index would be
+    arbitrary; the task is the unit both sides share."""
+    lines = ["| Comparison (success per task averaged over runs) | tasks | runs | thinking on | checkpoint | Δ [95% CI] | p |",
+             "|---|---:|---:|---:|---:|---|---:|"]
+    base_label, base_run = AGENT_REPEATS[0]
+    base = repeat_runs(base_run)
+    for label, run in AGENT_REPEATS[1:]:
+        other = repeat_runs(run)
+        if not base or not other:
+            continue
+        tasks = sorted(set.intersection(*(set(r) for r in base + other)))
+        mean_base = {t: float(np.mean([r[t]["success"] for r in base])) for t in tasks}
+        mean_other = {t: float(np.mean([r[t]["success"] for r in other])) for t in tasks}
+        c = compare(mean_base, mean_other)
+        lines.append(f"| {label} vs {base_label} | {c.n} | {len(other)} vs {len(base)} | {c.mean_a:.3f} | {c.mean_b:.3f} | "
+                     f"{fmt_delta(c)} | {c.p_value:.3f} |")
+    return lines
+
+
 def grpo_rounds() -> list[tuple[dict, dict | None]]:
     """(rewards of the attempts, policy update on them) for every GRPO round run."""
     out, n = [], 0
@@ -544,6 +600,8 @@ def main() -> None:
         ("File agent on the fsbench test people (successes per family)", agent_table()),
         ("File agent, paired comparisons on per-task success (A vs B)", agent_pairs_table()),
         ("File agent, GRPO rounds on training tasks (4 attempts per task, temperature 0.7, thinking on)", grpo_table()),
+        ("File agent, repeated test runs per GRPO checkpoint (thinking on, temperature 0.2)", repeats_table()),
+        ("File agent, GRPO checkpoints vs thinking on, pooled over repeated runs", repeats_pairs()),
     ]
     if (RES / "pipeline" / "e5-small-both").exists():
         sections.insert(3, ("SenseTree pipeline, adapted e5-small (nDCG@10)", pipeline_table("e5-small-both")))
